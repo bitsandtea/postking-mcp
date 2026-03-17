@@ -1,0 +1,49 @@
+{
+  "name": "postking-mcp",
+  "version": "1.0.0",
+  "description": "PostKing MCP server — manage brands, generate posts, schedule content, and publish blogs from any MCP client (Claude Desktop, Cursor, etc.)",
+  "type": "module",
+  "main": "dist/index.js",
+  "files": [
+    "dist"
+  ],
+  "bin": {
+    "postking-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "postking",
+    "social-media",
+    "ai",
+    "content",
+    "scheduling",
+    "blog",
+    "claude"
+  ],
+  "homepage": "https://postking.app",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/bitsandtea/postking-mcp.git"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0"
+  }
+}
