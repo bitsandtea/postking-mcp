@@ -14,7 +14,11 @@ Connect Claude (Desktop, Cursor, or any MCP client) to your PostKing account and
 
 ### Claude Desktop
 
-Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows):
+**Option A — Via the GUI:**
+
+1. Open Claude Desktop → **Settings** (gear icon) → **Developer** → **Edit Config**
+2. This opens `claude_desktop_config.json` in your default editor
+3. Paste the following and save:
 
 ```json
 {
@@ -27,7 +31,13 @@ Add to `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
 }
 ```
 
-Restart Claude Desktop, then tell Claude: **"Login to PostKing"**
+4. Restart Claude Desktop
+
+**Option B — Edit the config file directly:**
+
+Open `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) or `%APPDATA%\Claude\claude_desktop_config.json` (Windows) in any text editor, paste the same JSON above, and save.
+
+Once restarted, tell Claude: **"Login to PostKing"**
 
 ### Claude Code (CLI)
 
