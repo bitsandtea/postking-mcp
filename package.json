@@ -1,6 +1,6 @@
 {
   "name": "postking-mcp",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "description": "PostKing MCP server — manage brands, generate posts, schedule content, and publish blogs from any MCP client (Claude Desktop, Cursor, etc.)",
   "type": "module",
   "main": "dist/index.js",
