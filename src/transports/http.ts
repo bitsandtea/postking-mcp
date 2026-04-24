@@ -20,7 +20,7 @@ import { runWithToken } from "../config.js";
 interface SessionEntry {
   transport: StreamableHTTPServerTransport;
   server: McpServer;
-  token: string;
+  token: string | null;
 }
 
 const sessions = new Map<string, SessionEntry>();
@@ -86,19 +86,10 @@ export async function runHttp(opts: HttpTransportOptions): Promise<http.Server> 
         return;
       }
 
+      // Bearer is optional — an anonymous session can still call the device-code
+      // login tools (`login_start` / `login_complete`). Any tool that needs the
+      // PostKing API will 401 naturally via the api client.
       const token = extractBearer(req);
-      if (!token) {
-        res.writeHead(401, { "content-type": "application/json" });
-        res.end(
-          JSON.stringify({
-            error: {
-              code: "UNAUTHORIZED",
-              message: "Missing or malformed Authorization header.",
-            },
-          })
-        );
-        return;
-      }
 
       const sessionIdHeader = req.headers["mcp-session-id"];
       const sessionId = Array.isArray(sessionIdHeader)
@@ -115,7 +106,7 @@ export async function runHttp(opts: HttpTransportOptions): Promise<http.Server> 
           sessionIdGenerator: () => newSessionId,
         });
         // Each session owns its own closure-scoped token.
-        const server = createServer(token);
+        const server = createServer(token ?? undefined);
         await server.connect(transport);
         entry = { transport, server, token };
         sessions.set(newSessionId, entry);
