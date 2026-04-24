@@ -338,9 +338,8 @@ Test locally by pointing Claude Desktop at the built file:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `POSTKING_API_URL` | `https://try.postking.app` | Override API base URL (useful for local dev). When `NODE_ENV !== "production"` the server refuses to start without this set, and always warns on stderr when it falls back to the default. |
+| `POSTKING_API_URL` | `https://try.postking.app` | Override the API base URL |
 | `POSTKING_API_TOKEN` | — | Skip device login by providing a token directly |
-| `NODE_ENV` | — | Set to `production` to allow the default API URL fallback silently |
 
 ---
 
