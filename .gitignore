@@ -25,6 +25,10 @@ Thumbs.db
 *.swp
 *.swo
 
+# local dev scripts & releases
+scripts/
+releases/
+
 # npm / test output
 *.tgz
 coverage/
