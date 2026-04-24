@@ -32,8 +32,9 @@ export function registerVoiceTools(server: McpServer) {
     },
     async ({ profileId, text, platform, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.post(`/api/brands/${id}/rewrite`, {
-        voiceId: profileId,
+      const data = await api.post(`/api/agent/v1/tools/rewrite`, {
+        brandId: id,
+        voiceProfileId: profileId,
         text,
         platform,
       });

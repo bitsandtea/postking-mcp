@@ -6,7 +6,9 @@
 
 The official [Model Context Protocol](https://modelcontextprotocol.io) server for [PostKing](https://postking.app) — an AI-powered content platform for social media scheduling, blog publishing, and brand management.
 
-Connect Claude (Desktop, Cursor, or any MCP client) to your PostKing account and manage your entire content operation through conversation — generate posts, schedule them, repurpose URLs into social content, write and publish blog articles, manage domains, and more.
+Connect Claude (Desktop, Cursor, or any MCP client) to your PostKing account and manage your entire content operation through conversation — generate posts, schedule them, repurpose URLs into social content, write and publish blog articles, generate landing pages and side pages, run SEO research and drafting, manage your asset library and weekly posting schedule, handle domains and API keys, and more.
+
+The server exposes **121 tools** across 15 modules — full parity with the `postking-cli`.
 
 ---
 
@@ -73,6 +75,7 @@ You never need to log in again. The token is permanent.
 | `login_start` | Begin device login — get a URL and code to approve in browser |
 | `login_complete` | Finish login and save token after browser approval |
 | `logout` | Clear locally stored credentials |
+| `whoami` | Show the currently authenticated user and account |
 
 ### Brands
 | Tool | Description |
@@ -99,7 +102,9 @@ You never need to log in again. The token is permanent.
 | `list_posts` | List posts filtered by status or platform |
 | `get_post` | View a single post |
 | `approve_post` | Approve and schedule a draft post |
+| `schedule_post` | Set a scheduled time on an existing post |
 | `reschedule_post` | Move a scheduled post to a new time |
+| `cancel_post` | Cancel a scheduled post without deleting it |
 | `delete_post` | Cancel and delete a post |
 | `get_calendar` | View upcoming scheduled content |
 | `generate_bulk_posts` | Fill a date range with AI-generated posts |
@@ -126,18 +131,115 @@ You never need to log in again. The token is permanent.
 | Tool | Description |
 |------|-------------|
 | `list_blogs` | List publications and articles (filterable by status) |
+| `list_publications` | List publications only |
 | `create_publication` | Create a new blog publication |
 | `generate_blog_post` | AI-generate a full blog article with optional voice |
 | `get_blog_article` | Fetch full article content |
+| `get_blog_status` | Poll generation/publish status for an article |
 | `update_blog_article` | Edit title, content, SEO fields, author, category, or status |
 | `delete_blog_article` | Permanently delete an article |
 | `publish_blog_article` | Push to WordPress, Medium, Substack, etc. |
 | `list_publishing_connections` | List external platform connections |
 | `import_blog_articles` | Import from RSS feed or Blogger URL |
 | `list_blog_authors` | List blog authors |
+| `create_blog_author` | Create a new blog author |
 | `list_blog_categories` | List categories for a publication |
 | `create_blog_category` | Create a new category |
 | `get_seo_roadmap` | View SEO topic suggestions and completion stats |
+
+### SEO
+| Tool | Description |
+|------|-------------|
+| `seo_add_seeds` | Seed SEO research with topic keywords |
+| `seo_generate_keywords` | Expand seeds into a keyword universe |
+| `seo_list_keywords` | List researched keywords |
+| `seo_categorize` | Categorize keywords by intent/funnel stage |
+| `seo_cluster` | Cluster keywords into topic groups |
+| `seo_list_clusters` | List keyword clusters |
+| `seo_generate_roadmap` | Generate an article roadmap from clusters |
+| `seo_list_roadmap` | List roadmap items |
+| `seo_roadmap_get` | Fetch a single roadmap item |
+| `seo_roadmap_edit` | Edit a roadmap item's title, intent, or notes |
+| `seo_roadmap_delete` | Remove a roadmap item |
+| `seo_roadmap_stats` | Roadmap completion stats |
+| `seo_gap` | Find keyword gaps vs. existing content |
+| `seo_competitor` | Analyze a competitor domain's keyword footprint |
+| `seo_write_article` | Draft an article from a roadmap item |
+| `seo_publish_article` | Publish an SEO-drafted article |
+
+### Landing pages
+| Tool | Description |
+|------|-------------|
+| `list_landing_pages` | List all landing pages for a brand |
+| `generate_landing_page` | Generate a new landing page from a prompt |
+| `view_landing_page` | View a published landing page |
+| `view_lp_draft` | View the current working draft |
+| `edit_landing_page` | Edit landing page content directly |
+| `set_landing_page` | Replace a section or block in place |
+| `regenerate_landing_page` | Regenerate the draft from the original prompt |
+| `vibe_edit_landing_page` | Apply a natural-language vibe edit (async) |
+| `get_vibe_edit_status` | Poll vibe-edit job status |
+| `publish_landing_page` | Publish the current draft |
+| `delete_landing_page` | Delete a landing page |
+| `list_lp_versions` | List historical versions of a landing page |
+| `view_lp_version` | View a specific historical version |
+| `list_side_pages` | List side pages attached to a landing page |
+| `generate_side_page` | Generate a new side page (async) |
+| `get_side_page_status` | Poll side-page generation status |
+| `view_side_page` | View a side page |
+| `edit_side_page` | Edit side-page content |
+| `set_side_page_section` | Replace a section of a side page |
+| `set_side_page_state` | Flip a side page between draft/published |
+| `delete_side_page` | Delete a side page |
+
+### Weekly schedule
+| Tool | Description |
+|------|-------------|
+| `get_weekly_schedule` | Fetch the active weekly posting schedule |
+| `set_weekly_schedule` | Configure platforms, times, and themes per day |
+| `enable_weekly_schedule` | Turn the weekly auto-generator on |
+| `disable_weekly_schedule` | Turn the weekly auto-generator off |
+| `delete_weekly_schedule` | Remove the schedule entirely |
+| `run_weekly_schedule_day` | Generate a single day's posts on demand |
+
+### Visuals (asset library)
+| Tool | Description |
+|------|-------------|
+| `list_assets` | List brand assets (images/videos) with filters |
+| `view_asset` | Fetch a single asset's metadata and URL |
+| `upload_asset` | Upload an image/video (base64) |
+| `import_asset_from_url` | Pull an asset from a remote URL |
+| `import_assets_csv` | Bulk import assets from a CSV |
+| `tag_asset` | Add or replace tags on an asset |
+| `delete_asset` | Remove an asset (requires confirm) |
+| `list_asset_tags` | List all tags used across assets |
+| `suggest_assets_for_post` | Get AI-suggested assets for a specific post |
+| `search_stock_images` | Search the stock-image providers |
+
+### Post visuals (cards & carousels)
+| Tool | Description |
+|------|-------------|
+| `generate_post_visual_options` | Generate visual option variants for a post |
+| `regenerate_post_visual` | Regenerate a specific visual option |
+| `pick_post_visual` | Pick a generated visual as the final |
+| `clear_post_visual` | Clear the selected visual |
+| `list_post_cards` | List card slides for a post |
+| `edit_post_card` | Edit a single card's copy |
+| `set_post_cards` | Replace all cards in one call |
+| `generate_post_carousel` | Render a carousel from current cards |
+
+### Jobs (async poller)
+| Tool | Description |
+|------|-------------|
+| `list_jobs` | List recent async jobs (generate, vibe-edit, imports) |
+| `get_job` | Poll a specific job by ID |
+
+### API keys (self-service)
+| Tool | Description |
+|------|-------------|
+| `list_api_keys` | List your PostKing API keys |
+| `create_api_key` | Mint a new API key |
+| `revoke_api_key` | Revoke an API key (requires confirm) |
 
 ### Domains
 | Tool | Description |
@@ -236,8 +338,9 @@ Test locally by pointing Claude Desktop at the built file:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `POSTKING_API_URL` | `https://try.postking.app` | Override API base URL (useful for local dev) |
+| `POSTKING_API_URL` | `https://try.postking.app` | Override API base URL (useful for local dev). When `NODE_ENV !== "production"` the server refuses to start without this set, and always warns on stderr when it falls back to the default. |
 | `POSTKING_API_TOKEN` | — | Skip device login by providing a token directly |
+| `NODE_ENV` | — | Set to `production` to allow the default API URL fallback silently |
 
 ---
 

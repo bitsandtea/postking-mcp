@@ -14,7 +14,7 @@ export function registerSocialTools(server: McpServer) {
     { brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)") },
     async ({ brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.get<unknown[]>(`/api/brands/${id}/social-accounts`);
+      const data = await api.get<unknown[]>(`/api/agent/v1/brands/${id}/social-accounts`);
       const slim = Array.isArray(data) ? data.map(slimAccount) : data;
       return {
         content: [{ type: "text" as const, text: JSON.stringify(slim, null, 2) }],
@@ -25,10 +25,21 @@ export function registerSocialTools(server: McpServer) {
   server.tool(
     "generate_connect_link",
     "Generate a secure browser link to connect a social media account. Share this URL with the user to complete OAuth.",
-    { brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)") },
-    async ({ brandId }) => {
+    {
+      brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
+      platform: z
+        .enum(["linkedin", "x", "instagram", "threads", "facebook", "tiktok", "youtube"])
+        .optional()
+        .describe("Target social platform for the connect link"),
+    },
+    async ({ brandId, platform }) => {
       const id = requireBrandId(brandId);
-      const data = await api.post(`/api/brands/${id}/social-accounts/connect-link`);
+      const body: Record<string, unknown> = {};
+      if (platform) body.platform = platform;
+      const data = await api.post(
+        `/api/agent/v1/brands/${id}/social-accounts/connect-link`,
+        body
+      );
       return {
         content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
       };
@@ -44,7 +55,7 @@ export function registerSocialTools(server: McpServer) {
     },
     async ({ accountId, brandId }) => {
       const id = requireBrandId(brandId);
-      await api.delete(`/api/brands/${id}/social-accounts/${accountId}`);
+      await api.delete(`/api/agent/v1/brands/${id}/social-accounts/${accountId}`);
       return {
         content: [{ type: "text" as const, text: `Account ${accountId} disconnected.` }],
       };

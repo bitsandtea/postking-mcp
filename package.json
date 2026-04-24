@@ -1,6 +1,6 @@
 {
   "name": "postking-mcp",
-  "version": "1.0.0",
+  "version": "1.1.1",
   "description": "PostKing MCP server — manage brands, generate posts, schedule content, and publish blogs from any MCP client (Claude Desktop, Cursor, etc.)",
   "type": "module",
   "main": "dist/index.js",
@@ -8,12 +8,15 @@
     "dist"
   ],
   "bin": {
-    "postking-mcp": "dist/index.js"
+    "postking-mcp": "dist/bin/postking-mcp.js",
+    "postking-mcp-http": "dist/bin/postking-mcp-http.js"
   },
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
+    "dev:http": "POSTKING_MCP_TRANSPORT=http tsx src/index.ts",
     "start": "node dist/index.js",
+    "start:http": "POSTKING_MCP_TRANSPORT=http node dist/index.js",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "npm run build"
   },

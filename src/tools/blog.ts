@@ -28,7 +28,7 @@ export function registerBlogTools(server: McpServer) {
     },
     async ({ status, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.get<any>(`/api/brands/${id}/blogs`);
+      const data = await api.get<any>(`/api/agent/v1/brands/${id}/blogs`);
       const publications = (data?.publications ?? []).map((p: any) => ({
         id: p.id,
         title: p.title,
@@ -57,7 +57,7 @@ export function registerBlogTools(server: McpServer) {
     },
     async ({ title, description, layout, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.post<any>(`/api/brands/${id}/blogs`, { title, description, layout });
+      const data = await api.post<any>(`/api/agent/v1/brands/${id}/blogs`, { title, description, layout });
       return {
         content: [{ type: "text" as const, text: JSON.stringify({ id: data.id, title: data.title }, null, 2) }],
       };
@@ -84,7 +84,7 @@ export function registerBlogTools(server: McpServer) {
     },
     async ({ publicationId, topic, voiceProfileId, targetLength, primaryKeywords, generateAiImage, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.post<any>(`/api/brands/${id}/generate-blog`, {
+      const data = await api.post<any>(`/api/agent/v1/brands/${id}/blogs/generate`, {
         clusterId: publicationId,
         topic,
         voiceProfileId,
@@ -121,7 +121,7 @@ export function registerBlogTools(server: McpServer) {
     },
     async ({ articleId, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.get<any>(`/api/brands/${id}/blogs/${articleId}`);
+      const data = await api.get<any>(`/api/agent/v1/brands/${id}/blogs/${articleId}`);
       const a = data?.article ?? data;
       return {
         content: [
@@ -164,7 +164,7 @@ export function registerBlogTools(server: McpServer) {
     },
     async ({ articleId, title, content, excerpt, status, metaTitle, metaDescription, authorId, categoryId, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.put<any>(`/api/brands/${id}/blogs/${articleId}`, {
+      const data = await api.put<any>(`/api/agent/v1/brands/${id}/blogs/${articleId}`, {
         postTitle: title,
         postText: content,
         postExcerpt: excerpt,
@@ -190,7 +190,7 @@ export function registerBlogTools(server: McpServer) {
     },
     async ({ articleId, brandId }) => {
       const id = requireBrandId(brandId);
-      await api.delete(`/api/brands/${id}/blogs/${articleId}`);
+      await api.delete(`/api/agent/v1/brands/${id}/blogs/${articleId}`);
       return {
         content: [{ type: "text" as const, text: `Article ${articleId} deleted.` }],
       };
@@ -204,7 +204,7 @@ export function registerBlogTools(server: McpServer) {
     { brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)") },
     async ({ brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.get<any>(`/api/brands/${id}/authors`);
+      const data = await api.get<any>(`/api/agent/v1/brands/${id}/authors`);
       const authors = (data?.authors ?? []).map((a: any) => ({
         id: a.id,
         name: `${a.authorFirstName} ${a.authorLastName}`.trim(),
@@ -228,7 +228,7 @@ export function registerBlogTools(server: McpServer) {
     },
     async ({ publicationId, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.get<any>(`/api/brands/${id}/blogs/${publicationId}/categories`);
+      const data = await api.get<any>(`/api/agent/v1/brands/${id}/blogs/${publicationId}/categories`);
       const categories = (data?.categories ?? (Array.isArray(data) ? data : [])).map((c: any) => ({
         id: c.id,
         name: c.name,
@@ -255,7 +255,7 @@ export function registerBlogTools(server: McpServer) {
     },
     async ({ publicationId, name, slug, description, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.post<any>(`/api/brands/${id}/blogs/${publicationId}/categories`, { name, slug, description });
+      const data = await api.post<any>(`/api/agent/v1/brands/${id}/blogs/${publicationId}/categories`, { name, slug, description });
       return {
         content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
       };
@@ -272,7 +272,7 @@ export function registerBlogTools(server: McpServer) {
     },
     async ({ publicationId, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.get<any>(`/api/brands/${id}/publications/${publicationId}/connections`);
+      const data = await api.get<any>(`/api/agent/v1/brands/${id}/publications/${publicationId}/connections`);
       const connections = Array.isArray(data) ? data : (data?.connections ?? []);
       return {
         content: [
@@ -299,7 +299,7 @@ export function registerBlogTools(server: McpServer) {
     },
     async ({ articleId, connectionIds, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.post<any>(`/api/brands/${id}/blogs/${articleId}/publish`, { connectionIds });
+      const data = await api.post<any>(`/api/agent/v1/brands/${id}/blogs/${articleId}/publish`, { connectionIds });
       return {
         content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
       };
@@ -318,9 +318,73 @@ export function registerBlogTools(server: McpServer) {
     },
     async ({ publicationId, sourceUrl, limit, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.post<any>(`/api/brands/${id}/publications/${publicationId}/import`, { sourceUrl, limit });
+      const data = await api.post<any>(`/api/agent/v1/brands/${id}/publications/${publicationId}/import`, { sourceUrl, limit });
       return {
         content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+      };
+    }
+  );
+
+  // ── Get blog generation status ────────────────────────────────────────────
+  server.tool(
+    "get_blog_status",
+    "Poll the async generation status of a blog article. Use the articleId returned by generate_blog_post. Status: pending | running | completed | failed.",
+    {
+      articleId: z.string().describe("Blog article ID returned by generate_blog_post"),
+      brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
+    },
+    async ({ articleId, brandId }) => {
+      const id = requireBrandId(brandId);
+      const data = await api.get<any>(`/api/agent/v1/brands/${id}/blogs/${articleId}/status`);
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+      };
+    }
+  );
+
+  // ── Create blog author ────────────────────────────────────────────────────
+  server.tool(
+    "create_blog_author",
+    "Create a new author for blog articles. Returns an authorId that can be used in generate_blog_post and update_blog_article.",
+    {
+      firstName: z.string().describe("Author first name"),
+      lastName: z.string().describe("Author last name"),
+      email: z.string().optional().describe("Author email address"),
+      brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
+    },
+    async ({ firstName, lastName, email, brandId }) => {
+      const id = requireBrandId(brandId);
+      const data = await api.post<any>(`/api/agent/v1/brands/${id}/authors`, {
+        authorFirstName: firstName,
+        authorLastName: lastName,
+        authorEmail: email,
+      });
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+      };
+    }
+  );
+
+  // ── List publications ─────────────────────────────────────────────────────
+  server.tool(
+    "list_publications",
+    "List all blog publications (the containers that blog articles live under). Distinct from list_publishing_connections which lists external platforms like WordPress.",
+    {
+      brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
+    },
+    async ({ brandId }) => {
+      const id = requireBrandId(brandId);
+      const data = await api.get<any>(`/api/agent/v1/brands/${id}/blogs`);
+      const publications = (data?.publications ?? []).map((p: any) => ({
+        id: p.id,
+        title: p.title,
+        description: p.description,
+        domain: p.domain ?? null,
+        layout: p.layout,
+        articleCount: p._count?.blogArticles ?? null,
+      }));
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(publications, null, 2) }],
       };
     }
   );
@@ -336,7 +400,7 @@ export function registerBlogTools(server: McpServer) {
     async ({ status, brandId }) => {
       const id = requireBrandId(brandId);
       const qs = status ? `?status=${status}` : "";
-      const data = await api.get<any>(`/api/brands/${id}/roadmap${qs}`);
+      const data = await api.get<any>(`/api/agent/v1/brands/${id}/seo/roadmap${qs}`);
       return {
         content: [
           {

@@ -18,7 +18,8 @@ export function registerEditorTools(server: McpServer) {
     },
     async ({ text, voice, platform, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.post(`/api/brands/${id}/rewrite`, {
+      const data = await api.post(`/api/agent/v1/tools/rewrite`, {
+        brandId: id,
         text,
         voiceProfileId: voice,
         platform,
@@ -42,7 +43,7 @@ export function registerEditorTools(server: McpServer) {
     },
     async ({ text, platform, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.post(`/api/brands/${id}/humanize`, { text, platform });
+      const data = await api.post(`/api/agent/v1/tools/humanize`, { brandId: id, text, platform });
       return {
         content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
       };
@@ -58,7 +59,7 @@ export function registerEditorTools(server: McpServer) {
     },
     async ({ text, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.post(`/api/brands/${id}/editor/ai-check`, { text });
+      const data = await api.post(`/api/agent/v1/tools/ai-check`, { brandId: id, text });
       return {
         content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
       };
