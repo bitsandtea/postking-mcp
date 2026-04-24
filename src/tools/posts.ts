@@ -44,7 +44,10 @@ export function registerPostTools(server: McpServer) {
       const id = requireBrandId(brandId);
 
       const { postId, pollUrl } = await api.post<{ postId: string; pollUrl: string }>(
-        `/api/brands/${id}/generate-content/async`,
+        // FLAG #4: `/generate-content/async` body shape differs from
+        // `/posts/generate`; MCP caller may need updated fields once the
+        // wrapper's contract is finalized.
+        `/api/agent/v1/brands/${id}/posts/generate`,
         {
           medium: platform,
           variationCount: variations,
@@ -97,7 +100,7 @@ export function registerPostTools(server: McpServer) {
     },
     async ({ platform, days, frequency, postsPerDay, times, voice, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.post(`/api/brands/${id}/generate-batch`, {
+      const data = await api.post(`/api/agent/v1/brands/${id}/posts/generate-batch`, {
         platform,
         days,
         frequency,
@@ -134,7 +137,7 @@ export function registerPostTools(server: McpServer) {
     },
     async ({ platforms, content, scheduledAt, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.post<any>(`/api/brands/${id}/posts/manual`, {
+      const data = await api.post<any>(`/api/agent/v1/brands/${id}/posts/manual`, {
         content,
         platforms,
         postType: scheduledAt ? "scheduled" : "draft",
@@ -171,7 +174,7 @@ export function registerPostTools(server: McpServer) {
       if (platform) params.set("platform", platform);
       if (limit) params.set("limit", String(limit));
       const qs = params.toString() ? `?${params}` : "";
-      const data = await api.get<any>(`/api/brands/${id}/posts${qs}`);
+      const data = await api.get<any>(`/api/agent/v1/brands/${id}/posts${qs}`);
       const slim = unwrapPosts(data).map(slimPost);
       return {
         content: [{ type: "text" as const, text: JSON.stringify(slim, null, 2) }],
@@ -185,7 +188,7 @@ export function registerPostTools(server: McpServer) {
     "View the full content and status of a single post.",
     { postId: z.string().describe("Post ID") },
     async ({ postId }) => {
-      const data = await api.get<any>(`/api/posts/${postId}`);
+      const data = await api.get<any>(`/api/agent/v1/posts/${postId}`);
       const post = data?.post ?? data;
       return {
         content: [{ type: "text" as const, text: JSON.stringify(slimPost(post), null, 2) }],
@@ -207,7 +210,7 @@ export function registerPostTools(server: McpServer) {
       timezone: z.string().optional().describe("User timezone, e.g. 'America/New_York'"),
     },
     async ({ postId, scheduledAt, timezone }) => {
-      const data = await api.post(`/api/posts/${postId}/approve`, {
+      const data = await api.post(`/api/agent/v1/posts/${postId}/approve`, {
         postAt: scheduledAt,
         userTimezone: timezone,
       });
@@ -226,7 +229,45 @@ export function registerPostTools(server: McpServer) {
       scheduledAt: z.string().datetime().describe("New future ISO 8601 UTC datetime"),
     },
     async ({ postId, scheduledAt }) => {
-      const data = await api.patch(`/api/posts/${postId}`, { scheduledAt });
+      const data = await api.patch(`/api/agent/v1/posts/${postId}`, { scheduledAt });
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+      };
+    }
+  );
+
+  // ── Schedule post (alias: approve with time) ──────────────────────────────
+  server.tool(
+    "schedule_post",
+    [
+      "Schedule a draft or approved post for a specific time. Equivalent to approve_post but named to match 'pking posts schedule'.",
+      "Pass a future ISO 8601 UTC datetime. After scheduling the post status becomes 'scheduled'.",
+    ].join(" "),
+    {
+      postId: z.string().describe("Post ID to schedule"),
+      scheduledAt: z.string().datetime().describe("Future ISO 8601 UTC datetime, e.g. 2026-06-01T09:00:00Z"),
+      timezone: z.string().optional().describe("User timezone, e.g. 'America/New_York'"),
+    },
+    async ({ postId, scheduledAt, timezone }) => {
+      const data = await api.post(`/api/agent/v1/posts/${postId}/approve`, {
+        postAt: scheduledAt,
+        userTimezone: timezone,
+      });
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+      };
+    }
+  );
+
+  // ── Cancel post ───────────────────────────────────────────────────────────
+  server.tool(
+    "cancel_post",
+    "Cancel a scheduled or approved post, reverting it to draft status without deleting it. Use delete_post to remove it entirely.",
+    {
+      postId: z.string().describe("Post ID to cancel"),
+    },
+    async ({ postId }) => {
+      const data = await api.patch(`/api/agent/v1/posts/${postId}`, { action: "cancel" });
       return {
         content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
       };
@@ -239,7 +280,7 @@ export function registerPostTools(server: McpServer) {
     "Cancel and delete a post regardless of its current status (draft, scheduled, or posted).",
     { postId: z.string().describe("Post ID to delete") },
     async ({ postId }) => {
-      await api.delete(`/api/posts/${postId}`);
+      await api.delete(`/api/agent/v1/posts/${postId}`);
       return {
         content: [{ type: "text" as const, text: `Post ${postId} deleted.` }],
       };
@@ -259,7 +300,7 @@ export function registerPostTools(server: McpServer) {
       const from = new Date().toISOString();
       const to = new Date(Date.now() + days * 86_400_000).toISOString();
       const data = await api.get<any>(
-        `/api/brands/${id}/posts?status=scheduled&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&limit=200`
+        `/api/agent/v1/brands/${id}/posts?status=scheduled&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&limit=200`
       );
       const slim = unwrapPosts(data).map(slimPost);
       return {

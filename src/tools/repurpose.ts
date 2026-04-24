@@ -79,7 +79,8 @@ export function registerRepurposeTools(server: McpServer) {
         }
       }
 
-      const data = await api.post(`/api/brands/${id}/repurpose`, {
+      const data = await api.post(`/api/agent/v1/tools/repurpose`, {
+        brandId: id,
         sourceType,
         sourceUrl,
         sourceContent,
