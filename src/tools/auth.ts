@@ -123,8 +123,38 @@ export function registerAuthTools(server: McpServer) {
         );
 
         if (data.access_token) {
-          saveToken(data.access_token);
           pendingDeviceCode = null;
+          const isRemote = process.env.POSTKING_MCP_TRANSPORT === "http";
+          if (isRemote) {
+            // Hosted/remote MCP: we can't persist a shared credential file.
+            // Hand the token back to the user so they can paste it into their
+            // MCP client's Authorization header and re-connect.
+            const apiUrl = config.apiUrl;
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: [
+                    "**You're signed in. One last step — paste this key into your MCP client.**",
+                    "",
+                    `API key: \`${data.access_token}\``,
+                    "",
+                    "For Hermes, run on your machine:",
+                    "",
+                    "```bash",
+                    "hermes mcp remove postking-remote 2>/dev/null || true",
+                    "hermes mcp add postking-remote \\",
+                    `  --url ${apiUrl.replace(/\/$/, "")}/mcp \\`,
+                    `  --header "Authorization: Bearer ${data.access_token}"`,
+                    "```",
+                    "",
+                    "After re-adding, all PostKing tools become available in this session.",
+                  ].join("\n"),
+                },
+              ],
+            };
+          }
+          saveToken(data.access_token);
           return {
             content: [
               {

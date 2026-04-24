@@ -47,6 +47,15 @@ Once restarted, tell Claude: **"Login to PostKing"**
 claude mcp add postking -- npx -y postking-mcp
 ```
 
+### Hermes
+
+```bash
+npm i -g postking-mcp
+hermes mcp add postking --command postking-mcp
+```
+
+Then in Hermes: **"Login to PostKing"**.
+
 ### Cursor / other MCP clients
 
 Use the same `npx -y postking-mcp` command in your client's MCP server config.

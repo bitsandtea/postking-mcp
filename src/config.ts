@@ -5,18 +5,7 @@ import { loadStoredToken } from "./auth.js";
 const DEFAULT_API_URL = "https://try.postking.app";
 
 function resolveApiUrl(): string {
-  const envUrl = process.env.POSTKING_API_URL;
-  if (envUrl) return envUrl;
-
-  if (process.env.NODE_ENV !== "production") {
-    process.stderr.write(
-      "[postking-mcp] WARNING: POSTKING_API_URL is not set. " +
-        "Set it via --env POSTKING_API_URL=https://your-server in your MCP client config.\n" +
-        `[postking-mcp] Falling back to ${DEFAULT_API_URL} — this is the PostKing production server.\n`
-    );
-  }
-
-  return DEFAULT_API_URL;
+  return process.env.POSTKING_API_URL || DEFAULT_API_URL;
 }
 
 export const config = {
