@@ -6,7 +6,7 @@
 
 The official [Model Context Protocol](https://modelcontextprotocol.io) server for [PostKing](https://postking.app) — an AI-powered content platform for social media scheduling, blog publishing, and brand management.
 
-Connect Claude (Desktop, Cursor, or any MCP client) to your PostKing account and manage your entire content operation through conversation — generate posts, schedule them, repurpose URLs into social content, write and publish blog articles, generate landing pages and side pages, run SEO research and drafting, manage your asset library and weekly posting schedule, handle domains and API keys, and more.
+Connect Claude (Desktop, Cursor, or any MCP client) to your PostKing account and manage your entire content operation through conversation — generate posts, schedule them, repurpose URLs into social content, write and publish blog articles, generate landing pages and side pages, run SEO / GEO research and drafting, manage your asset library and weekly posting schedule, handle domains and API keys, and more.
 
 The server exposes **121 tools** across 15 modules — full parity with the `postking-cli`.
 
@@ -154,12 +154,12 @@ You never need to log in again. The token is permanent.
 | `create_blog_author` | Create a new blog author |
 | `list_blog_categories` | List categories for a publication |
 | `create_blog_category` | Create a new category |
-| `get_seo_roadmap` | View SEO topic suggestions and completion stats |
+| `get_seo_roadmap` | View SEO / GEO topic suggestions and completion stats |
 
-### SEO
+### SEO / GEO
 | Tool | Description |
 |------|-------------|
-| `seo_add_seeds` | Seed SEO research with topic keywords |
+| `seo_add_seeds` | Seed SEO / GEO research with topic keywords |
 | `seo_generate_keywords` | Expand seeds into a keyword universe |
 | `seo_list_keywords` | List researched keywords |
 | `seo_categorize` | Categorize keywords by intent/funnel stage |
@@ -174,7 +174,7 @@ You never need to log in again. The token is permanent.
 | `seo_gap` | Find keyword gaps vs. existing content |
 | `seo_competitor` | Analyze a competitor domain's keyword footprint |
 | `seo_write_article` | Draft an article from a roadmap item |
-| `seo_publish_article` | Publish an SEO-drafted article |
+| `seo_publish_article` | Publish an SEO / GEO-drafted article |
 
 ### Landing pages
 | Tool | Description |
@@ -193,8 +193,7 @@ You never need to log in again. The token is permanent.
 | `list_lp_versions` | List historical versions of a landing page |
 | `view_lp_version` | View a specific historical version |
 | `list_side_pages` | List side pages attached to a landing page |
-| `generate_side_page` | Generate a new side page (async) |
-| `get_side_page_status` | Poll side-page generation status |
+| `generate_side_page` | Generate a new side page (async; poll via `get_job`) |
 | `view_side_page` | View a side page |
 | `edit_side_page` | Edit side-page content |
 | `set_side_page_section` | Replace a section of a side page |

@@ -301,7 +301,7 @@ Want me to list the available voices now?`,
   // ── SEO end-to-end ────────────────────────────────────────────────────────
   server.prompt(
     "seo_end_to_end",
-    "Run SEO from seed keywords to published articles using PostKing's agentic SEO pipeline",
+    "Run SEO / GEO from seed keywords to published articles using PostKing's agentic SEO / GEO pipeline",
     {},
     () => ({
       messages: [
@@ -309,14 +309,14 @@ Want me to list the available voices now?`,
           role: "user" as const,
           content: {
             type: "text" as const,
-            text: `Run the full PostKing SEO pipeline for my active brand.`,
+            text: `Run the full PostKing SEO / GEO pipeline for my active brand.`,
           },
         },
         {
           role: "assistant" as const,
           content: {
             type: "text" as const,
-            text: `I'll drive the 7-step SEO agentic flow end-to-end:
+            text: `I'll drive the 11-step SEO / GEO agentic flow end-to-end — producing content optimized both for classic search ranking and for citation by AI assistants (Claude / ChatGPT / Perplexity) via definition-first H2s, FAQ schema, and source-attributable claims.
 
 **Step 1 — Seed** (\`seo_add_seeds\`)
 Tell me 3–10 seed topics and I'll register them.
@@ -324,22 +324,34 @@ Tell me 3–10 seed topics and I'll register them.
 **Step 2 — Expand** (\`seo_generate_keywords\`)
 Default 100 keywords. Costs credits.
 
-**Step 3 — Categorize & Cluster** (\`seo_categorize\` then \`seo_cluster\`)
+**Step 3 — Categorize & Cluster** (\`seo_categorize\` then \`seo_generate_clusters\`)
 Tags by intent and groups into topic pillars.
 
 **Step 4 — Pick a pillar** (\`seo_list_clusters\`)
 I'll show the clusters; you choose one (or I pick the highest-volume).
 
-**Step 5 — Roadmap** (\`seo_generate_roadmap\`)
-Turns the chosen cluster into ~20 prioritized blog topics.
+**Step 5 — Approve clusters** (\`seo_bulk_approve_clusters\`)
+Brief generation only runs on approved clusters. Pass the chosen cluster IDs to \`seo_bulk_approve_clusters\` (or \`seo_approve_cluster\` for a single one). Approval kicks off an async \`seo_brief_generate\` Operation per cluster — poll each returned \`operationId\` via \`get_job\` until \`state\` is \`succeeded\`.
 
-**Step 6 — Write** (\`seo_write_article\`)
-Draft the top 5 articles. Review each with \`get_blog_article\`.
+**Step 6 — Roadmap** (\`seo_generate_roadmap\`)
+Turns the approved cluster(s) into ~20 prioritized blog topics — each topic gets a SeoBrief auto-drafted in the background.
 
-**Step 7 — Audit & Publish**
-- \`seo_gap_analysis\` + \`seo_competitor_diff\` for a final audit.
+**Step 7 — Review & approve briefs** (\`seo_list_briefs\` → \`seo_edit_brief\` → \`seo_approve_briefs\`)
+List the generated briefs, inspect with \`seo_get_brief\`, refine the briefData JSON via \`seo_edit_brief\` (or rerun the whole brief with \`seo_regenerate_brief\`), then \`seo_approve_briefs\` with the brief IDs. Approval is the gate that unlocks article generation.
+
+**Step 8 — Write** (\`seo_write_article\`)
+Draft the top 5 articles from the approved briefs. Review each with \`get_blog_article\`.
+
+**Step 9 — Audit & Publish**
+- \`seo_gap\` + \`seo_competitor\` for a final audit.
 - \`seo_publish_article\` with an optional \`scheduledAt\` to schedule.
 - \`seo_roadmap_stats\` to confirm completion.
+
+**Step 10 — Auto-assign CTAs (optional, post-publish)** (\`seo_auto_assign_cta\`)
+After articles are live, batch-assign a published side-page CTA to each blog. Defaults skip blogs that already have a CTA and Webflow-synced blogs. Pass \`blogIds: "all"\` to process the entire brand. Returns per-blog results in one synchronous response — closes the SEO/GEO loop with a conversion-side step.
+
+**Step 11 — Cluster-linked side pages (optional)** (\`seo_generate_side_page\`)
+Generate a side page for one of the brand's landing pages and link it to a target SEO cluster via \`clusterId\`. The new side page inherits the cluster's keyword targeting and feeds the topic-authority signal that GEO citation patterns reward.
 
 Tell me the seed keywords to start with.`,
           },

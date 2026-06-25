@@ -1,8 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { api } from "../client.js";
-import { pollUntilDone } from "../poll.js";
 import { requireBrandId } from "../state.js";
+import { config } from "../config.js";
 
 const PLATFORMS = ["x", "linkedin", "instagram", "threads", "facebook"] as const;
 
@@ -43,10 +43,7 @@ export function registerPostTools(server: McpServer) {
     async ({ platform, variations, theme, voice, brandId }) => {
       const id = requireBrandId(brandId);
 
-      const { postId, pollUrl } = await api.post<{ postId: string; pollUrl: string }>(
-        // FLAG #4: `/generate-content/async` body shape differs from
-        // `/posts/generate`; MCP caller may need updated fields once the
-        // wrapper's contract is finalized.
+      const resp = await api.post<{ postId: string; pollUrl?: string }>(
         `/api/agent/v1/brands/${id}/posts/generate`,
         {
           medium: platform,
@@ -59,20 +56,32 @@ export function registerPostTools(server: McpServer) {
         }
       );
 
-      const post = await pollUntilDone<Record<string, unknown>>(pollUrl);
-
-      let result: unknown = post;
-      if (typeof post.outputData === "string") {
-        try {
-          const parsed = JSON.parse(post.outputData);
-          result = { postId, content: post.content, ...parsed };
-        } catch {
-          result = { postId, content: post.content };
+      const postId = resp.postId;
+      const maxAttempts = Math.ceil(config.pollTimeoutMs / config.pollIntervalMs);
+      let post: Record<string, unknown> = {};
+      let timedOut = false;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        await new Promise<void>((r) => setTimeout(r, config.pollIntervalMs));
+        post = await api.get<Record<string, unknown>>(`/api/agent/v1/posts/${postId}`);
+        const inner = (post.post ?? post) as Record<string, unknown>;
+        const opStatus = inner.operationStatus as string | null | undefined;
+        if (opStatus === "FAILED") {
+          const errMsg = (inner.errorMessage as string | undefined) ?? "Generation failed";
+          throw new Error(`Post generation failed: ${errMsg}`);
         }
+        if (opStatus === "COMPLETED") break;
+        if (!opStatus && inner.content) break;
+        if (attempt === maxAttempts - 1) timedOut = true;
       }
 
+      const inner = (post.post ?? post) as Record<string, unknown>;
+      if (timedOut) {
+        return {
+          content: [{ type: "text" as const, text: `Post generation is still in progress. Use get_post to check status when ready. postId: ${postId}` }],
+        };
+      }
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify({ postId, ...inner }, null, 2) }],
       };
     }
   );

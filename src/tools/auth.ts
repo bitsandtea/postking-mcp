@@ -129,7 +129,7 @@ export function registerAuthTools(server: McpServer) {
             // Hosted/remote MCP: we can't persist a shared credential file.
             // Hand the token back to the user so they can paste it into their
             // MCP client's Authorization header and re-connect.
-            const apiUrl = config.apiUrl;
+            const MCP_REMOTE_URL = "https://mcp.postking.app/mcp";
             return {
               content: [
                 {
@@ -143,9 +143,7 @@ export function registerAuthTools(server: McpServer) {
                     "",
                     "```bash",
                     "hermes mcp remove postking-remote 2>/dev/null || true",
-                    "hermes mcp add postking-remote \\",
-                    `  --url ${apiUrl.replace(/\/$/, "")}/mcp \\`,
-                    `  --header "Authorization: Bearer ${data.access_token}"`,
+                    `hermes mcp add postking-remote --url ${MCP_REMOTE_URL} --header "Authorization: Bearer ${data.access_token}"`,
                     "```",
                     "",
                     "After re-adding, all PostKing tools become available in this session.",

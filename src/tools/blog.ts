@@ -392,7 +392,7 @@ export function registerBlogTools(server: McpServer) {
   // ── SEO roadmap ───────────────────────────────────────────────────────────
   server.tool(
     "get_seo_roadmap",
-    "View the SEO content roadmap — suggested blog topics, keywords, and completion status.",
+    "View the SEO / GEO content roadmap — suggested blog topics, keywords, and completion status.",
     {
       status: z.enum(["suggested", "in_progress", "completed", "ignored"]).optional().describe("Filter by status"),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),

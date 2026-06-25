@@ -34,22 +34,26 @@ export function registerLpTools(server: McpServer) {
   server.tool(
     "generate_landing_page",
     [
-      "Generate a new AI landing page for the brand. This is an async operation — it returns immediately with a slug.",
-      "Poll with get_job(operationId) or view_landing_page(slug) to see when content is ready.",
+      "Create and AI-generate a new landing page for the brand.",
+      "Step 1: Creates the LP record with the given slug.",
+      "Step 2: Kicks off async AI content generation immediately.",
+      "Returns { slug, operationId, pollUrl } — poll with get_job(operationId) until state is 'succeeded'.",
     ].join(" "),
     {
       topic: z.string().describe("Topic or product this landing page should be about"),
-      slug: z.string().optional().describe("Desired URL slug (auto-generated if omitted)"),
+      slug: z.string().optional().describe("URL slug (auto-derived from topic if omitted)"),
       voiceProfileId: z.string().optional().describe("Voice profile ID for writing style"),
       brandId: brandOpt,
     },
     async ({ topic, slug, voiceProfileId, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.post<any>(
-        `/api/agent/v1/brands/${id}/landing-pages`,
-        { topic, slug, voiceProfileId }
-      );
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      const pageSlug = slug ?? topic.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60);
+      await api.post<any>(`/api/agent/v1/brands/${id}/landing-pages`, { slug: pageSlug, brandId: id, name: topic });
+      const genData = await api.post<any>(`/api/agent/v1/landing-pages/${pageSlug}/generate`, {
+        instructions: topic,
+        voiceProfileId,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify({ slug: pageSlug, ...genData }, null, 2) }] };
     }
   );
 
@@ -268,40 +272,60 @@ export function registerLpTools(server: McpServer) {
     }
   );
 
-  // ── Generate side page (async) ────────────────────────────────────────────
+  // ── Generate side page (async, AI generator) ──────────────────────────────
   server.tool(
     "generate_side_page",
     [
-      "Generate one or more AI side pages for a landing page.",
-      "Returns an operationId — poll with get_side_page_status or get_job until complete.",
+      "AI-generates a side page under a parent landing page. Async — kicks off the side-page generator and returns `{ success, operationId, operationRowId, pollUrl, sidePageId }`.",
+      "This is the GENERATOR (POST /side-pages/generate) — NOT a row creator. Comparison-type briefs may run synchronously and return `sidePageId` directly with no operationId.",
+      "Two body modes:",
+      "  • freeform: pass `key` + `prompt` (+ optional `keywords`, `selectedSections`, `voiceProfileId`, `sidePageType`).",
+      "  • brief: pass `key` + `brief` (structured outline) + optional `briefId` and `roadmapItemId`.",
+      "Poll `get_job` until `state` is `succeeded`.",
     ].join(" "),
     {
-      slug: z.string().describe("Parent landing page slug"),
-      type: z
+      slug: z.string().min(1).describe("Parent landing page slug"),
+      key: z.string().min(1).describe("Side-page key (URL slug fragment under the parent LP)"),
+      prompt: z
         .string()
-        .describe("Side-page type: 'faq' | 'pricing' | 'features' | 'about' | 'contact' | etc."),
-      count: z.number().int().min(1).max(5).optional().default(1).describe("Number of side pages to generate"),
+        .optional()
+        .describe("Freeform-mode generation prompt (omit when passing `brief`)"),
+      brief: z
+        .unknown()
+        .optional()
+        .describe("Brief-mode structured outline. When set, this is the canonical payload."),
+      keywords: z
+        .array(z.string())
+        .optional()
+        .describe("Freeform-mode: target keywords to weave into the page"),
+      sidePageType: z
+        .enum(["landing", "text", "comparison"])
+        .optional()
+        .describe("Defaults to 'landing'. Use 'comparison' only with a persisted comparison briefId."),
+      voiceProfileId: z.string().optional().describe("Voice profile to write in"),
+      autoAssignAssets: z
+        .boolean()
+        .optional()
+        .describe("Auto-assign brand assets to image slots after generation"),
+      briefId: z
+        .string()
+        .optional()
+        .describe("Persisted SeoBrief ID — required for comparison-type generation"),
+      roadmapItemId: z.string().optional().describe("Roadmap item ID this side page is fulfilling"),
     },
-    async ({ slug, type, count }) => {
+    async ({ slug, key, prompt, brief, keywords, sidePageType, voiceProfileId, autoAssignAssets, briefId, roadmapItemId }) => {
+      const body: Record<string, unknown> = { key };
+      if (prompt !== undefined) body.prompt = prompt;
+      if (brief !== undefined) body.brief = brief;
+      if (keywords !== undefined) body.keywords = keywords;
+      if (sidePageType !== undefined) body.sidePageType = sidePageType;
+      if (voiceProfileId !== undefined) body.voiceProfileId = voiceProfileId;
+      if (autoAssignAssets !== undefined) body.autoAssignAssets = autoAssignAssets;
+      if (briefId !== undefined) body.briefId = briefId;
+      if (roadmapItemId !== undefined) body.roadmapItemId = roadmapItemId;
       const data = await api.post<any>(
-        `/api/agent/v1/landing-pages/${slug}/side-pages`,
-        { type, count }
-      );
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
-    }
-  );
-
-  // ── Get side page generation status ──────────────────────────────────────
-  server.tool(
-    "get_side_page_status",
-    "Poll the status of a side-page generation operation. Use the operationId from generate_side_page.",
-    {
-      slug: z.string().describe("Parent landing page slug"),
-      operationId: z.string().describe("Operation ID from generate_side_page"),
-    },
-    async ({ slug, operationId }) => {
-      const data = await api.get<any>(
-        `/api/agent/v1/landing-pages/${slug}/side-pages/generate/status/${operationId}`
+        `/api/agent/v1/landing-pages/${slug}/side-pages/generate`,
+        body
       );
       return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
     }

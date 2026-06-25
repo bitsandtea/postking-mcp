@@ -41,14 +41,43 @@ export function registerJobTools(server: McpServer) {
     }
   );
 
+  // ── List operations ───────────────────────────────────────────────────────
+  server.tool(
+    "list_operations",
+    [
+      "List recent Operations (the newer async-op system) for the active brand.",
+      "Each operation has: id, kind, state (pending|running|succeeded|failed|canceled), progress, result, errors.",
+      "Use get_job with an operationId to poll a specific one.",
+      "Filters: kind (e.g. seo_keyword_generate, seo_cluster_generate, lp_generate), state.",
+    ].join(" "),
+    {
+      kind: z.string().optional().describe("Filter by operation kind (e.g. seo_keyword_generate)"),
+      state: z.string().optional().describe("Filter by state: pending | running | succeeded | failed | canceled"),
+      limit: z.number().int().min(1).max(100).optional().default(20),
+      brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
+    },
+    async ({ kind, state, limit, brandId }) => {
+      const id = requireBrandId(brandId);
+      const params = new URLSearchParams();
+      if (kind) params.set("kind", kind);
+      if (state) params.set("state", state);
+      if (limit) params.set("limit", String(limit));
+      const qs = params.toString() ? `?${params}` : "";
+      const data = await api.get<any>(`/api/agent/v1/brands/${id}/operations${qs}`);
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+      };
+    }
+  );
+
   // ── Get job (generic async poller) ────────────────────────────────────────
   server.tool(
     "get_job",
     [
-      "Poll the status of any background operation by its operationId or pollUrl.",
-      "Returns status (pending|running|completed|failed) and any result payload.",
-      "Call repeatedly until status is 'completed' or 'failed'.",
-      "Most generate_* and vibe_edit_* tools return an operationId — use this to poll them.",
+      "Poll the status of any background Operation by its operationId or pollUrl.",
+      "Returns the Operation row: { id, kind, state (pending|running|succeeded|failed|canceled), brandId, scopeType, scopeId, progress, result, errors, startedAt, finishedAt, createdAt, updatedAt }.",
+      "Call repeatedly until state is 'succeeded' or 'failed' (or 'canceled'). When succeeded, the payload you want is in `result`; on failure, see `errors`.",
+      "Most generate_* and vibe_edit_* tools (including seo_generate_clusters and seo_generate_keywords) return an operationId — use this to poll them.",
     ].join(" "),
     {
       pollUrl: z
@@ -63,7 +92,7 @@ export function registerJobTools(server: McpServer) {
       let url = pollUrl;
       if (!pollUrl.startsWith("http") && !pollUrl.startsWith("/")) {
         const id = requireBrandId(brandId);
-        url = `/api/agent/v1/brands/${id}/jobs/${pollUrl}`;
+        url = `/api/agent/v1/brands/${id}/operations/${pollUrl}`;
       } else if (pollUrl.startsWith("/")) {
         url = pollUrl;
       } else {
