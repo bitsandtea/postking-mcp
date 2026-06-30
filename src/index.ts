@@ -7,6 +7,31 @@
  * For stdio: bit-identical to the pre-refactor behavior so existing users
  * (Claude Desktop, Cursor, etc.) are unaffected.
  */
+import "dotenv/config";
+
+// Disable TLS verification for local HTTPS API URLs only (never for remote hosts).
+{
+  const rawUrl = process.env.POSTKING_API_URL;
+  if (rawUrl) {
+    let parsed: URL | null = null;
+    try {
+      parsed = new URL(rawUrl);
+    } catch {
+      // invalid URL — ignore; config.ts will surface the error later
+    }
+    if (
+      parsed &&
+      parsed.protocol === "https:" &&
+      (parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1")
+    ) {
+      process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
+      process.stderr.write(
+        `[warn] TLS verification disabled for local API URL: ${parsed.origin}\n`
+      );
+    }
+  }
+}
+
 import { runStdio } from "./transports/stdio.js";
 import { runHttp } from "./transports/http.js";
 

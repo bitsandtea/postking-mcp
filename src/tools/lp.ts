@@ -11,22 +11,184 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { api } from "../client.js";
 import { requireBrandId } from "../state.js";
+import { detailParam, project, projectList, pick } from "../detail.js";
 
 const brandOpt = z.string().optional().describe("Brand ID (defaults to active brand)");
+
+// ── Section helpers ──────────────────────────────────────────────────────────
+
+function getSections(row: unknown): Record<string, unknown> | null {
+  if (row === null || typeof row !== "object" || Array.isArray(row)) return null;
+  const r = row as Record<string, unknown>;
+  for (const key of ["sections", "content", "data"] as const) {
+    const v = r[key];
+    if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+      return v as Record<string, unknown>;
+    }
+  }
+  return null;
+}
+
+function sectionKeys(row: unknown): string[] {
+  const secs = getSections(row);
+  if (secs !== null) return Object.keys(secs);
+  if (row !== null && typeof row === "object" && !Array.isArray(row)) {
+    return Object.keys(row as object);
+  }
+  return [];
+}
+
+function wordCount(s: unknown): number {
+  const str = typeof s === "string" ? s : JSON.stringify(s);
+  return str.trim() === "" ? 0 : str.trim().split(/\s+/).length;
+}
+
+function sectionWordCounts(row: unknown): Record<string, number> | { total: number } {
+  const secs = getSections(row);
+  if (secs !== null) {
+    const counts: Record<string, number> = {};
+    for (const [k, v] of Object.entries(secs)) {
+      counts[k] = wordCount(v);
+    }
+    return counts;
+  }
+  if (row !== null && typeof row === "object" && !Array.isArray(row)) {
+    const r = row as Record<string, unknown>;
+    let total = 0;
+    for (const v of Object.values(r)) {
+      if (typeof v === "string") total += wordCount(v);
+    }
+    return { total };
+  }
+  return { total: 0 };
+}
+
+// ── Interfaces ───────────────────────────────────────────────────────────────
+
+interface LpListItem {
+  id?: string;
+  slug?: string;
+  name?: string;
+  status?: string;
+  updatedAt?: string;
+  currentVersionId?: string | number;
+  publishedVersionId?: string | number;
+  webUrl?: string;
+  [k: string]: unknown;
+}
+
+interface LpDetail {
+  id?: string;
+  slug?: string;
+  name?: string;
+  status?: string;
+  updatedAt?: string;
+  currentVersionId?: string | number;
+  publishedVersionId?: string | number;
+  webUrl?: string;
+  data?: unknown;
+  content?: unknown;
+  sections?: unknown;
+  [k: string]: unknown;
+}
+
+interface LpDraft {
+  id?: string;
+  slug?: string;
+  name?: string;
+  status?: string;
+  versionData?: unknown;
+  data?: unknown;
+  content?: unknown;
+  sections?: unknown;
+  [k: string]: unknown;
+}
+
+interface LpVersionItem {
+  id?: string | number;
+  name?: string;
+  createdAt?: string;
+  editorId?: string;
+  description?: string;
+  [k: string]: unknown;
+}
+
+interface LpVersionDetail {
+  id?: string | number;
+  name?: string;
+  createdAt?: string;
+  description?: string;
+  editorId?: string;
+  data?: unknown;
+  content?: unknown;
+  sections?: unknown;
+  [k: string]: unknown;
+}
+
+interface SidePageItem {
+  id?: string;
+  slug?: string;
+  name?: string;
+  type?: string;
+  isPublished?: boolean;
+  publishedAt?: string;
+  updatedAt?: string;
+  overrides?: unknown;
+  config?: unknown;
+  slotMap?: unknown;
+  siteMetadata?: unknown;
+  [k: string]: unknown;
+}
+
+interface SidePageDetail {
+  id?: string;
+  slug?: string;
+  name?: string;
+  type?: string;
+  isPublished?: boolean;
+  publishedAt?: string;
+  updatedAt?: string;
+  overrides?: unknown;
+  config?: unknown;
+  slotMap?: unknown;
+  siteMetadata?: unknown;
+  rendered?: string;
+  renderLinks?: unknown;
+  [k: string]: unknown;
+}
+
+interface VibeEditStatus {
+  state?: string;
+  progress?: number | string;
+  result?: unknown;
+  [k: string]: unknown;
+}
 
 export function registerLpTools(server: McpServer) {
   // ── List landing pages ────────────────────────────────────────────────────
   server.tool(
     "list_landing_pages",
-    "List all landing pages for the active brand. Returns slug, status, and title.",
-    { brandId: brandOpt },
-    async ({ brandId }) => {
+    "Lists landing pages. Default detail='short' (id/slug/name/status). Use view_landing_page for full content.",
+    { brandId: brandOpt, detail: detailParam("short") },
+    async ({ brandId, detail }) => {
       const id = requireBrandId(brandId);
-      const data = await api.get<any>(
+      const raw = await api.get<Record<string, unknown>>(
         `/api/agent/v1/brands/${id}/landing-pages`
       );
-      const pages = data?.landingPages ?? data?.pages ?? (Array.isArray(data) ? data : []);
-      return { content: [{ type: "text" as const, text: JSON.stringify(pages, null, 2) }] };
+      const pages: LpListItem[] = Array.isArray(raw["landingPages"])
+        ? (raw["landingPages"] as LpListItem[])
+        : Array.isArray(raw["pages"])
+        ? (raw["pages"] as LpListItem[])
+        : Array.isArray(raw)
+        ? (raw as unknown as LpListItem[])
+        : [];
+      const proj = {
+        short: (row: LpListItem) => pick(row, ["id", "slug", "name", "status"]),
+        medium: (row: LpListItem) =>
+          pick(row, ["id", "slug", "name", "status", "updatedAt", "currentVersionId", "publishedVersionId", "webUrl"]),
+      };
+      const text = JSON.stringify({ count: pages.length, detail, landingPages: projectList(detail, pages, proj) });
+      return { content: [{ type: "text" as const, text }] };
     }
   );
 
@@ -37,7 +199,7 @@ export function registerLpTools(server: McpServer) {
       "Create and AI-generate a new landing page for the brand.",
       "Step 1: Creates the LP record with the given slug.",
       "Step 2: Kicks off async AI content generation immediately.",
-      "Returns { slug, operationId, pollUrl } — poll with get_job(operationId) until state is 'succeeded'.",
+      "Returns { slug, operationId, pollUrl } — poll with get_job(operationId) until state is 'completed' (or 'failed'/'partially_failed'/'cancelled' on error).",
     ].join(" "),
     {
       topic: z.string().describe("Topic or product this landing page should be about"),
@@ -48,8 +210,8 @@ export function registerLpTools(server: McpServer) {
     async ({ topic, slug, voiceProfileId, brandId }) => {
       const id = requireBrandId(brandId);
       const pageSlug = slug ?? topic.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60);
-      await api.post<any>(`/api/agent/v1/brands/${id}/landing-pages`, { slug: pageSlug, brandId: id, name: topic });
-      const genData = await api.post<any>(`/api/agent/v1/landing-pages/${pageSlug}/generate`, {
+      await api.post<Record<string, unknown>>(`/api/agent/v1/brands/${id}/landing-pages`, { slug: pageSlug, brandId: id, name: topic });
+      const genData = await api.post<Record<string, unknown>>(`/api/agent/v1/landing-pages/${pageSlug}/generate`, {
         instructions: topic,
         voiceProfileId,
       });
@@ -60,14 +222,24 @@ export function registerLpTools(server: McpServer) {
   // ── View landing page ─────────────────────────────────────────────────────
   server.tool(
     "view_landing_page",
-    "Fetch the full content and metadata of a landing page by its slug.",
+    "Fetch a landing page by slug. detail='full' (default) returns full data JSONB; 'medium' returns summary + sectionKeys/sectionWordCounts; 'short' returns id/slug/name/status. Section bodies and rendered HTML appear only at full.",
     {
       slug: z.string().describe("Landing page slug"),
+      detail: detailParam("full"),
     },
-    async ({ slug }) => {
-      const data = await api.get<any>(`/api/agent/v1/landing-pages/${slug}`);
-      const p = data?.landingPage ?? data;
-      return { content: [{ type: "text" as const, text: JSON.stringify(p, null, 2) }] };
+    async ({ slug, detail }) => {
+      const raw = await api.get<Record<string, unknown>>(`/api/agent/v1/landing-pages/${slug}`);
+      const p = (raw["landingPage"] !== undefined ? raw["landingPage"] : raw) as LpDetail;
+      const proj = {
+        short: (row: LpDetail) => pick(row, ["id", "slug", "name", "status"]),
+        medium: (row: LpDetail) => ({
+          ...pick(row, ["id", "slug", "name", "status", "updatedAt", "currentVersionId", "publishedVersionId", "webUrl"]),
+          sectionKeys: sectionKeys(row),
+          sectionWordCounts: sectionWordCounts(row),
+        }),
+      };
+      const text = JSON.stringify(project(detail, p, proj));
+      return { content: [{ type: "text" as const, text }] };
     }
   );
 
@@ -81,7 +253,7 @@ export function registerLpTools(server: McpServer) {
       instructions: z.string().optional().describe("Editor instructions stored for reference"),
     },
     async ({ slug, title, instructions }) => {
-      const data = await api.patch<any>(`/api/agent/v1/landing-pages/${slug}`, {
+      const data = await api.patch<Record<string, unknown>>(`/api/agent/v1/landing-pages/${slug}`, {
         title,
         instructions,
       });
@@ -108,7 +280,7 @@ export function registerLpTools(server: McpServer) {
       if (title !== undefined) body.title = title;
       if (content !== undefined) body.content = content;
       if (metadata !== undefined) body.metadata = metadata;
-      const data = await api.put<any>(`/api/agent/v1/landing-pages/${slug}/content`, body);
+      const data = await api.put<Record<string, unknown>>(`/api/agent/v1/landing-pages/${slug}/content`, body);
       return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
     }
   );
@@ -134,7 +306,7 @@ export function registerLpTools(server: McpServer) {
       if (voiceProfileId) body.voiceProfileId = voiceProfileId;
       if (instructions) body.instructions = instructions;
       if (sections?.length) body.sections = sections;
-      const data = await api.post<any>(`/api/agent/v1/landing-pages/${slug}/generate`, body);
+      const data = await api.post<Record<string, unknown>>(`/api/agent/v1/landing-pages/${slug}/generate`, body);
       return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
     }
   );
@@ -162,7 +334,7 @@ export function registerLpTools(server: McpServer) {
       const body: Record<string, unknown> = { instructions };
       if (scope) body.scope = scope;
       if (sectionId) body.sectionId = sectionId;
-      const data = await api.post<any>(`/api/agent/v1/landing-pages/${slug}/ai-edit`, body);
+      const data = await api.post<Record<string, unknown>>(`/api/agent/v1/landing-pages/${slug}/ai-edit`, body);
       return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
     }
   );
@@ -170,16 +342,23 @@ export function registerLpTools(server: McpServer) {
   // ── Get vibe edit status ──────────────────────────────────────────────────
   server.tool(
     "get_vibe_edit_status",
-    "Poll the status of a vibe (AI) edit operation. Use the operationId from vibe_edit_landing_page.",
+    "Poll vibe (AI) edit status. detail='full' (default) includes the result payload; 'short'/'medium' return just state+progress.",
     {
       slug: z.string().describe("Landing page slug"),
       operationId: z.string().describe("Operation ID from vibe_edit_landing_page"),
+      detail: detailParam("full"),
     },
-    async ({ slug, operationId }) => {
-      const data = await api.get<any>(
+    async ({ slug, operationId, detail }) => {
+      const raw = await api.get<Record<string, unknown>>(
         `/api/agent/v1/landing-pages/${slug}/ai-edit/status/${operationId}`
       );
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      const p = raw as VibeEditStatus;
+      const proj = {
+        short: (row: VibeEditStatus) => pick(row, ["state", "progress"]),
+        medium: (row: VibeEditStatus) => pick(row, ["state", "progress"]),
+      };
+      const text = JSON.stringify(project(detail, p, proj));
+      return { content: [{ type: "text" as const, text }] };
     }
   );
 
@@ -191,7 +370,7 @@ export function registerLpTools(server: McpServer) {
       slug: z.string().describe("Landing page slug"),
     },
     async ({ slug }) => {
-      const data = await api.post<any>(`/api/agent/v1/landing-pages/${slug}/publish`);
+      const data = await api.post<Record<string, unknown>>(`/api/agent/v1/landing-pages/${slug}/publish`);
       return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
     }
   );
@@ -215,42 +394,75 @@ export function registerLpTools(server: McpServer) {
   // ── View draft ────────────────────────────────────────────────────────────
   server.tool(
     "view_lp_draft",
-    "View the unpublished draft state of a landing page, including pending AI edits.",
+    "View the unpublished draft of a landing page. detail='full' (default) includes full versionData; 'medium' adds sectionKeys/sectionWordCounts; 'short' is id/slug/name/status only.",
     {
       slug: z.string().describe("Landing page slug"),
+      detail: detailParam("full"),
     },
-    async ({ slug }) => {
-      const data = await api.get<any>(`/api/agent/v1/landing-pages/${slug}/draft`);
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    async ({ slug, detail }) => {
+      const raw = await api.get<Record<string, unknown>>(`/api/agent/v1/landing-pages/${slug}/draft`);
+      const p = raw as LpDraft;
+      const proj = {
+        short: (row: LpDraft) => pick(row, ["id", "slug", "name", "status"]),
+        medium: (row: LpDraft) => ({
+          ...pick(row, ["id", "slug", "name", "status"]),
+          sectionKeys: sectionKeys(row),
+          sectionWordCounts: sectionWordCounts(row),
+        }),
+      };
+      const text = JSON.stringify(project(detail, p, proj));
+      return { content: [{ type: "text" as const, text }] };
     }
   );
 
   // ── List versions ─────────────────────────────────────────────────────────
   server.tool(
     "list_lp_versions",
-    "List all saved versions of a landing page. Each write or AI edit creates a new version.",
+    "List all saved versions of a landing page. Default detail='short'. Use view_lp_version to see section content.",
     {
       slug: z.string().describe("Landing page slug"),
+      detail: detailParam("short"),
     },
-    async ({ slug }) => {
-      const data = await api.get<any>(`/api/agent/v1/landing-pages/${slug}/versions`);
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    async ({ slug, detail }) => {
+      const raw = await api.get<Record<string, unknown>>(`/api/agent/v1/landing-pages/${slug}/versions`);
+      const versions: LpVersionItem[] = Array.isArray(raw)
+        ? (raw as unknown as LpVersionItem[])
+        : Array.isArray(raw["versions"])
+        ? (raw["versions"] as LpVersionItem[])
+        : [];
+      const proj = {
+        short: (row: LpVersionItem) => pick(row, ["id", "name", "createdAt"]),
+        medium: (row: LpVersionItem) => pick(row, ["id", "name", "createdAt", "editorId", "description"]),
+      };
+      const text = JSON.stringify({ count: versions.length, detail, versions: projectList(detail, versions, proj) });
+      return { content: [{ type: "text" as const, text }] };
     }
   );
 
   // ── View version ──────────────────────────────────────────────────────────
   server.tool(
     "view_lp_version",
-    "View the content of a specific landing page version by numeric ID.",
+    "View a specific LP version. detail='full' (default) returns full data; 'medium' adds sectionKeys/sectionWordCounts.",
     {
       slug: z.string().describe("Landing page slug"),
       versionId: z.number().int().describe("Numeric version ID from list_lp_versions"),
+      detail: detailParam("full"),
     },
-    async ({ slug, versionId }) => {
-      const data = await api.get<any>(
+    async ({ slug, versionId, detail }) => {
+      const raw = await api.get<Record<string, unknown>>(
         `/api/agent/v1/landing-pages/${slug}/versions/${versionId}`
       );
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      const p = raw as LpVersionDetail;
+      const proj = {
+        short: (row: LpVersionDetail) => pick(row, ["id", "name", "createdAt"]),
+        medium: (row: LpVersionDetail) => ({
+          ...pick(row, ["id", "name", "description", "createdAt"]),
+          sectionKeys: sectionKeys(row),
+          sectionWordCounts: sectionWordCounts(row),
+        }),
+      };
+      const text = JSON.stringify(project(detail, p, proj));
+      return { content: [{ type: "text" as const, text }] };
     }
   );
 
@@ -259,16 +471,27 @@ export function registerLpTools(server: McpServer) {
   // ── List side pages ───────────────────────────────────────────────────────
   server.tool(
     "list_side_pages",
-    "List all side pages (sub-pages) attached to a landing page.",
+    "List side pages attached to a landing page. Default detail='short'. Heavy JSONB (overrides/config) only at full via view_side_page.",
     {
       slug: z.string().describe("Parent landing page slug"),
+      detail: detailParam("short"),
     },
-    async ({ slug }) => {
-      const data = await api.get<any>(
+    async ({ slug, detail }) => {
+      const raw = await api.get<Record<string, unknown>>(
         `/api/agent/v1/landing-pages/${slug}/side-pages`
       );
-      const pages = data?.sidePages ?? (Array.isArray(data) ? data : []);
-      return { content: [{ type: "text" as const, text: JSON.stringify(pages, null, 2) }] };
+      const pages: SidePageItem[] = Array.isArray(raw["sidePages"])
+        ? (raw["sidePages"] as SidePageItem[])
+        : Array.isArray(raw)
+        ? (raw as unknown as SidePageItem[])
+        : [];
+      const proj = {
+        short: (row: SidePageItem) => pick(row, ["id", "slug", "name", "type", "isPublished"]),
+        medium: (row: SidePageItem) =>
+          pick(row, ["id", "slug", "name", "type", "isPublished", "publishedAt", "updatedAt"]),
+      };
+      const text = JSON.stringify({ count: pages.length, detail, sidePages: projectList(detail, pages, proj) });
+      return { content: [{ type: "text" as const, text }] };
     }
   );
 
@@ -281,7 +504,7 @@ export function registerLpTools(server: McpServer) {
       "Two body modes:",
       "  • freeform: pass `key` + `prompt` (+ optional `keywords`, `selectedSections`, `voiceProfileId`, `sidePageType`).",
       "  • brief: pass `key` + `brief` (structured outline) + optional `briefId` and `roadmapItemId`.",
-      "Poll `get_job` until `state` is `succeeded`.",
+      "Poll `get_job` until `state` is `completed` (or `failed`/`partially_failed`/`cancelled` on error).",
     ].join(" "),
     {
       slug: z.string().min(1).describe("Parent landing page slug"),
@@ -323,7 +546,7 @@ export function registerLpTools(server: McpServer) {
       if (autoAssignAssets !== undefined) body.autoAssignAssets = autoAssignAssets;
       if (briefId !== undefined) body.briefId = briefId;
       if (roadmapItemId !== undefined) body.roadmapItemId = roadmapItemId;
-      const data = await api.post<any>(
+      const data = await api.post<Record<string, unknown>>(
         `/api/agent/v1/landing-pages/${slug}/side-pages/generate`,
         body
       );
@@ -334,17 +557,29 @@ export function registerLpTools(server: McpServer) {
   // ── View side page ────────────────────────────────────────────────────────
   server.tool(
     "view_side_page",
-    "View the content and sections of a specific side page.",
+    "View a side page including sections and rendered HTML. detail='full' (default) includes rendered HTML and full overrides; 'medium' gives summary + overrideSectionKeys; 'short' gives id/slug/name/type/isPublished. Rendered HTML appears only at full.",
     {
       slug: z.string().describe("Parent landing page slug"),
       sideKey: z.string().describe("Side page key (from list_side_pages)"),
+      detail: detailParam("full"),
     },
-    async ({ slug, sideKey }) => {
-      const data = await api.get<any>(
+    async ({ slug, sideKey, detail }) => {
+      const raw = await api.get<Record<string, unknown>>(
         `/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}`
       );
-      const p = data?.sidePage ?? data;
-      return { content: [{ type: "text" as const, text: JSON.stringify(p, null, 2) }] };
+      const p = (raw["sidePage"] !== undefined ? raw["sidePage"] : raw) as SidePageDetail;
+      const proj = {
+        short: (row: SidePageDetail) => pick(row, ["id", "slug", "name", "type", "isPublished"]),
+        medium: (row: SidePageDetail) => ({
+          ...pick(row, ["id", "slug", "name", "type", "isPublished", "publishedAt", "updatedAt"]),
+          overrideSectionKeys:
+            row.overrides !== null && typeof row.overrides === "object" && !Array.isArray(row.overrides)
+              ? Object.keys(row.overrides as object)
+              : [],
+        }),
+      };
+      const text = JSON.stringify(project(detail, p, proj));
+      return { content: [{ type: "text" as const, text }] };
     }
   );
 
@@ -358,7 +593,7 @@ export function registerLpTools(server: McpServer) {
       instructions: z.string().optional().describe("Updated instructions for the AI"),
     },
     async ({ slug, sideKey, instructions }) => {
-      const data = await api.patch<any>(
+      const data = await api.patch<Record<string, unknown>>(
         `/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}`,
         { instructions }
       );
@@ -400,7 +635,7 @@ export function registerLpTools(server: McpServer) {
       const body: Record<string, unknown> = { sectionId };
       if (content !== undefined) body.content = content;
       if (instructions !== undefined) body.instructions = instructions;
-      const data = await api.patch<any>(
+      const data = await api.patch<Record<string, unknown>>(
         `/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}/section`,
         body
       );
@@ -418,7 +653,7 @@ export function registerLpTools(server: McpServer) {
       published: z.boolean().describe("true = publish, false = unpublish"),
     },
     async ({ slug, sideKey, published }) => {
-      const data = await api.post<any>(
+      const data = await api.post<Record<string, unknown>>(
         `/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}/state`,
         { published }
       );

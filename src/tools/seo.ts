@@ -2,6 +2,17 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { api } from "../client.js";
 import { requireBrandId } from "../state.js";
+import {
+  detailParam,
+  project,
+  projectList,
+  truncate,
+  type Projector,
+} from "../detail.js";
+import { brandDashboardUrl } from "../links.js";
+import { etaFor } from "../etas.js";
+import { config } from "../config.js";
+import { derivedJobFields } from "./jobs.js";
 
 /**
  * SEO end-to-end agentic flow.
@@ -18,13 +29,292 @@ import { requireBrandId } from "../state.js";
  *   5. Approve clusters  → seo_bulk_approve_clusters / seo_approve_cluster
  *   6. Roadmap           → seo_generate_roadmap
  *   7. Review & approve briefs → seo_list_briefs → seo_edit_brief → seo_approve_briefs
- *   8. Write             → seo_write_article
+ *   8. Write — seo_approve_briefs auto-fires article generation and returns operationIds; poll each with get_job until state is `completed`. (seo_write_article is only for (re)generating an article when approval was not used.)
  *   9. Audit & Publish   → seo_gap + seo_competitor + seo_publish_article + seo_roadmap_stats
  *
  * Steps 5 and 7 are explicit human-in-the-loop approval gates.
  */
 
 const brandOpt = z.string().optional().describe("Brand ID (defaults to active brand)");
+
+// ── Compact projection helpers ──────────────────────────────────────────────
+
+interface CompactCluster {
+  id: string;
+  name: string;
+  pillarKeyword: string | null;
+  status: string;
+  briefGenerationStatus: string | null;
+  briefCount: number;
+  keywordCount: number;
+  topKeywords: string[];
+  firstBriefId: string | null;
+  description: string | null;
+}
+
+interface CompactBrief {
+  id: string;
+  type: string;
+  status: string;
+  roadmapItemId: string | null;
+  title: string | null;
+  clusterId: string | null;
+  clusterName: string | null;
+  briefSummary: string | null;
+  sidePageUrl: string | null;
+  generationError: string | null;
+  blogArticleId: string | null;
+  generatedAt: string | null;
+  approvedAt: string | null;
+}
+
+interface CompactKeyword {
+  id: string;
+  keyword: string;
+  intent: string | null;
+  priority: number | null;
+  excludedFromClustering: boolean;
+  userTags: string[];
+  searchVolume: number | null;
+  difficulty: number | null;
+}
+
+interface CompactRoadmapItem {
+  id: string;
+  title: string;
+  status: string;
+  priority: number | null;
+  primaryKeywords: string[];
+  clusterId: string | null;
+}
+
+function projectCluster(c: Record<string, unknown>): CompactCluster {
+  const keywordsMeta = Array.isArray(c.keywordsMeta) ? c.keywordsMeta : [];
+  const keywords = Array.isArray(c.keywords) ? c.keywords : [];
+  const keywordCount = keywordsMeta.length > 0 ? keywordsMeta.length : keywords.length;
+  const topKeywords = (keywords as unknown[]).slice(0, 8).filter((k): k is string => typeof k === "string");
+  return {
+    id: String(c.id ?? ""),
+    name: String(c.name ?? ""),
+    pillarKeyword: c.pillarKeyword != null ? String(c.pillarKeyword) : null,
+    status: String(c.status ?? ""),
+    briefGenerationStatus: c.briefGenerationStatus != null ? String(c.briefGenerationStatus) : null,
+    briefCount: typeof c.briefCount === "number" ? c.briefCount : 0,
+    keywordCount,
+    topKeywords,
+    firstBriefId: c.firstBriefId != null ? String(c.firstBriefId) : null,
+    description: truncate(c.description, 200),
+  };
+}
+
+function projectBrief(b: Record<string, unknown>): CompactBrief {
+  const roadmapItem = b.roadmapItem != null && typeof b.roadmapItem === "object"
+    ? (b.roadmapItem as Record<string, unknown>)
+    : null;
+  const cluster = b.cluster != null && typeof b.cluster === "object"
+    ? (b.cluster as Record<string, unknown>)
+    : null;
+  const briefData = b.briefData != null && typeof b.briefData === "object"
+    ? (b.briefData as Record<string, unknown>)
+    : null;
+
+  let briefSummary: string | null = null;
+  if (briefData) {
+    const bdTitle = briefData.title != null ? String(briefData.title) : null;
+    const sections = Array.isArray(briefData.sections)
+      ? briefData.sections
+      : Array.isArray(briefData.h2s)
+      ? briefData.h2s
+      : null;
+    const h2Count = sections ? sections.length : null;
+    if (bdTitle && h2Count != null) {
+      briefSummary = `${bdTitle} (${h2Count} sections)`;
+    } else if (bdTitle) {
+      briefSummary = bdTitle;
+    } else {
+      briefSummary = "outline present";
+    }
+  }
+
+  return {
+    id: String(b.id ?? ""),
+    type: String(b.type ?? ""),
+    status: String(b.status ?? ""),
+    roadmapItemId: b.roadmapItemId != null ? String(b.roadmapItemId) : null,
+    title: roadmapItem?.title != null ? String(roadmapItem.title) : null,
+    clusterId: cluster?.id != null ? String(cluster.id) : null,
+    clusterName: cluster?.name != null ? String(cluster.name) : null,
+    briefSummary,
+    sidePageUrl: b.sidePageUrl != null ? String(b.sidePageUrl) : null,
+    generationError: b.generationError != null ? String(b.generationError) : null,
+    blogArticleId: b.blogArticleId != null ? String(b.blogArticleId) : null,
+    generatedAt: b.generatedAt != null ? String(b.generatedAt) : null,
+    approvedAt: b.approvedAt != null ? String(b.approvedAt) : null,
+  };
+}
+
+function projectKeyword(k: Record<string, unknown>): CompactKeyword {
+  return {
+    id: String(k.id ?? ""),
+    keyword: String(k.keyword ?? ""),
+    intent: k.intent != null ? String(k.intent) : null,
+    priority: typeof k.priority === "number" ? k.priority : null,
+    excludedFromClustering: Boolean(k.excludedFromClustering),
+    userTags: Array.isArray(k.userTags) ? (k.userTags as unknown[]).filter((t): t is string => typeof t === "string") : [],
+    searchVolume: typeof k.searchVolume === "number" ? k.searchVolume : null,
+    difficulty: typeof k.difficulty === "number" ? k.difficulty : null,
+  };
+}
+
+function projectRoadmapItem(item: Record<string, unknown>): CompactRoadmapItem {
+  const primaryKeywords = Array.isArray(item.primaryKeywords)
+    ? (item.primaryKeywords as unknown[]).filter((k): k is string => typeof k === "string").slice(0, 5)
+    : [];
+  return {
+    id: String(item.id ?? ""),
+    title: String(item.title ?? ""),
+    status: String(item.status ?? ""),
+    priority: typeof item.priority === "number" ? item.priority : null,
+    primaryKeywords,
+    clusterId: item.clusterId != null ? String(item.clusterId) : null,
+  };
+}
+
+// ── Hoisted helper (used in seo_competitor) ──────────────────────────────────
+
+function slimKeywordList(arr: unknown, cap = 50): { keywords: unknown[]; total: number } {
+  if (!Array.isArray(arr)) return { keywords: [], total: 0 };
+  const total = arr.length;
+  const keywords = arr.slice(0, cap).map((k) => {
+    if (typeof k === "string") return k;
+    if (k != null && typeof k === "object") {
+      const ko = k as Record<string, unknown>;
+      return ko.keyword ?? ko.word ?? ko.text ?? ko;
+    }
+    return k;
+  });
+  return { keywords, total };
+}
+
+// ── Module-level Projectors ───────────────────────────────────────────────────
+
+const clusterProj: Projector<Record<string, unknown>> = {
+  short: (c) => ({ id: String(c.id ?? ""), name: String(c.name ?? ""), status: String(c.status ?? "") }),
+  medium: projectCluster,
+};
+
+const briefListProj: Projector<Record<string, unknown>> = {
+  short: (b) => {
+    const roadmapItem = b.roadmapItem != null && typeof b.roadmapItem === "object"
+      ? (b.roadmapItem as Record<string, unknown>)
+      : null;
+    return {
+      id: String(b.id ?? ""),
+      type: String(b.type ?? ""),
+      status: String(b.status ?? ""),
+      title: roadmapItem?.title != null ? String(roadmapItem.title) : null,
+    };
+  },
+  medium: projectBrief,
+};
+
+const keywordProj: Projector<Record<string, unknown>> = {
+  short: (k) => ({
+    id: String(k.id ?? ""),
+    keyword: String(k.keyword ?? ""),
+    intent: k.intent != null ? String(k.intent) : null,
+  }),
+  medium: projectKeyword,
+};
+
+const roadmapItemProj: Projector<Record<string, unknown>> = {
+  short: (item) => ({ id: String(item.id ?? ""), title: String(item.title ?? ""), status: String(item.status ?? "") }),
+  medium: projectRoadmapItem,
+};
+
+const gapProj: Projector<Record<string, unknown>> = {
+  short: (g) => ({
+    ...(g.id != null ? { id: String(g.id) } : {}),
+    ...(g.topic != null ? { topic: String(g.topic) } : {}),
+    ...(g.keyword != null ? { keyword: String(g.keyword) } : {}),
+  }),
+  medium: (g) => ({
+    ...(g.id != null ? { id: String(g.id) } : {}),
+    ...(g.topic != null ? { topic: String(g.topic) } : {}),
+    ...(g.keyword != null ? { keyword: String(g.keyword) } : {}),
+    ...(g.searchVolume != null ? { searchVolume: g.searchVolume } : {}),
+    ...(g.volume != null ? { volume: g.volume } : {}),
+    ...(g.difficulty != null ? { difficulty: g.difficulty } : {}),
+    ...(Array.isArray(g.competitorDomains) ? { competitorDomains: g.competitorDomains } : {}),
+  }),
+};
+
+// GET-tool projectors (default: "full")
+
+const getBriefProj: Projector<Record<string, unknown>> = {
+  short: (b) => ({
+    id: String(b.id ?? ""),
+    type: String(b.type ?? ""),
+    status: String(b.status ?? ""),
+  }),
+  medium: (b) => {
+    const roadmapItem = b.roadmapItem != null && typeof b.roadmapItem === "object"
+      ? (b.roadmapItem as Record<string, unknown>)
+      : null;
+    const cluster = b.cluster != null && typeof b.cluster === "object"
+      ? (b.cluster as Record<string, unknown>)
+      : null;
+    const briefData = b.briefData != null && typeof b.briefData === "object"
+      ? (b.briefData as Record<string, unknown>)
+      : null;
+    let briefSummary: string | null = null;
+    if (briefData) {
+      const bdTitle = briefData.title != null ? String(briefData.title) : null;
+      const sections = Array.isArray(briefData.sections) ? briefData.sections
+        : Array.isArray(briefData.h2s) ? briefData.h2s
+        : null;
+      const h2Count = sections ? sections.length : null;
+      if (bdTitle && h2Count != null) {
+        briefSummary = `${bdTitle} (${h2Count} sections)`;
+      } else if (bdTitle) {
+        briefSummary = bdTitle;
+      } else {
+        briefSummary = "outline present";
+      }
+    }
+    return {
+      id: String(b.id ?? ""),
+      type: String(b.type ?? ""),
+      status: String(b.status ?? ""),
+      title: roadmapItem?.title != null ? String(roadmapItem.title) : null,
+      clusterName: cluster?.name != null ? String(cluster.name) : null,
+      briefSummary,
+      sidePageUrl: b.sidePageUrl != null ? String(b.sidePageUrl) : null,
+    };
+  },
+};
+
+const getRoadmapItemProj: Projector<Record<string, unknown>> = {
+  short: (item) => ({
+    id: String(item.id ?? ""),
+    title: String(item.title ?? ""),
+    status: String(item.status ?? ""),
+  }),
+  medium: (item) => {
+    const primaryKeywords = Array.isArray(item.primaryKeywords)
+      ? (item.primaryKeywords as unknown[]).filter((k): k is string => typeof k === "string").slice(0, 5)
+      : [];
+    return {
+      id: String(item.id ?? ""),
+      title: String(item.title ?? ""),
+      status: String(item.status ?? ""),
+      primaryKeywords,
+      clusterId: item.clusterId != null ? String(item.clusterId) : null,
+    };
+  },
+};
+
+// ── End compact helpers ──────────────────────────────────────────────────────
 
 export function registerSeoTools(server: McpServer) {
   // ── 1. Add seed keywords ──────────────────────────────────────────────────
@@ -53,7 +343,8 @@ export function registerSeoTools(server: McpServer) {
     "seo_generate_keywords",
     [
       "Step 2 of the SEO / GEO flow. Async — expands seed keywords into the full keyword universe.",
-      "Uses credits. Returns `{operationId, status}` — Poll `get_job` with the operationId until `state` is `succeeded`.",
+      `Typically takes ${etaFor("seo_keyword_pull")}.`,
+      "Uses credits. Returns `{operationId, status}` — Poll `get_job` with the operationId until `state` is `completed` (or `failed`/`partially_failed`/`cancelled` on error).",
       "The server picks the expansion size automatically; the only thing the agent can tweak is `autoScore` (defaults to true server-side — set false to skip volume/difficulty scoring).",
       "After completion, call seo_categorize.",
     ].join(" "),
@@ -79,17 +370,31 @@ export function registerSeoTools(server: McpServer) {
   // ── list generated keywords (read-only) ───────────────────────────────────
   server.tool(
     "seo_list_keywords",
-    "List generated keywords for the brand. Useful for auditing between steps.",
+    [
+      "List generated keywords for the brand. Useful for auditing between steps.",
+      "Returns short detail by default: {id, keyword, intent} per keyword.",
+      "Use detail=\"medium\" for the full compact summary (priority, searchVolume, difficulty, excludedFromClustering, userTags) or detail=\"full\" for raw keyword objects.",
+    ].join(" "),
     {
       limit: z.number().int().min(1).max(500).optional().default(100),
+      detail: detailParam("short"),
       brandId: brandOpt,
     },
-    async ({ limit, brandId }) => {
+    async ({ limit, detail, brandId }) => {
       const id = requireBrandId(brandId);
       const data = await api.get<unknown>(
         `/api/agent/v1/brands/${id}/seo/keywords?limit=${limit}`
       );
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      const raw = data != null && typeof data === "object" ? (data as Record<string, unknown>) : {};
+      const rawKeywords = Array.isArray(raw.keywords) ? raw.keywords : Array.isArray(data) ? data : [];
+      const rows = rawKeywords.filter((k): k is Record<string, unknown> => k != null && typeof k === "object");
+      const keywords = projectList(detail, rows, keywordProj);
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({ count: rows.length, detail, keywords }),
+        }],
+      };
     }
   );
 
@@ -202,7 +507,8 @@ export function registerSeoTools(server: McpServer) {
     "seo_generate_clusters",
     [
       "Step 4 of the SEO / GEO flow — async cluster-generation step. Groups related keywords into topic clusters that become candidate pillar topics.",
-      "Returns `{operationId, status}` — Poll `get_job` with the operationId until `state` is `succeeded`.",
+      `Typically takes ${etaFor("seo_cluster_generate")}.`,
+      "Returns `{operationId, status}` — Poll `get_job` with the operationId until `state` is `completed` (or `failed`/`partially_failed`/`cancelled` on error).",
       "After completion, call seo_list_clusters to pick a target, then seo_generate_roadmap.",
     ].join(" "),
     { brandId: brandOpt },
@@ -219,14 +525,31 @@ export function registerSeoTools(server: McpServer) {
   // ── 5. List clusters ──────────────────────────────────────────────────────
   server.tool(
     "seo_list_clusters",
-    "Step 5. List clusters so the agent can pick one (or several) to approve before brief and roadmap generation.",
-    { brandId: brandOpt },
-    async ({ brandId }) => {
+    [
+      "Step 5. List clusters so the agent can pick one (or several) to approve before brief and roadmap generation.",
+      "Returns short detail by default: {id, name, status} per cluster.",
+      "Use detail=\"medium\" for the full compact summary (pillarKeyword, briefGenerationStatus, briefCount, keywordCount, topKeywords, firstBriefId, description) or detail=\"full\" for raw cluster objects.",
+      "Full keyword detail (keywordsMeta, contentMix, briefAssignments) is intentionally omitted at short/medium to keep context small — use cluster IDs with approve/reject tools directly.",
+    ].join(" "),
+    {
+      detail: detailParam("short"),
+      brandId: brandOpt,
+    },
+    async ({ detail, brandId }) => {
       const id = requireBrandId(brandId);
       const data = await api.get<unknown>(
         `/api/agent/v1/brands/${id}/seo/clusters`
       );
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      const raw = data != null && typeof data === "object" ? (data as Record<string, unknown>) : {};
+      const rawClusters = Array.isArray(raw.clusters) ? raw.clusters : [];
+      const rows = rawClusters.filter((c): c is Record<string, unknown> => c != null && typeof c === "object");
+      const clusters = projectList(detail, rows, clusterProj);
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({ count: rows.length, detail, clusters }),
+        }],
+      };
     }
   );
 
@@ -236,7 +559,8 @@ export function registerSeoTools(server: McpServer) {
     [
       "Step 5b — bulk-approve N clusters in one call. Recommended path when an agent wants to move multiple clusters forward.",
       "Approving a cluster fires an async seo_brief_generate Operation per cluster; brief generation only runs on approved clusters.",
-      "Response includes `operations: [{ clusterId, operationId }]` and `operationIds: string[]` — Poll `get_job` with the operationId until `state` is `succeeded`.",
+      `Typically takes ${etaFor("seo_brief_generate")}.`,
+      "Response includes `operations: [{ clusterId, operationId }]` and `operationIds: string[]` — Poll `get_job` with the operationId until `state` is `completed` (or `failed`/`partially_failed`/`cancelled` on error).",
     ].join(" "),
     {
       clusterIds: z
@@ -261,7 +585,8 @@ export function registerSeoTools(server: McpServer) {
     [
       "Approve a single cluster. Gates brief generation — only approved clusters get briefs drafted.",
       "Position in flow: after seo_generate_clusters + seo_list_clusters, before seo_generate_roadmap / brief review.",
-      "Returns `{ cluster, operationId }` — the operationId is for the async brief-generation job kicked off by approval. Poll `get_job` with the operationId until `state` is `succeeded`.",
+      `Typically takes ${etaFor("seo_brief_generate")}.`,
+      "Returns `{ cluster, operationId }` — the operationId is for the async brief-generation job kicked off by approval. Poll `get_job` with the operationId until `state` is `completed` (or `failed`/`partially_failed`/`cancelled` on error).",
     ].join(" "),
     {
       clusterId: z.string().min(1).describe("Cluster ID from seo_list_clusters"),
@@ -389,21 +714,39 @@ export function registerSeoTools(server: McpServer) {
 
   server.tool(
     "seo_list_roadmap",
-    "List roadmap items (blog topics queued for writing).",
+    [
+      "List roadmap items (blog topics queued for writing).",
+      "Returns short detail by default: {id, title, status} per item.",
+      "Use detail=\"medium\" for the compact summary (priority, primaryKeywords, clusterId) or detail=\"full\" for raw objects.",
+      "Call seo_roadmap_get with detail=\"full\" for a single item's complete detail.",
+    ].join(" "),
     {
       status: z
         .enum(["suggested", "in_progress", "completed", "ignored"])
         .optional()
         .describe("Filter by status"),
+      detail: detailParam("short"),
       brandId: brandOpt,
     },
-    async ({ status, brandId }) => {
+    async ({ status, detail, brandId }) => {
       const id = requireBrandId(brandId);
       const qs = status ? `?status=${status}` : "";
       const data = await api.get<unknown>(
         `/api/agent/v1/brands/${id}/seo/roadmap${qs}`
       );
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      const raw = data != null && typeof data === "object" ? (data as Record<string, unknown>) : {};
+      const rawItems = Array.isArray(raw.items) ? raw.items
+        : Array.isArray(raw.roadmapItems) ? raw.roadmapItems
+        : Array.isArray(data) ? data
+        : [];
+      const rows = rawItems.filter((item): item is Record<string, unknown> => item != null && typeof item === "object");
+      const items = projectList(detail, rows, roadmapItemProj);
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({ count: rows.length, detail, items, dashboardUrl: brandDashboardUrl(id, "seo_briefs") }),
+        }],
+      };
     }
   );
 
@@ -411,28 +754,31 @@ export function registerSeoTools(server: McpServer) {
   server.tool(
     "seo_list_briefs",
     [
-      "Step between roadmap generation and article writing. Lists the SeoBriefs generated for the brand's roadmap items.",
-      "Each brief carries the H2/FAQ/keyword scaffolding that drives the final article — review them here, refine with seo_edit_brief, then approve with seo_approve_briefs before seo_write_article will run.",
+      "Returns ALL briefs across EVERY status by default — do NOT add a status filter unless the user explicitly asks. `statusBreakdown` gives the per-status counts (match these to the dashboard's brief count). NOTE: briefs whose generation is still in-flight may not appear here yet — check `list_operations` / `get_job` for in-progress generation.",
+      "Returns short detail by default: {id, type, status, title} per brief.",
+      "Use detail=\"medium\" for compact summary (clusterId, clusterName, briefSummary, sidePageUrl, generationError, blogArticleId, generatedAt, approvedAt) or detail=\"full\" for raw briefs including briefData outline.",
+      "To inspect a single brief's full outline, call seo_get_brief with detail=\"full\".",
       "Filters: status (CSV — e.g. 'pending_review,approved'), type (CSV — e.g. 'blog,comparison,landing'), clusterId, roadmapItemId, q (cluster-name fuzzy match), limit (default 50, max 200), cursor.",
-      "Response shape: { briefs: SeoBrief[], nextCursor, total, webUrl }. Each brief includes id, status, type, briefData (the structured outline), roadmapItem, cluster.",
+      "Response shape: { count, total, nextCursor, statusBreakdown, detail, briefs: [...] }.",
     ].join(" "),
     {
       status: z
         .string()
         .optional()
-        .describe("CSV of statuses: draft | pending_review | approved | rejected | writing | published"),
+        .describe("CSV of statuses: pending_review | approved | rejected | writing | drafted | published | failed | needs_human_review"),
       type: z
         .string()
         .optional()
-        .describe("CSV of brief types: blog | comparison | landing"),
+        .describe("CSV of brief types: blog | comparison | tool | landing"),
       clusterId: z.string().optional().describe("Filter to briefs under one cluster"),
       roadmapItemId: z.string().optional().describe("Filter to briefs for a single roadmap item"),
       q: z.string().optional().describe("Fuzzy match on cluster name"),
       limit: z.number().int().min(1).max(200).optional().describe("Page size (default 50)"),
       cursor: z.string().optional().describe("Pagination cursor from a previous page"),
+      detail: detailParam("short"),
       brandId: brandOpt,
     },
-    async ({ status, type, clusterId, roadmapItemId, q, limit, cursor, brandId }) => {
+    async ({ status, type, clusterId, roadmapItemId, q, limit, cursor, detail, brandId }) => {
       const id = requireBrandId(brandId);
       const qs = new URLSearchParams();
       if (status) qs.set("status", status);
@@ -446,7 +792,32 @@ export function registerSeoTools(server: McpServer) {
       const data = await api.get<unknown>(
         `/api/agent/v1/brands/${id}/seo/briefs${suffix}`
       );
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      const raw = data != null && typeof data === "object" ? (data as Record<string, unknown>) : {};
+      const rawBriefs = Array.isArray(raw.briefs) ? raw.briefs : [];
+      const rows = rawBriefs.filter((b): b is Record<string, unknown> => b != null && typeof b === "object");
+      const briefs = projectList(detail, rows, briefListProj);
+
+      // statusBreakdown over the returned rows
+      const statusBreakdown: Record<string, number> = {};
+      for (const b of rows) {
+        const s = typeof b.status === "string" ? b.status : "unknown";
+        statusBreakdown[s] = (statusBreakdown[s] ?? 0) + 1;
+      }
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            count: rows.length,
+            total: raw.total ?? null,
+            nextCursor: raw.nextCursor ?? null,
+            statusBreakdown,
+            detail,
+            briefs,
+            dashboardUrl: brandDashboardUrl(id, "seo_briefs"),
+          }),
+        }],
+      };
     }
   );
 
@@ -455,18 +826,22 @@ export function registerSeoTools(server: McpServer) {
     "seo_get_brief",
     [
       "Fetch a single SeoBrief by id, including its briefData outline, status, roadmap item, and cluster.",
+      "Returns full detail by default (complete brief incl briefData). Use detail=\"medium\" for {id, type, status, title, clusterName, briefSummary, sidePageUrl} or detail=\"short\" for {id, type, status}.",
       "Use to inspect a brief before refining it with seo_edit_brief or approving it with seo_approve_briefs.",
     ].join(" "),
     {
       briefId: z.string().describe("Brief ID from seo_list_briefs"),
+      detail: detailParam("full"),
       brandId: brandOpt,
     },
-    async ({ briefId, brandId }) => {
+    async ({ briefId, detail, brandId }) => {
       const id = requireBrandId(brandId);
       const data = await api.get<unknown>(
         `/api/agent/v1/brands/${id}/seo/briefs/${briefId}`
       );
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      const raw = data != null && typeof data === "object" ? (data as Record<string, unknown>) : {} as Record<string, unknown>;
+      const result = project(detail, raw, getBriefProj);
+      return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
     }
   );
 
@@ -528,9 +903,10 @@ export function registerSeoTools(server: McpServer) {
   server.tool(
     "seo_approve_briefs",
     [
-      "Approves one or more SeoBriefs so they become eligible for seo_write_article.",
-      "Required gate before article generation — seo_write_article will reject a brief whose status is still `draft` or `pending_review`.",
-      "Body: briefIds (array, max 200). Approval fires the L4 article/comparison generation for each brief and returns operationIds — poll get_job to follow each one.",
+      "Approves one or more SeoBriefs and AUTO-fires L4 article/comparison generation immediately — do NOT call seo_write_article after this.",
+      `Typically takes ${etaFor("seo_article_generate")}.`,
+      "After approval, poll each returned operationId with get_job until state is `completed` (or `failed`/`partially_failed`/`cancelled` on error). A brief in status `writing` means generation is already in progress — poll the existing operation, do not re-submit.",
+      "Body: briefIds (array, max 200).",
       "Response: { approved, failed: [{briefId, reason}], operationIds, operations: [{briefId, operationId, type}] }.",
     ].join(" "),
     {
@@ -557,12 +933,75 @@ export function registerSeoTools(server: McpServer) {
     }
   );
 
+  // ── 6e2. List SEO results ─────────────────────────────────────────────────
+  server.tool(
+    "seo_list_results",
+    "List the 'Generated Results' (blog articles + side pages + comparisons) the SEO/GEO pipeline has produced — mirrors the dashboard Results tab. Includes BOTH draft and published items. Use kind to filter. This is the canonical 'what content has been generated' list — prefer it over reconstructing results from briefs.",
+    {
+      kind: z.enum(["all", "blog", "side_page", "comparison"]).optional().default("all").describe("Kind of result to filter by"),
+      status: z.string().optional().describe("CSV of statuses to filter by"),
+      limit: z.number().int().min(1).max(200).optional().default(50).describe("Page size (default 50, max 200)"),
+      cursor: z.string().optional().describe("Pagination cursor from a previous page"),
+      detail: detailParam("short"),
+      brandId: brandOpt,
+    },
+    async ({ kind, status, limit, cursor, detail, brandId }) => {
+      const id = requireBrandId(brandId);
+      const qs = new URLSearchParams();
+      if (kind && kind !== "all") qs.set("kind", kind);
+      if (status) qs.set("status", status);
+      if (limit !== undefined) qs.set("limit", String(limit));
+      if (cursor) qs.set("cursor", cursor);
+      const suffix = qs.toString() ? `?${qs.toString()}` : "";
+      const data = await api.get<unknown>(
+        `/api/agent/v1/brands/${id}/seo/results${suffix}`
+      );
+      const raw = data != null && typeof data === "object" ? (data as Record<string, unknown>) : {};
+      const rawResults = Array.isArray(raw.results) ? raw.results : [];
+      const rows = rawResults.filter((r): r is Record<string, unknown> => r != null && typeof r === "object");
+
+      const resultsProj: Projector<Record<string, unknown>> = {
+        short: (r) => ({
+          id: String(r.id ?? ""),
+          kind: String(r.kind ?? ""),
+          title: r.title != null ? String(r.title) : null,
+          status: String(r.status ?? ""),
+        }),
+        medium: (r) => ({
+          id: String(r.id ?? ""),
+          kind: String(r.kind ?? ""),
+          title: r.title != null ? String(r.title) : null,
+          status: String(r.status ?? ""),
+          slug: r.slug != null ? String(r.slug) : null,
+          clusterName: r.clusterName != null ? String(r.clusterName) : null,
+          generatedAt: r.generatedAt != null ? String(r.generatedAt) : null,
+        }),
+      };
+
+      const results = projectList(detail, rows, resultsProj);
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            count: rows.length,
+            total: raw.total ?? null,
+            nextCursor: raw.nextCursor ?? null,
+            detail,
+            results,
+            dashboardUrl: brandDashboardUrl(id, "seo_results"),
+          }),
+        }],
+      };
+    }
+  );
+
   // ── 6f. Regenerate a brief ────────────────────────────────────────────────
   server.tool(
     "seo_regenerate_brief",
     [
       "Re-runs L3 brief generation for a single brief (scoped to its cluster).",
-      "Async — returns `{operationId, status}`. Poll `get_job` with the operationId until `state` is `succeeded`, then re-fetch with seo_get_brief to see the refreshed briefData.",
+      "Typically takes ~2–5 min.",
+      "Async — returns `{operationId, status}`. Poll `get_job` with the operationId until `state` is `completed` (or `failed`/`partially_failed`/`cancelled` on error), then re-fetch with seo_get_brief to see the refreshed briefData.",
       "Use when the existing brief's outline is unusable and a structured seo_edit_brief won't recover it.",
     ].join(" "),
     {
@@ -583,8 +1022,10 @@ export function registerSeoTools(server: McpServer) {
   server.tool(
     "seo_write_article",
     [
-      "Step 7. Draft a full blog article for a roadmap item. Uses credits.",
-      "Precondition: the brief for this roadmap item must be approved (status `approved`). If the brief is still `draft` or `pending_review`, this call will fail — review with `seo_list_briefs` / `seo_get_brief`, refine with `seo_edit_brief`, then approve with `seo_approve_briefs`.",
+      "ALTERNATIVE write path — only call this when a brief was NOT approved via seo_approve_briefs (which already auto-generates). If the brief status is `writing`, generation is already in progress — poll the existing operationId with get_job until state is `completed` rather than calling this again.",
+      "Step 7 (manual path). Draft a full blog article for a roadmap item. Uses credits.",
+      `Typically takes ${etaFor("seo_article_generate")}.`,
+      "Precondition: the brief for this roadmap item must be in status `approved`. If the brief is still `drafted` or `pending_review`, review with `seo_list_briefs` / `seo_get_brief`, refine with `seo_edit_brief`, then approve with `seo_approve_briefs` (which will auto-generate).",
       "Returns an articleId that can be reviewed, edited, or published.",
     ].join(" "),
     {
@@ -609,49 +1050,112 @@ export function registerSeoTools(server: McpServer) {
   // ── 8. Gap analysis ──────────────────────────────────────────────────────
   server.tool(
     "seo_gap",
-    "Identify content gaps — topics the brand's competitors cover but the brand doesn't. Returns a list of gap opportunities.",
-    { brandId: brandOpt },
-    async ({ brandId }) => {
+    [
+      "Identify content gaps — topics the brand's competitors cover but the brand doesn't.",
+      "Returns short detail by default: {id?, topic?, keyword?} labels only per gap.",
+      "Use detail=\"medium\" for compact gaps (+ searchVolume, difficulty, competitorDomains) or detail=\"full\" for the raw API response.",
+    ].join(" "),
+    {
+      detail: detailParam("short"),
+      brandId: brandOpt,
+    },
+    async ({ detail, brandId }) => {
       const id = requireBrandId(brandId);
       const data = await api.get<unknown>(
         `/api/agent/v1/brands/${id}/seo/gap-analysis`
       );
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      if (detail === "full") {
+        return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
+      }
+      const raw = data != null && typeof data === "object" ? (data as Record<string, unknown>) : {};
+      const rawGaps = Array.isArray(raw.gaps) ? raw.gaps
+        : Array.isArray(raw.opportunities) ? raw.opportunities
+        : Array.isArray(data) ? data
+        : null;
+      if (rawGaps === null) {
+        // Unknown shape — return as-is compactly
+        return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
+      }
+      const rows = rawGaps.filter((g): g is Record<string, unknown> => g != null && typeof g === "object");
+      const gaps = projectList(detail, rows, gapProj);
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({ count: rows.length, detail, gaps }),
+        }],
+      };
     }
   );
 
   // ── 9. Competitor diff ────────────────────────────────────────────────────
   server.tool(
     "seo_competitor",
-    "Compare the brand's keyword coverage against a competitor domain. Returns overlapping and unique keywords.",
+    [
+      "Compare the brand's keyword coverage against a competitor domain.",
+      "Returns short detail by default: bucket totals only {overlapping: {total}, brandUnique: {total}, competitorOnly: {total}}.",
+      "Use detail=\"medium\" for capped keyword lists (up to 50 per bucket) or detail=\"full\" for the raw API response.",
+    ].join(" "),
     {
       competitorDomain: z.string().describe("Competitor domain, e.g. 'competitor.com'"),
+      detail: detailParam("short"),
       brandId: brandOpt,
     },
-    async ({ competitorDomain, brandId }) => {
+    async ({ competitorDomain, detail, brandId }) => {
       const id = requireBrandId(brandId);
       const data = await api.post<unknown>(
         `/api/agent/v1/brands/${id}/seo/competitor-diff`,
         { competitorDomain }
       );
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      if (detail === "full") {
+        return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
+      }
+      const raw = data != null && typeof data === "object" ? (data as Record<string, unknown>) : {};
+      const overlapping = slimKeywordList(raw.overlapping ?? raw.overlap);
+      const brandUnique = slimKeywordList(raw.brandOnly ?? raw.unique ?? raw.brandUnique);
+      const competitorOnly = slimKeywordList(raw.competitorOnly ?? raw.competitorUnique);
+      if (detail === "short") {
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({
+              detail,
+              overlapping: { total: overlapping.total },
+              brandUnique: { total: brandUnique.total },
+              competitorOnly: { total: competitorOnly.total },
+            }),
+          }],
+        };
+      }
+      // medium
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({ detail, overlapping, brandUnique, competitorOnly }),
+        }],
+      };
     }
   );
 
   // ── Roadmap item — view ───────────────────────────────────────────────────
   server.tool(
     "seo_roadmap_get",
-    "View a single roadmap item by ID. Returns the title, status, priority, and keyword.",
+    [
+      "View a single roadmap item by ID.",
+      "Returns full detail by default (raw object). Use detail=\"medium\" for {id, title, status, primaryKeywords, clusterId} or detail=\"short\" for {id, title, status}.",
+    ].join(" "),
     {
       itemId: z.string().describe("Roadmap item ID from seo_list_roadmap"),
+      detail: detailParam("full"),
       brandId: brandOpt,
     },
-    async ({ itemId, brandId }) => {
+    async ({ itemId, detail, brandId }) => {
       const id = requireBrandId(brandId);
       const data = await api.get<unknown>(
         `/api/agent/v1/brands/${id}/seo/roadmap/${itemId}`
       );
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      const raw = data != null && typeof data === "object" ? (data as Record<string, unknown>) : {} as Record<string, unknown>;
+      const result = project(detail, raw, getRoadmapItemProj);
+      return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
     }
   );
 
@@ -711,7 +1215,8 @@ export function registerSeoTools(server: McpServer) {
       const data = await api.get<unknown>(
         `/api/agent/v1/brands/${id}/seo/roadmap/stats`
       );
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      const dashboardUrl = brandDashboardUrl(id, "seo_briefs");
+      return { content: [{ type: "text" as const, text: JSON.stringify({ ...((data != null && typeof data === "object") ? data as Record<string, unknown> : { data }), dashboardUrl }, null, 2) }] };
     }
   );
 
@@ -796,7 +1301,8 @@ export function registerSeoTools(server: McpServer) {
       "Two body modes:",
       "  • freeform: pass `key` + `prompt` (+ optional `keywords`, `selectedSections`, `voiceProfileId`, `sidePageType`).",
       "  • brief: pass `key` + `brief` (structured outline) + optional `briefId` and `roadmapItemId`.",
-      "Async — returns `{ success, operationId, operationRowId, pollUrl, sidePageId }`. Poll `get_job` with the operationId until `state` is `succeeded`; comparison-type briefs run synchronously and return `sidePageId` directly.",
+      `Typically takes ${etaFor("landing_page_side_pages_generate")}.`,
+      "Async — returns `{ success, operationId, operationRowId, pollUrl, sidePageId }`. Poll `get_job` with the operationId until `state` is `completed` (or `failed`/`partially_failed`/`cancelled` on error); comparison-type briefs run synchronously and return `sidePageId` directly.",
       "`slug` is the PARENT landing page slug under which the side page is created.",
     ].join(" "),
     {
@@ -849,6 +1355,153 @@ export function registerSeoTools(server: McpServer) {
         body
       );
       return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    }
+  );
+
+  // ── Create a manual comparison page (no cluster / brief flow required) ─────
+  server.tool(
+    "create_comparison_page",
+    [
+      "Create a comparison / 'X vs Y' / 'best <category>' page for the brand WITHOUT going through the full SEO cluster → brief flow. One call kicks off generation, then this tool polls until the page is built and returns its slug(s) + link.",
+      "`mode` controls the engine: 'research' crawls the named competitors + live SERP results before writing — slower (can take several minutes) but produces the strongest, best-grounded page; 'simple' skips all crawling and lets the LLM author from what you provide — fast, best when you already have the facts or just want a quick draft.",
+      "When your inputs are sparse (few/no options, no domains, no seedData), prefer 'research' — it will discover and ground the comparison for you and yield a far stronger page than 'simple'.",
+      "`seedData` (simple mode): paste your own raw facts/notes/competitor details here and the LLM writes from them instead of crawling — this is how you feed your own data and avoid a crawl.",
+      "Async — fires the create, then polls the operation up to ~5 min. On success returns { briefId, sidePageId, sidePageSlug, landingPageSlug, webUrl, warnings }. If it is still running after the wait, returns { status: 'still_generating', operationId } — poll get_job with that operationId until state is 'completed'; do NOT fabricate the page yourself.",
+      "Any `warnings` are surfaced verbatim — relay them to the user (e.g. sparse-input notes such as 'research mode would produce a stronger page').",
+    ].join(" "),
+    {
+      mode: z
+        .enum(["research", "simple"])
+        .describe(
+          "Generation engine. 'research' = crawl the competitors + live SERP, then write (slower, strongest, best for sparse inputs). 'simple' = no crawl, LLM authors from what you pass (fast; pair with seedData to feed your own facts)."
+        ),
+      primaryKeyword: z
+        .string()
+        .min(1)
+        .describe(
+          "The topic/keyword the page targets, e.g. \"Acme vs alternatives\", \"best CRM for startups\", \"Notion vs Obsidian\"."
+        ),
+      options: z
+        .array(
+          z.object({
+            name: z.string().min(1).describe("Option / product / brand name"),
+            domain: z.string().optional().describe("Option's website domain (helps research mode crawl it)"),
+            isBrandOwn: z.boolean().optional().describe("True if this option is the user's own brand"),
+          })
+        )
+        .optional()
+        .describe("The things being compared. Omit to let research mode discover them."),
+      pinnedCompetitor: z
+        .object({
+          name: z.string().min(1).describe("Competitor name"),
+          domain: z.string().optional().describe("Competitor domain"),
+        })
+        .optional()
+        .describe("A specific competitor to anchor a head-to-head comparison around."),
+      preset: z
+        .enum(["head_to_head", "alternatives_listicle", "category_roundup"])
+        .optional()
+        .describe("Page shape: head_to_head (X vs Y), alternatives_listicle (X vs alternatives), or category_roundup (best <category>). Inferred when omitted."),
+      allowGenericRoundup: z
+        .boolean()
+        .optional()
+        .describe("Allow a generic category roundup when no concrete options are supplied."),
+      seedData: z
+        .string()
+        .optional()
+        .describe("Simple-mode only: your own raw data/notes/facts about the options. When set, the LLM writes from this instead of crawling — feed it here to avoid a research crawl."),
+      briefData: z
+        .unknown()
+        .optional()
+        .describe("Advanced: a full pre-built structured comparison brief. When supplied, generation uses it directly and skips the LLM authoring step."),
+      parentLandingPageSlug: z
+        .string()
+        .optional()
+        .describe("Slug of the parent landing page to nest this comparison under. Defaults to the brand's primary landing page."),
+      proposedSlug: z
+        .string()
+        .optional()
+        .describe("Desired URL slug fragment for the new page (auto-generated from primaryKeyword if omitted)."),
+      voiceProfileId: z.string().optional().describe("Voice profile ID to write the page in."),
+      brandId: brandOpt,
+    },
+    async ({ mode, primaryKeyword, options, pinnedCompetitor, preset, allowGenericRoundup, seedData, briefData, parentLandingPageSlug, proposedSlug, voiceProfileId, brandId }) => {
+      const id = requireBrandId(brandId);
+      const body: Record<string, unknown> = { mode, primaryKeyword };
+      if (options !== undefined) body.options = options;
+      if (pinnedCompetitor !== undefined) body.pinnedCompetitor = pinnedCompetitor;
+      if (preset !== undefined) body.preset = preset;
+      if (allowGenericRoundup !== undefined) body.allowGenericRoundup = allowGenericRoundup;
+      if (seedData !== undefined) body.seedData = seedData;
+      if (briefData !== undefined) body.briefData = briefData;
+      if (parentLandingPageSlug !== undefined) body.parentLandingPageSlug = parentLandingPageSlug;
+      if (proposedSlug !== undefined) body.proposedSlug = proposedSlug;
+      if (voiceProfileId !== undefined) body.voiceProfileId = voiceProfileId;
+
+      const created = await api.post<{ operationId: string; status?: string; webUrl?: string }>(
+        `/api/agent/v1/brands/${id}/comparison-pages`,
+        body
+      );
+      const operationId = created.operationId;
+      const webUrl = created.webUrl;
+
+      // Comparison pages (especially research mode) can take minutes, so we
+      // wait up to generatePollTimeoutMs (mirrors generate_post) before handing
+      // the agent a "still running, keep polling" instruction instead of letting
+      // it fabricate the page. Terminal-state detection reuses derivedJobFields
+      // (the same helper get_job uses against the operations endpoint).
+      const maxAttempts = Math.ceil(config.generatePollTimeoutMs / config.pollIntervalMs);
+      let op: Record<string, unknown> = {};
+      let timedOut = false;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        await new Promise<void>((r) => setTimeout(r, config.pollIntervalMs));
+        op = await api.get<Record<string, unknown>>(
+          `/api/agent/v1/brands/${id}/operations/${operationId}`
+        );
+        const { done, summary } = derivedJobFields(op);
+        if (done) {
+          if (String(op.state) !== "completed") {
+            throw new Error(`Comparison page generation ${summary}`);
+          }
+          break;
+        }
+        if (attempt === maxAttempts - 1) timedOut = true;
+      }
+
+      if (timedOut) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                status: "still_generating",
+                operationId,
+                ...(webUrl ? { webUrl } : {}),
+                instruction:
+                  "Generation is STILL RUNNING — it has NOT failed. Do NOT write or invent the comparison page yourself. Wait ~15s, then call get_job with this operationId (wait:true). Repeat until state is 'completed', then read the page details from the operation's result.",
+              }),
+            },
+          ],
+        };
+      }
+
+      const result = (op.result && typeof op.result === "object" ? op.result : {}) as Record<string, unknown>;
+      const warnings = Array.isArray(result.warnings) ? (result.warnings as string[]) : [];
+      const out: Record<string, unknown> = {
+        status: "completed",
+        briefId: result.briefId,
+        sidePageId: result.sidePageId,
+        sidePageSlug: result.sidePageSlug,
+        landingPageSlug: result.landingPageSlug,
+        ...(webUrl ? { webUrl } : {}),
+        warnings,
+      };
+      if (warnings.length > 0) {
+        out.note = `Generation completed with ${warnings.length} warning(s) — relay these to the user: ${warnings.join(" | ")}`;
+      }
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(out) }],
+      };
     }
   );
 }

@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { api } from "../client.js";
 import { requireBrandId } from "../state.js";
+import { detailParam, projectList, type Projector } from "../detail.js";
 
 function slimAccount(a: any) {
   return { id: a.id, platform: a.platform, name: a.name ?? a.username, connected: a.connected ?? a.status };
@@ -10,15 +11,25 @@ function slimAccount(a: any) {
 export function registerSocialTools(server: McpServer) {
   server.tool(
     "check_social_accounts",
-    "List all connected and disconnected social accounts for the active brand. Run before posting to confirm platform availability.",
-    { brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)") },
-    async ({ brandId }) => {
+    "List all connected and disconnected social accounts for the active brand. Lists default short; pass detail=medium/full for more fields. Run before posting to confirm platform availability.",
+    {
+      brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
+      detail: detailParam("short"),
+    },
+    async ({ brandId, detail }) => {
       const id = requireBrandId(brandId);
       const data = await api.get<unknown[]>(`/api/agent/v1/brands/${id}/social-accounts`);
-      const slim = Array.isArray(data) ? data.map(slimAccount) : data;
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(slim, null, 2) }],
+      const raw = Array.isArray(data) ? data : [];
+      const proj: Projector<unknown> = {
+        short: (a) => ({
+          id: (a as any).id,
+          platform: (a as any).platform,
+          connected: (a as any).connected ?? (a as any).status,
+        }),
+        medium: (a) => slimAccount(a as any),
       };
+      const text = JSON.stringify({ count: raw.length, detail, accounts: projectList(detail, raw, proj) });
+      return { content: [{ type: "text" as const, text }] };
     }
   );
 

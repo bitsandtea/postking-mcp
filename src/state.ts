@@ -1,22 +1,35 @@
 // In-process state for the MCP server session.
-// The agent calls set_active_brand once; subsequent tools pick it up automatically.
+// State is keyed by session ID so concurrent HTTP sessions don't share globals.
+// On stdio (one session), the ALS falls back to "stdio" as the session key.
 
-let activeBrandId: string | null = null;
+import { getSessionId } from "./config.js";
+
+const activeBrandIds = new Map<string, string>();
+
+/** Resolve the session ID: use the ALS value when available, fall back to "stdio". */
+function resolveSessionId(): string {
+  return getSessionId() ?? "stdio";
+}
 
 export function getActiveBrandId(): string | null {
-  return activeBrandId;
+  return activeBrandIds.get(resolveSessionId()) ?? null;
 }
 
 export function setActiveBrandId(id: string): void {
-  activeBrandId = id;
+  activeBrandIds.set(resolveSessionId(), id);
 }
 
 export function requireBrandId(explicit?: string): string {
-  const id = explicit ?? activeBrandId;
+  const id = explicit ?? activeBrandIds.get(resolveSessionId());
   if (!id) {
     throw new Error(
       "No brand selected. Call list_brands to see your brands, then set_active_brand to choose one."
     );
   }
   return id;
+}
+
+/** Remove all per-session state. Call on session close to avoid memory leaks. */
+export function deleteSessionState(sessionId: string): void {
+  activeBrandIds.delete(sessionId);
 }

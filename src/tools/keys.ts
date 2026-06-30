@@ -2,27 +2,34 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { api } from "../client.js";
 import { requireBrandId } from "../state.js";
+import { detailParam, projectList, type Projector } from "../detail.js";
 
 export function registerKeyTools(server: McpServer) {
   // ── List API keys ─────────────────────────────────────────────────────────
   server.tool(
     "list_api_keys",
-    "List all API keys on the account. Shows prefix, scope, and revocation status. Does NOT show raw tokens.",
-    {},
-    async () => {
+    "List all API keys on the account. Shows prefix, scope, and revocation status. Does NOT show raw tokens. Lists default short; pass detail=medium/full for more fields.",
+    { detail: detailParam("short") },
+    async ({ detail }) => {
       const data = await api.get<any>("/api/agent/v1/keys");
-      const keys = (data?.keys ?? []).map((k: any) => ({
-        id: k.id,
-        name: k.clientName ?? k.name ?? "(unnamed)",
-        prefix: k.prefix ? `${k.prefix}...` : null,
-        scope: k.scope ?? "write",
-        status: k.revokedAt ? "revoked" : "active",
-        createdAt: k.createdAt,
-        lastUsedAt: k.lastUsedAt ?? null,
-      }));
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(keys, null, 2) }],
+      const raw = data?.keys ?? [];
+      const proj: Projector<unknown> = {
+        short: (k) => ({
+          id: (k as any).id,
+          name: (k as any).clientName ?? (k as any).name ?? "(unnamed)",
+        }),
+        medium: (k) => ({
+          id: (k as any).id,
+          name: (k as any).clientName ?? (k as any).name ?? "(unnamed)",
+          prefix: (k as any).prefix ? `${(k as any).prefix}...` : null,
+          scope: (k as any).scope ?? "write",
+          status: (k as any).revokedAt ? "revoked" : "active",
+          createdAt: (k as any).createdAt,
+          lastUsedAt: (k as any).lastUsedAt ?? null,
+        }),
       };
+      const text = JSON.stringify({ count: raw.length, detail, keys: projectList(detail, raw, proj) });
+      return { content: [{ type: "text" as const, text }] };
     }
   );
 

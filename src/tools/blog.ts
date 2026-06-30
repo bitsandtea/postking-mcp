@@ -2,13 +2,22 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { api } from "../client.js";
 import { requireBrandId } from "../state.js";
+import { detailParam, project, projectList, truncate, type Projector } from "../detail.js";
+
+// LIST tools must never carry article bodies — full bodies overflow small MCP clients.
+const HEAVY_ARTICLE_KEYS = ["postText", "postContent", "postContentHtml", "postContentHTML", "postContentMarkdown", "content", "body", "postBody", "bodyHtml"];
+function stripHeavy(a: Record<string, unknown>): Record<string, unknown> {
+  const c = { ...a };
+  for (const k of HEAVY_ARTICLE_KEYS) delete c[k];
+  return c;
+}
 
 function slimArticle(a: any) {
   return {
     id: a.id,
     title: a.postTitle ?? a.title,
     status: a.status,
-    slug: a.postSlug ?? a.slug,
+    slug: a.postUrl ?? a.postSlug ?? a.slug,
     excerpt: typeof a.postExcerpt === "string" ? a.postExcerpt.slice(0, 150) : null,
     category: a.category?.name ?? null,
     author: a.author ? `${a.author.authorFirstName} ${a.author.authorLastName}`.trim() : null,
@@ -21,26 +30,62 @@ export function registerBlogTools(server: McpServer) {
   // ── List publications & articles ──────────────────────────────────────────
   server.tool(
     "list_blogs",
-    "List all blog publications and their articles for the active brand. Publications are the hosting configs; articles are individual posts.",
+    "LIST tool. Even detail='full' OMITS article bodies (kept bounded) — to read an article's content, call get_blog_article. The number of rows is controlled by `limit` (default 50, max 200), NOT by `detail`; for a 'full list' of titles, raise `limit` and keep detail='short'.",
     {
       status: z.enum(["draft", "published"]).optional().describe("Filter articles by status"),
+      detail: detailParam("short"),
+      limit: z.number().int().min(1).max(200).default(50),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ status, brandId }) => {
+    async ({ status, detail, limit, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.get<any>(`/api/agent/v1/brands/${id}/blogs`);
-      const publications = (data?.publications ?? []).map((p: any) => ({
-        id: p.id,
-        title: p.title,
-        description: p.description,
-        domain: p.domain ?? null,
-        layout: p.layout,
-        articleCount: p._count?.blogArticles ?? null,
-      }));
-      let articles = (data?.blogs ?? []).map(slimArticle);
-      if (status) articles = articles.filter((a: any) => a.status === status);
+      const data = await api.get<Record<string, unknown>>(`/api/agent/v1/brands/${id}/blogs`);
+      const rawPubs = (Array.isArray((data as any)?.publications) ? (data as any).publications : []) as Record<string, unknown>[];
+      const allArticles = (Array.isArray((data as any)?.blogs) ? (data as any).blogs : []) as Record<string, unknown>[];
+
+      // Compute statusBreakdown over the FULL set before any status filter so the agent always sees the true split
+      const statusBreakdown: Record<string, number> = {};
+      for (const a of allArticles) {
+        const s = typeof a.status === "string" ? a.status : "unknown";
+        statusBreakdown[s] = (statusBreakdown[s] ?? 0) + 1;
+      }
+
+      // Apply status filter for returned rows
+      let filteredArticles = status ? allArticles.filter((a) => a.status === status) : allArticles;
+      const total = filteredArticles.length;
+      filteredArticles = filteredArticles.slice(0, limit);
+      const count = filteredArticles.length;
+      const truncated = total > count;
+
+      const pubProj: Projector<Record<string, unknown>> = {
+        short: (p) => ({ id: p.id, name: p.title }),
+        medium: (p) => ({
+          id: p.id,
+          title: p.title,
+          description: p.description,
+          domain: (p.domain as string | null) ?? null,
+          layout: p.layout,
+          articleCount: (p._count as Record<string, unknown>)?.blogArticles ?? null,
+        }),
+      };
+      const artProj: Projector<Record<string, unknown>> = {
+        short: (a) => ({ id: a.id, title: a.postTitle ?? a.title, slug: a.postSlug ?? a.slug, status: a.status }),
+        medium: (a) => slimArticle(a),
+      };
+      const result: Record<string, unknown> = {
+        count,
+        total,
+        truncated,
+        statusBreakdown,
+        detail,
+        publications: projectList(detail, rawPubs, pubProj),
+        articles: detail === "full" ? filteredArticles.map(stripHeavy) : projectList(detail, filteredArticles, artProj),
+      };
+      if (truncated) {
+        result.note = `Showing ${count} of ${total} articles. Pass a higher limit or status filter to see the rest.`;
+      }
       return {
-        content: [{ type: "text" as const, text: JSON.stringify({ publications, articles }, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify(result) }],
       };
     }
   );
@@ -64,13 +109,49 @@ export function registerBlogTools(server: McpServer) {
     }
   );
 
+  // ── Update publication ────────────────────────────────────────────────────
+  server.tool(
+    "update_publication",
+    "Update an existing blog publication's metadata — title, description, domain/routing config, or layout. Only the fields you pass are changed (partial update). Distinct from create_publication (which creates a new one). publicationId comes from list_publications or list_blogs.",
+    {
+      publicationId: z.string().describe("Blog publication ID (from list_publications or list_blogs)"),
+      title: z.string().optional(),
+      description: z.string().optional().describe("Publication description / tagline"),
+      domainId: z.string().optional().describe("Custom domain ID to route this publication under"),
+      routingType: z.string().optional(),
+      pathPrefix: z.string().optional(),
+      layout: z.string().optional(),
+      brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
+    },
+    async ({ publicationId, title, description, domainId, routingType, pathPrefix, layout, brandId }) => {
+      const id = requireBrandId(brandId);
+      const body: Record<string, unknown> = {};
+      if (title !== undefined) body.title = title;
+      if (description !== undefined) body.description = description;
+      if (domainId !== undefined) body.domainId = domainId;
+      if (routingType !== undefined) body.routingType = routingType;
+      if (pathPrefix !== undefined) body.pathPrefix = pathPrefix;
+      if (layout !== undefined) body.layout = layout;
+      if (Object.keys(body).length === 0) {
+        return {
+          content: [{ type: "text" as const, text: "No fields to update. Pass at least one of: title, description, domainId, routingType, pathPrefix, layout." }],
+        };
+      }
+      const data = await api.patch<any>(`/api/agent/v1/brands/${id}/publications/${publicationId}`, body);
+      const pub = data?.publication ?? data;
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify({ id: pub?.id ?? publicationId, title: pub?.title, description: pub?.description, updated: Object.keys(body) }, null, 2) }],
+      };
+    }
+  );
+
   // ── Generate blog post (AI) ───────────────────────────────────────────────
   server.tool(
     "generate_blog_post",
     [
       "Generate a full AI blog article. Requires a publicationId (from list_blogs or create_publication).",
       "Pass a voiceProfileId to write in a specific person's style (IDs from list_voices).",
-      "Returns an articleId. Use update_blog_article to edit, or publish_blog_article to push to external platforms.",
+      "Returns an articleId + operationId; generation is async — poll get_blog_status until completed, then get_blog_article. Use update_blog_article to edit, or publish_blog_article to push to external platforms.",
       "To make it live on your PostKing blog, call update_blog_article with status: 'published'.",
     ].join(" "),
     {
@@ -93,17 +174,17 @@ export function registerBlogTools(server: McpServer) {
         generateAiImage,
         assignAsset: false,
       });
-      const article = data?.article ?? data;
+      const article = data?.blog ?? data?.article ?? null;
       return {
         content: [
           {
             type: "text" as const,
             text: JSON.stringify({
-              articleId: article?.id,
-              title: article?.postTitle,
-              status: article?.status,
-              slug: article?.postSlug,
-              wordCount: data?.wordCount,
+              articleId: data?.blogId ?? article?.id ?? data?.id ?? null,
+              operationId: data?.operationId ?? null,
+              pollUrl: data?.pollUrl ?? null,
+              status: article?.status ?? "running",
+              note: "Generation is async. Poll get_blog_status with the returned articleId until status is completed, then get_blog_article to read the content.",
             }, null, 2),
           },
         ],
@@ -114,34 +195,71 @@ export function registerBlogTools(server: McpServer) {
   // ── Get blog article ──────────────────────────────────────────────────────
   server.tool(
     "get_blog_article",
-    "Fetch the full content of a blog article by ID.",
+    "Fetch a blog article by ID. detail='short' returns id/title/slug/status; detail='medium' adds excerpt+wordCount+previewUrl+editUrl; detail='full' (default) returns the COMPLETE content plus previewUrl (GUI preview link) and editUrl (dashboard editor link). Pass maxContentChars only if you need to bound the body size; omit it to get the whole article.",
     {
       articleId: z.string().describe("Blog article ID"),
+      detail: detailParam("full"),
+      maxContentChars: z
+        .number()
+        .int()
+        .min(100)
+        .optional()
+        .describe("Optional cap on the returned content body length (full detail only). Omit to return the ENTIRE article body. Use only to bound payload size for small clients."),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ articleId, brandId }) => {
+    async ({ articleId, detail, maxContentChars, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.get<any>(`/api/agent/v1/brands/${id}/blogs/${articleId}`);
-      const a = data?.article ?? data;
+      const data = await api.get<Record<string, unknown>>(`/api/agent/v1/brands/${id}/blogs/${articleId}`);
+      // The agent endpoint nests the article under `blog`; the GUI preview URL is
+      // at blog.previewUrl and the dashboard edit URL is the envelope's webUrl.
+      const a = ((data as any)?.blog ?? (data as any)?.article ?? data) as Record<string, unknown>;
+      const editUrl = typeof (data as any)?.webUrl === "string" ? (data as any).webUrl : null;
+      const previewUrl = typeof a.previewUrl === "string" ? a.previewUrl : null;
+
+      const buildFullArticle = (a: Record<string, unknown>) => {
+        const fullText = typeof a.postText === "string" ? a.postText : null;
+        const contentTruncated =
+          fullText !== null && typeof maxContentChars === "number" && fullText.length > maxContentChars;
+        const content = contentTruncated ? fullText!.slice(0, maxContentChars) + "…" : fullText;
+        return {
+          id: a.id,
+          title: a.postTitle,
+          status: a.status,
+          slug: a.postUrl ?? a.postSlug ?? a.slug,
+          excerpt: a.postExcerpt,
+          content,
+          contentLength: fullText !== null ? fullText.length : null,
+          ...(contentTruncated
+            ? { contentTruncated: true, note: `Content truncated to ${maxContentChars} of ${fullText!.length} chars. Re-call without maxContentChars (or with a higher value) to get the full body.` }
+            : {}),
+          metaTitle: a.postMetaTitle,
+          metaDescription: a.postMetaDescription,
+          category: (a.category as Record<string, unknown>)?.name ?? null,
+          author: a.author
+            ? `${(a.author as Record<string, unknown>).authorFirstName} ${(a.author as Record<string, unknown>).authorLastName}`.trim()
+            : null,
+          publicationId: a.blogId,
+          previewUrl,
+          editUrl,
+        };
+      };
+
+      const proj: Projector<Record<string, unknown>> = {
+        short: (a) => ({ id: a.id, title: a.postTitle, slug: a.postUrl ?? a.postSlug ?? a.slug, status: a.status }),
+        medium: (a) => ({
+          id: a.id,
+          title: a.postTitle,
+          slug: a.postUrl ?? a.postSlug ?? a.slug,
+          status: a.status,
+          excerpt: truncate(a.postText, 300),
+          wordCount: typeof a.postText === "string" ? a.postText.split(/\s+/).length : null,
+          previewUrl,
+          editUrl,
+        }),
+      };
+      const result = detail === "full" ? buildFullArticle(a) : project(detail, a, proj);
       return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify({
-              id: a.id,
-              title: a.postTitle,
-              status: a.status,
-              slug: a.postSlug,
-              excerpt: a.postExcerpt,
-              content: typeof a.postText === "string" ? a.postText.slice(0, 3000) : a.postText,
-              metaTitle: a.postMetaTitle,
-              metaDescription: a.postMetaDescription,
-              category: a.category?.name ?? null,
-              author: a.author ? `${a.author.authorFirstName} ${a.author.authorLastName}`.trim() : null,
-              publicationId: a.blogId,
-            }, null, 2),
-          },
-        ],
+        content: [{ type: "text" as const, text: JSON.stringify(result) }],
       };
     }
   );
@@ -175,7 +293,7 @@ export function registerBlogTools(server: McpServer) {
         categoryId,
       });
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(slimArticle(data?.article ?? data), null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify(slimArticle(data?.blog ?? data?.article ?? data), null, 2) }],
       };
     }
   );
@@ -200,20 +318,28 @@ export function registerBlogTools(server: McpServer) {
   // ── List authors ──────────────────────────────────────────────────────────
   server.tool(
     "list_blog_authors",
-    "List all blog authors for the active brand. Author IDs can be passed to generate_blog_post or update_blog_article.",
-    { brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)") },
-    async ({ brandId }) => {
+    "List all blog authors for the active brand. Returns id+name by default (short); use detail='medium' for email/social links. Author IDs can be passed to generate_blog_post or update_blog_article.",
+    {
+      detail: detailParam("short"),
+      brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
+    },
+    async ({ detail, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.get<any>(`/api/agent/v1/brands/${id}/authors`);
-      const authors = (data?.authors ?? []).map((a: any) => ({
-        id: a.id,
-        name: `${a.authorFirstName} ${a.authorLastName}`.trim(),
-        email: a.authorEmail,
-        linkedin: a.authorLinkedin,
-        twitter: a.authorTwitter,
-      }));
+      const data = await api.get<Record<string, unknown>>(`/api/agent/v1/brands/${id}/authors`);
+      const rawAuthors = (Array.isArray((data as any)?.authors) ? (data as any).authors : []) as Record<string, unknown>[];
+      const proj: Projector<Record<string, unknown>> = {
+        short: (a) => ({ id: a.id, name: `${a.authorFirstName} ${a.authorLastName}`.trim() }),
+        medium: (a) => ({
+          id: a.id,
+          name: `${a.authorFirstName} ${a.authorLastName}`.trim(),
+          email: a.authorEmail,
+          linkedin: a.authorLinkedin,
+          twitter: a.authorTwitter,
+        }),
+      };
+      const result = { count: rawAuthors.length, detail, authors: projectList(detail, rawAuthors, proj) };
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(authors, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify(result) }],
       };
     }
   );
@@ -221,23 +347,29 @@ export function registerBlogTools(server: McpServer) {
   // ── List categories ───────────────────────────────────────────────────────
   server.tool(
     "list_blog_categories",
-    "List all categories for a blog publication.",
+    "List all categories for a blog publication. Returns id+name+slug by default (short); use detail='medium' for description+articleCount.",
     {
       publicationId: z.string().describe("Blog publication ID (from list_blogs)"),
+      detail: detailParam("short"),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ publicationId, brandId }) => {
+    async ({ publicationId, detail, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.get<any>(`/api/agent/v1/brands/${id}/blogs/${publicationId}/categories`);
-      const categories = (data?.categories ?? (Array.isArray(data) ? data : [])).map((c: any) => ({
-        id: c.id,
-        name: c.name,
-        slug: c.slug,
-        description: c.description,
-        articleCount: c._count?.blogArticles ?? c.articleCount ?? null,
-      }));
+      const data = await api.get<Record<string, unknown>>(`/api/agent/v1/brands/${id}/blogs/${publicationId}/categories`);
+      const rawCategories = ((data as any)?.categories ?? (Array.isArray(data) ? data : [])) as Record<string, unknown>[];
+      const proj: Projector<Record<string, unknown>> = {
+        short: (c) => ({ id: c.id, name: c.name, slug: c.slug }),
+        medium: (c) => ({
+          id: c.id,
+          name: c.name,
+          slug: c.slug,
+          description: c.description,
+          articleCount: (c._count as Record<string, unknown>)?.blogArticles ?? c.articleCount ?? null,
+        }),
+      };
+      const result = { count: rawCategories.length, detail, categories: projectList(detail, rawCategories, proj) };
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(categories, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify(result) }],
       };
     }
   );
@@ -309,18 +441,25 @@ export function registerBlogTools(server: McpServer) {
   // ── Import articles from external blog ────────────────────────────────────
   server.tool(
     "import_blog_articles",
-    "Import articles from an external blog, RSS feed, or Blogger URL into a PostKing publication as drafts.",
+    "Import articles from an external blog, RSS feed, or Blogger URL into a PostKing publication as drafts. Returns id+title+slug by default (short); use detail='medium' for wordCount. Inspect individual articles with get_blog_article.",
     {
       publicationId: z.string().describe("Blog publication ID to import into"),
       sourceUrl: z.string().url().describe("URL of the blog or RSS feed"),
       limit: z.number().min(1).max(200).optional().default(20),
+      detail: detailParam("short"),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ publicationId, sourceUrl, limit, brandId }) => {
+    async ({ publicationId, sourceUrl, limit, detail, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.post<any>(`/api/agent/v1/brands/${id}/publications/${publicationId}/import`, { sourceUrl, limit });
+      const data = await api.post<Record<string, unknown>>(`/api/agent/v1/brands/${id}/publications/${publicationId}/import`, { sourceUrl, limit });
+      const arr = (Array.isArray((data as any)?.articles) ? (data as any).articles : []) as Record<string, unknown>[];
+      const artProj: Projector<Record<string, unknown>> = {
+        short: (a) => ({ id: a.id, title: a.postTitle ?? a.title, slug: a.postSlug ?? a.slug }),
+        medium: (a) => ({ id: a.id, title: a.postTitle ?? a.title, slug: a.postSlug ?? a.slug, wordCount: (a.wordCount as number | null) ?? null }),
+      };
+      const result = { imported: (data as any)?.imported, failed: (data as any)?.failed, detail, articles: projectList(detail, arr, artProj) };
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify(result) }],
       };
     }
   );
@@ -368,23 +507,29 @@ export function registerBlogTools(server: McpServer) {
   // ── List publications ─────────────────────────────────────────────────────
   server.tool(
     "list_publications",
-    "List all blog publications (the containers that blog articles live under). Distinct from list_publishing_connections which lists external platforms like WordPress.",
+    "List all blog publications (the containers that blog articles live under). detail='short' returns id+name; detail='full' returns raw rows. Distinct from list_publishing_connections which lists external platforms like WordPress.",
     {
+      detail: detailParam("short"),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ brandId }) => {
+    async ({ detail, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.get<any>(`/api/agent/v1/brands/${id}/blogs`);
-      const publications = (data?.publications ?? []).map((p: any) => ({
-        id: p.id,
-        title: p.title,
-        description: p.description,
-        domain: p.domain ?? null,
-        layout: p.layout,
-        articleCount: p._count?.blogArticles ?? null,
-      }));
+      const data = await api.get<Record<string, unknown>>(`/api/agent/v1/brands/${id}/blogs`);
+      const rawPubs = (Array.isArray((data as any)?.publications) ? (data as any).publications : []) as Record<string, unknown>[];
+      const proj: Projector<Record<string, unknown>> = {
+        short: (p) => ({ id: p.id, name: p.title }),
+        medium: (p) => ({
+          id: p.id,
+          title: p.title,
+          description: p.description,
+          domain: (p.domain as string | null) ?? null,
+          layout: p.layout,
+          articleCount: (p._count as Record<string, unknown>)?.blogArticles ?? null,
+        }),
+      };
+      const result = { count: rawPubs.length, detail, publications: projectList(detail, rawPubs, proj) };
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(publications, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify(result) }],
       };
     }
   );
@@ -392,32 +537,38 @@ export function registerBlogTools(server: McpServer) {
   // ── SEO roadmap ───────────────────────────────────────────────────────────
   server.tool(
     "get_seo_roadmap",
-    "View the SEO / GEO content roadmap — suggested blog topics, keywords, and completion status.",
+    "View the SEO / GEO content roadmap — suggested blog topics, keywords, and completion status. detail='short' returns stats only; detail='medium' adds slim item list (id+title+status+keyword); detail='full' (default) returns raw response.",
     {
       status: z.enum(["suggested", "in_progress", "completed", "ignored"]).optional().describe("Filter by status"),
+      detail: detailParam("full"),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ status, brandId }) => {
+    async ({ status, detail, brandId }) => {
       const id = requireBrandId(brandId);
       const qs = status ? `?status=${status}` : "";
-      const data = await api.get<any>(`/api/agent/v1/brands/${id}/seo/roadmap${qs}`);
+      const data = await api.get<Record<string, unknown>>(`/api/agent/v1/brands/${id}/seo/roadmap${qs}`);
+      let result: unknown;
+      if (detail === "short") {
+        result = { stats: data?.stats };
+      } else if (detail === "medium") {
+        const items = (Array.isArray((data as any)?.items) ? (data as any).items : []) as Record<string, unknown>[];
+        result = {
+          stats: data?.stats,
+          count: items.length,
+          items: items.map((item) => ({
+            id: item.id,
+            title: item.title,
+            type: item.itemType,
+            priority: item.priority,
+            status: item.status,
+            keyword: item.primaryKeyword,
+          })),
+        };
+      } else {
+        result = data;
+      }
       return {
-        content: [
-          {
-            type: "text" as const,
-            text: JSON.stringify({
-              stats: data?.stats,
-              items: (data?.items ?? []).slice(0, 50).map((item: any) => ({
-                id: item.id,
-                title: item.title,
-                type: item.itemType,
-                priority: item.priority,
-                status: item.status,
-                keyword: item.primaryKeyword,
-              })),
-            }, null, 2),
-          },
-        ],
+        content: [{ type: "text" as const, text: JSON.stringify(result) }],
       };
     }
   );

@@ -3,10 +3,12 @@ import { z } from "zod";
 import { api } from "../client.js";
 import { requireBrandId } from "../state.js";
 import { config } from "../config.js";
+import { detailParam, project, projectList, type Projector } from "../detail.js";
+import { generateSessionUrl, visualEditorUrl } from "../links.js";
 
 const PLATFORMS = ["x", "linkedin", "instagram", "threads", "facebook"] as const;
 
-function slimPost(p: any) {
+function slimPost(p: Record<string, unknown>) {
   return {
     id: p.id,
     platform: p.platform,
@@ -16,11 +18,97 @@ function slimPost(p: any) {
   };
 }
 
-function unwrapPosts(data: any): any[] {
-  if (Array.isArray(data)) return data;
-  if (data?.posts && Array.isArray(data.posts)) return data.posts;
+function unwrapPosts(data: unknown): Record<string, unknown>[] {
+  if (Array.isArray(data)) return data as Record<string, unknown>[];
+  if (data && typeof data === "object") {
+    const d = data as Record<string, unknown>;
+    if (Array.isArray(d.posts)) return d.posts as Record<string, unknown>[];
+  }
   return [];
 }
+
+function parseVariations(outputData: unknown): { content: string }[] {
+  if (!outputData) return [];
+  try {
+    const parsed = typeof outputData === "string" ? JSON.parse(outputData) : outputData;
+    const vars = (parsed as { variations?: unknown }).variations;
+    if (Array.isArray(vars)) {
+      return vars
+        .map((v) => (v && typeof v === "object" ? (v as { content?: unknown }).content : undefined))
+        .filter((c): c is string => typeof c === "string")
+        .map((content) => ({ content }));
+    }
+  } catch { /* not parseable — fall through */ }
+  return [];
+}
+
+function summarizeVisuals(catalog: Record<string, unknown>): {
+  bestPick?: Record<string, unknown>;
+  options?: Record<string, unknown>[];
+  note: string;
+} {
+  // Slim bestPick: keep slot/kind/displayLabel/pickArgs
+  let bestPick: Record<string, unknown> | undefined;
+  const bp = catalog.bestPick;
+  if (bp && typeof bp === "object" && !Array.isArray(bp)) {
+    const b = bp as Record<string, unknown>;
+    const slim: Record<string, unknown> = {};
+    for (const k of ["slot", "kind", "displayLabel", "pickArgs"] as const) {
+      if (b[k] !== undefined) slim[k] = b[k];
+    }
+    if (Object.keys(slim).length) bestPick = slim;
+  }
+
+  // Flatten option items from the catalog (skip bestPick key, recurse into options)
+  const KEEP_KEYS = ["slot", "kind", "style", "variant", "displayLabel", "recommended", "pickArgs", "previewUrl"] as const;
+  function slimItem(item: Record<string, unknown>): Record<string, unknown> {
+    const s: Record<string, unknown> = {};
+    for (const k of KEEP_KEYS) {
+      if (item[k] !== undefined) s[k] = item[k];
+    }
+    return s;
+  }
+  function collectItems(val: unknown, visited = new WeakSet<object>()): Record<string, unknown>[] {
+    if (!val || typeof val !== "object") return [];
+    if (visited.has(val as object)) return [];
+    visited.add(val as object);
+    if (Array.isArray(val)) {
+      const out: Record<string, unknown>[] = [];
+      for (const item of val) {
+        if (item && typeof item === "object" && !Array.isArray(item)) {
+          const it = item as Record<string, unknown>;
+          if ("slot" in it || "kind" in it || "pickArgs" in it) {
+            out.push(slimItem(it));
+          } else {
+            out.push(...collectItems(item, visited));
+          }
+        }
+      }
+      return out;
+    }
+    const d = val as Record<string, unknown>;
+    const out: Record<string, unknown>[] = [];
+    for (const [key, v] of Object.entries(d)) {
+      if (key === "bestPick") continue;
+      out.push(...collectItems(v, visited));
+    }
+    return out;
+  }
+
+  const allItems = collectItems(catalog);
+  const options = allItems.slice(0, 8);
+
+  return {
+    ...(bestPick ? { bestPick } : {}),
+    ...(options.length ? { options } : {}),
+    note: "Visual options (quote templates, card templates, brand images, stock photos) were prepared but NOT attached to the post. Nothing is added until the user picks one. To attach a chosen option, call pick_post_visual with its pickArgs verbatim (kind + style + variant for templates, or assetId/slot for library/smart/photo assets). The user can preview all options visually at viewInBrowser.",
+  };
+}
+
+const postProjector: Projector<Record<string, unknown>> = {
+  short: (p) => ({ id: p.id, status: p.status, scheduledAt: p.scheduledAt ?? p.postAt }),
+  medium: slimPost,
+};
 
 export function registerPostTools(server: McpServer) {
   // ── Generate post (AI) ────────────────────────────────────────────────────
@@ -28,36 +116,46 @@ export function registerPostTools(server: McpServer) {
     "generate_post",
     [
       "Generate AI content for a platform. Polls until complete. Deducts 10 credits per variation.",
-      "After generating, use create_post to save it, then approve_post to schedule it.",
+      "To control what the post is about, pass `theme` with a free-text brief (any topic/angle/facts/tone). If you omit `theme`, the topic is RANDOM — so always pass it when the user wants specific content.",
+      "When variations > 1, ALL variations are returned under a SINGLE postId in the `variations` array — it does NOT create one post per variation. `content` is variation 1 (the primary, already saved on the post). Never call generate_post again to 'get the other variations' — they're all in the response.",
+      "`originalContent` (if seen elsewhere) is the pre-voice-rewrite draft, not a separate variation.",
+      "After generating, use create_post to save a chosen variation, then approve_post to schedule it.",
       "To repurpose: call repurpose_content first, then create_post with the result, then approve_post.",
+      "Generation can take 1-5 minutes (longer with multiple variations or voice rewrite); this tool waits for completion. If it ever returns status 'still_generating', DO NOT write the post yourself — poll get_post with the returned postId until operationStatus is 'completed', then use that content.",
+      "After generation, brand visual options (quote/card templates, brand images, stock photos) are prepared but NOT attached — share viewInBrowser for the visual picker, or call pick_post_visual to attach one. Do not attach a visual unless the user chooses it.",
+      "The response includes editInVisualEditor: a direct URL to edit the post in the visual editor.",
     ].join(" "),
     {
       platform: z
         .string()
         .describe("Platform: x | linkedin | instagram | threads | facebook | custom:<charLimit>"),
       variations: z.number().min(1).max(5).optional().default(1).describe("Number of variations to generate"),
-      theme: z.string().optional().describe("Theme ID or name (random theme used if omitted)"),
+      theme: z.string().optional().describe("Free-text topic/brief describing what the post should be about — include any angle, emphasis, key facts, or tone (e.g. \"Launch announcement for our new MCP; emphasize NVIDIA + Stripe + Amotron; B2B authoritative tone\"). ALWAYS pass this when the user wants the post to be about something specific. If omitted, a RANDOM brand theme is used and the topic will NOT match the user's request."),
+      themeId: z.string().optional().describe("Optional ID of a saved brand theme (from list_themes). Most callers should pass the free-text `theme` instead. If both are given, the free-text `theme` wins."),
       voice: z.string().optional().describe("Voice profile ID to apply"),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ platform, variations, theme, voice, brandId }) => {
+    async ({ platform, variations, theme, themeId, voice, brandId }) => {
       const id = requireBrandId(brandId);
+      const customTheme = typeof theme === "string" && theme.trim().length > 0 ? theme.trim() : undefined;
 
-      const resp = await api.post<{ postId: string; pollUrl?: string }>(
+      const resp = await api.post<{ postId: string; sessionId?: string; pollUrl?: string }>(
         `/api/agent/v1/brands/${id}/posts/generate`,
         {
           medium: platform,
           variationCount: variations,
-          themeId: theme?.startsWith("cl") ? theme : undefined,
-          customTheme: theme && !theme.startsWith("cl") ? theme : undefined,
-          randomTheme: !theme,
+          themeId: !customTheme && themeId ? themeId : undefined,
+          customTheme,
+          randomTheme: !customTheme && !themeId,
           voiceProfileId: voice,
           assignAsset: false,
         }
       );
 
       const postId = resp.postId;
-      const maxAttempts = Math.ceil(config.pollTimeoutMs / config.pollIntervalMs);
+      const sessionId = resp.sessionId;
+      const viewInBrowser = sessionId ? generateSessionUrl(id, sessionId) : undefined;
+      const maxAttempts = Math.ceil(config.generatePollTimeoutMs / config.pollIntervalMs);
       let post: Record<string, unknown> = {};
       let timedOut = false;
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
@@ -77,11 +175,50 @@ export function registerPostTools(server: McpServer) {
       const inner = (post.post ?? post) as Record<string, unknown>;
       if (timedOut) {
         return {
-          content: [{ type: "text" as const, text: `Post generation is still in progress. Use get_post to check status when ready. postId: ${postId}` }],
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                status: "still_generating",
+                postId,
+                ...(viewInBrowser ? { viewInBrowser } : {}),
+                instruction:
+                  "Generation is STILL RUNNING — it has NOT failed. Do NOT write or create this post yourself, and do NOT call create_post with your own text. The AI-generated, voice-matched content is on its way and will be better than a hand-written draft. Wait ~15 seconds, then call get_post with this postId. Repeat until operationStatus is 'completed' (or the post has content), then use that returned content. Only treat it as failed if get_post shows operationStatus 'failed'. You can also share viewInBrowser with the user to watch progress in the browser.",
+              }),
+            },
+          ],
         };
       }
+      let visuals: { bestPick?: Record<string, unknown>; options?: Record<string, unknown>[]; note: string } | undefined;
+      try {
+        await api.post(`/api/agent/v1/posts/${postId}/visuals/regenerate`, { loadExternal: true });
+        const catalog = await api.get<Record<string, unknown>>(`/api/agent/v1/posts/${postId}/visuals`);
+        visuals = summarizeVisuals(catalog);
+      } catch {
+        // visual options are best-effort; never block returning the generated content
+      }
+      const parsedVariations = parseVariations(inner.outputData);
+      const editInVisualEditor = visualEditorUrl(id, postId, typeof inner.platform === "string" ? inner.platform : platform);
+      const result = {
+        postId,
+        platform: inner.platform,
+        status: inner.status,
+        // All variations live on this ONE postId. content is variation 1 (the primary, already saved on the post).
+        variationCount: Math.max(parsedVariations.length, 1),
+        content: inner.content,
+        variations: parsedVariations.length
+          ? parsedVariations.map((v, i) => ({ index: i + 1, content: v.content }))
+          : undefined,
+        note:
+          parsedVariations.length > 1
+            ? `${parsedVariations.length} variations were generated under this single postId. 'content' is variation 1 (already saved). The alternatives are in the 'variations' array. To use a different one, update the post content or save it with create_post. Do NOT call generate_post again — all variations are already here.`
+            : undefined,
+        ...(viewInBrowser ? { viewInBrowser } : {}),
+        editInVisualEditor,
+        ...(visuals ? { visuals } : {}),
+      };
       return {
-        content: [{ type: "text" as const, text: JSON.stringify({ postId, ...inner }, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify(result) }],
       };
     }
   );
@@ -109,7 +246,7 @@ export function registerPostTools(server: McpServer) {
     },
     async ({ platform, days, frequency, postsPerDay, times, voice, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.post(`/api/agent/v1/brands/${id}/posts/generate-batch`, {
+      const data = await api.post<Record<string, unknown>>(`/api/agent/v1/brands/${id}/posts/generate-batch`, {
         platform,
         days,
         frequency,
@@ -117,8 +254,13 @@ export function registerPostTools(server: McpServer) {
         times: times?.split(",").map((t) => t.trim()),
         voiceProfileId: voice,
       });
+      const d = data && typeof data === "object" ? data as Record<string, unknown> : {};
+      const slim: Record<string, unknown> = {};
+      if (d.operationId !== undefined) slim.operationId = d.operationId;
+      if (d.totalQueued !== undefined) slim.totalQueued = d.totalQueued;
+      if (d.pollUrl !== undefined) slim.pollUrl = d.pollUrl;
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify(slim) }],
       };
     }
   );
@@ -131,6 +273,7 @@ export function registerPostTools(server: McpServer) {
       "Supported platforms: x, linkedin, instagram, threads, facebook.",
       "After creating, call approve_post with a future ISO 8601 datetime to schedule it.",
       "To check which platforms are connected first, call check_social_accounts.",
+      "Each created post includes editInVisualEditor: a direct URL to edit it in the visual editor.",
     ].join(" "),
     {
       platforms: z
@@ -149,7 +292,7 @@ export function registerPostTools(server: McpServer) {
       const data = await api.post<any>(`/api/agent/v1/brands/${id}/posts/manual`, {
         content,
         platforms,
-        postType: scheduledAt ? "scheduled" : "draft",
+        postType: scheduledAt ? "scheduled" : "queue",
         scheduledAt,
       });
       const posts = unwrapPosts(data);
@@ -158,7 +301,12 @@ export function registerPostTools(server: McpServer) {
           {
             type: "text" as const,
             text: posts.length
-              ? `Created ${posts.length} post(s):\n${JSON.stringify(posts.map(slimPost), null, 2)}`
+              ? `Created ${posts.length} post(s):\n${JSON.stringify(posts.map((p) => ({
+                  ...slimPost(p),
+                  ...(typeof p.id === "string" && typeof p.platform === "string"
+                    ? { editInVisualEditor: visualEditorUrl(id, p.id as string, p.platform as string) }
+                    : {}),
+                })), null, 2)}`
               : JSON.stringify(data, null, 2),
           },
         ],
@@ -169,24 +317,26 @@ export function registerPostTools(server: McpServer) {
   // ── List posts ────────────────────────────────────────────────────────────
   server.tool(
     "list_posts",
-    "List recent posts and drafts. Filter by status or platform. Use status='created' to find unscheduled drafts.",
+    "List recent posts and drafts. Filter by status or platform. Use status='created' to find unscheduled drafts. Returns id+status+scheduledAt by default; use detail='medium' or 'full' for more fields. For a single post use get_post.",
     {
-      status: z.enum(["created", "scheduled", "posted"]).optional(),
+      status: z.enum(["created", "approved", "scheduled", "posted", "failed", "cancelled", "disapproved"]).optional(),
       platform: z.enum(PLATFORMS).optional(),
       limit: z.number().min(1).max(100).optional().default(10),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
+      detail: detailParam("short"),
     },
-    async ({ status, platform, limit, brandId }) => {
+    async ({ status, platform, limit, brandId, detail }) => {
       const id = requireBrandId(brandId);
       const params = new URLSearchParams();
       if (status) params.set("status", status);
       if (platform) params.set("platform", platform);
       if (limit) params.set("limit", String(limit));
       const qs = params.toString() ? `?${params}` : "";
-      const data = await api.get<any>(`/api/agent/v1/brands/${id}/posts${qs}`);
-      const slim = unwrapPosts(data).map(slimPost);
+      const data = await api.get<unknown>(`/api/agent/v1/brands/${id}/posts${qs}`);
+      const posts = unwrapPosts(data);
+      const text = JSON.stringify({ count: posts.length, detail, posts: projectList(detail, posts, postProjector) });
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(slim, null, 2) }],
+        content: [{ type: "text" as const, text }],
       };
     }
   );
@@ -194,13 +344,32 @@ export function registerPostTools(server: McpServer) {
   // ── View post ─────────────────────────────────────────────────────────────
   server.tool(
     "get_post",
-    "View the full content and status of a single post.",
-    { postId: z.string().describe("Post ID") },
-    async ({ postId }) => {
-      const data = await api.get<any>(`/api/agent/v1/posts/${postId}`);
-      const post = data?.post ?? data;
+    "View the full content and status of a single post. Use detail='short'|'medium'|'full' to control verbosity (default full). Multi-variation posts expose a `variations` array (all variations live on one postId). Output shows the final voice-rewritten content by default; pass includeOriginal=true to also see the pre-rewrite draft. Includes editInVisualEditor: a direct URL to edit the post in the visual editor.",
+    {
+      postId: z.string().describe("Post ID"),
+      detail: detailParam("full"),
+      includeOriginal: z.boolean().optional().default(false).describe("Include the pre-voice-rewrite original draft (originalContent). Default false — you normally want the rewritten voice content."),
+    },
+    async ({ postId, detail, includeOriginal }) => {
+      const data = await api.get<Record<string, unknown>>(`/api/agent/v1/posts/${postId}`);
+      const raw = data as Record<string, unknown>;
+      const post = (raw.post && typeof raw.post === "object" ? raw.post : raw) as Record<string, unknown>;
+      const projected = project(detail, post, postProjector) as Record<string, unknown>;
+      if (detail !== "short") {
+        const variations = parseVariations(post.outputData);
+        if (variations.length > 1) {
+          projected.variationCount = variations.length;
+          projected.variations = variations.map((v, i) => ({ index: i + 1, content: v.content }));
+        }
+      }
+      if (!includeOriginal) {
+        delete projected.originalContent;
+      }
+      if (typeof post.brandId === "string" && typeof post.platform === "string") {
+        projected.editInVisualEditor = visualEditorUrl(post.brandId, postId, post.platform);
+      }
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(slimPost(post), null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify(projected) }],
       };
     }
   );
@@ -219,12 +388,21 @@ export function registerPostTools(server: McpServer) {
       timezone: z.string().optional().describe("User timezone, e.g. 'America/New_York'"),
     },
     async ({ postId, scheduledAt, timezone }) => {
-      const data = await api.post(`/api/agent/v1/posts/${postId}/approve`, {
+      const data = await api.post<Record<string, unknown>>(`/api/agent/v1/posts/${postId}/approve`, {
         postAt: scheduledAt,
         userTimezone: timezone,
       });
+      const d = data && typeof data === "object" ? data as Record<string, unknown> : {};
+      const inner = (d.post && typeof d.post === "object" ? d.post : d) as Record<string, unknown>;
+      const confirmation: Record<string, unknown> = {
+        postId: (inner.id as string | undefined) ?? postId,
+        status: inner.status,
+      };
+      if (inner.scheduledAt !== undefined) confirmation.scheduledAt = inner.scheduledAt;
+      else if (inner.postAt !== undefined) confirmation.scheduledAt = inner.postAt;
+      if (inner.webUrl !== undefined) confirmation.webUrl = inner.webUrl;
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify(confirmation) }],
       };
     }
   );
@@ -238,9 +416,17 @@ export function registerPostTools(server: McpServer) {
       scheduledAt: z.string().datetime().describe("New future ISO 8601 UTC datetime"),
     },
     async ({ postId, scheduledAt }) => {
-      const data = await api.patch(`/api/agent/v1/posts/${postId}`, { scheduledAt });
+      const data = await api.patch<Record<string, unknown>>(`/api/agent/v1/posts/${postId}`, { scheduledAt });
+      const d = data && typeof data === "object" ? data as Record<string, unknown> : {};
+      const inner = (d.post && typeof d.post === "object" ? d.post : d) as Record<string, unknown>;
+      const confirmation: Record<string, unknown> = {
+        postId: (inner.id as string | undefined) ?? postId,
+        status: inner.status,
+      };
+      if (inner.scheduledAt !== undefined) confirmation.scheduledAt = inner.scheduledAt;
+      else if (inner.postAt !== undefined) confirmation.scheduledAt = inner.postAt;
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify(confirmation) }],
       };
     }
   );
@@ -258,12 +444,21 @@ export function registerPostTools(server: McpServer) {
       timezone: z.string().optional().describe("User timezone, e.g. 'America/New_York'"),
     },
     async ({ postId, scheduledAt, timezone }) => {
-      const data = await api.post(`/api/agent/v1/posts/${postId}/approve`, {
+      const data = await api.post<Record<string, unknown>>(`/api/agent/v1/posts/${postId}/approve`, {
         postAt: scheduledAt,
         userTimezone: timezone,
       });
+      const d = data && typeof data === "object" ? data as Record<string, unknown> : {};
+      const inner = (d.post && typeof d.post === "object" ? d.post : d) as Record<string, unknown>;
+      const confirmation: Record<string, unknown> = {
+        postId: (inner.id as string | undefined) ?? postId,
+        status: inner.status,
+      };
+      if (inner.scheduledAt !== undefined) confirmation.scheduledAt = inner.scheduledAt;
+      else if (inner.postAt !== undefined) confirmation.scheduledAt = inner.postAt;
+      if (inner.webUrl !== undefined) confirmation.webUrl = inner.webUrl;
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify(confirmation) }],
       };
     }
   );
@@ -276,9 +471,11 @@ export function registerPostTools(server: McpServer) {
       postId: z.string().describe("Post ID to cancel"),
     },
     async ({ postId }) => {
-      const data = await api.patch(`/api/agent/v1/posts/${postId}`, { action: "cancel" });
+      const data = await api.patch<Record<string, unknown>>(`/api/agent/v1/posts/${postId}`, { action: "cancel" });
+      const d = data && typeof data === "object" ? data as Record<string, unknown> : {};
+      const inner = (d.post && typeof d.post === "object" ? d.post : d) as Record<string, unknown>;
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify({ postId: (inner.id as string | undefined) ?? postId, status: inner.status }) }],
       };
     }
   );
@@ -299,21 +496,22 @@ export function registerPostTools(server: McpServer) {
   // ── Calendar ──────────────────────────────────────────────────────────────
   server.tool(
     "get_calendar",
-    "View upcoming scheduled posts sorted by date.",
+    "View upcoming scheduled posts sorted by date. Returns id+status+scheduledAt by default; use detail='medium' or 'full' for more fields. For a single post use get_post.",
     {
       days: z.number().min(1).max(90).optional().default(14).describe("How many days ahead to show"),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
+      detail: detailParam("short"),
     },
-    async ({ days, brandId }) => {
+    async ({ days, brandId, detail }) => {
       const id = requireBrandId(brandId);
       const from = new Date().toISOString();
       const to = new Date(Date.now() + days * 86_400_000).toISOString();
-      const data = await api.get<any>(
+      const data = await api.get<unknown>(
         `/api/agent/v1/brands/${id}/posts?status=scheduled&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&limit=200`
       );
-      const slim = unwrapPosts(data).map(slimPost);
+      const posts = unwrapPosts(data);
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(slim, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify({ count: posts.length, detail, posts: projectList(detail, posts, postProjector) }) }],
       };
     }
   );

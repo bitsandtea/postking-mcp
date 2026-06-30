@@ -331,7 +331,7 @@ Tags by intent and groups into topic pillars.
 I'll show the clusters; you choose one (or I pick the highest-volume).
 
 **Step 5 — Approve clusters** (\`seo_bulk_approve_clusters\`)
-Brief generation only runs on approved clusters. Pass the chosen cluster IDs to \`seo_bulk_approve_clusters\` (or \`seo_approve_cluster\` for a single one). Approval kicks off an async \`seo_brief_generate\` Operation per cluster — poll each returned \`operationId\` via \`get_job\` until \`state\` is \`succeeded\`.
+Brief generation only runs on approved clusters. Pass the chosen cluster IDs to \`seo_bulk_approve_clusters\` (or \`seo_approve_cluster\` for a single one). Approval kicks off an async \`seo_brief_generate\` Operation per cluster — poll each returned \`operationId\` via \`get_job\` until \`state\` is \`completed\`.
 
 **Step 6 — Roadmap** (\`seo_generate_roadmap\`)
 Turns the approved cluster(s) into ~20 prioritized blog topics — each topic gets a SeoBrief auto-drafted in the background.
@@ -487,6 +487,250 @@ Then \`connect_domain\` with \`target: lp:<slug>\`.
 \`publish_landing_page\` — free-tier choke point. Returns the live URL.
 
 What should the landing page be about?`,
+          },
+        },
+      ],
+    })
+  );
+
+  // ── Reddit repurpose flow ──────────────────────────────────────────────────
+  server.prompt(
+    "reddit_repurpose",
+    "Repurpose brand content into Reddit-native posts: pool subreddits → suggest subreddits for content → rewrite → review",
+    {},
+    () => ({
+      messages: [
+        {
+          role: "user" as const,
+          content: {
+            type: "text" as const,
+            text: `What can PostKing do with Reddit and how do I use it?`,
+          },
+        },
+        {
+          role: "assistant" as const,
+          content: {
+            type: "text" as const,
+            text: `PostKing's Reddit module is a **repurpose-to-Reddit workflow** — it turns your existing content (blog articles, text) into Reddit-native posts tailored to specific subreddits. It is NOT a publishing "medium" like LinkedIn or X; Reddit posts are never scheduled through the normal post queue.
+
+**How to reach it in the dashboard:** \`dashboard_link\` with section \`"reddit"\`.
+
+**The 4-step flow:**
+
+**Step 1 — Discover your brand's subreddits** (\`reddit_generate_pool\` → \`reddit_get_pool\`)
+This is **brand-level subreddit discovery** — it analyzes the brand (no specific content needed) and produces a scored pool of subreddits where the brand would be relevant and welcome.
+- \`reddit_generate_pool\` is async — returns \`{ operationId }\`. Poll \`get_job\` until \`state=completed\`. Only needed once per brand (or to refresh).
+- \`reddit_get_pool\` returns the scored pool, sorted most-relevant first. **This already answers "which / what / top N subreddits should my brand post in?"** — pass \`top\` for a top-N list. NO content required.
+
+**Step 2 — Place a SPECIFIC piece of content** (\`reddit_suggest\`)
+This is the **content-level** step — use it only when you have a particular article/text and want the best subreddits FOR THAT CONTENT, each with multiple posting angles.
+- Given a blog article (\`postId\`) or raw text (\`title + content\`), returns up to 8 subreddits from the pool.
+- Synchronous, 0 credits. Returns \`{ suggestions: [{ subreddit, subscribers, posting_style, promotion_mode, buyer_intent, match_score, reason, rule_to_watch, angles: [{ angle_type, title, hook }] }] }\` — each suggestion carries 2-3 diverse angles.
+- Not required just to see the brand's subreddits — for that, use \`reddit_get_pool\`. Use the \`subreddit\` field plus an angle's \`title\`/\`hook\` from a suggestion result in Step 3.
+
+**Step 3 — Rewrite for the subreddit** (\`reddit_rewrite\`)
+Rewrites your content as a Reddit-native post for the chosen subreddit, respecting its rules and culture.
+- Params: \`subreddit\`, \`voiceId\` (from \`list_voices\`; pass \`"none"\` for no voice), \`sourcePostId\` or \`sourceContent\`.
+- Async — returns \`{ jobId }\`. Poll \`get_job\` until \`state=completed\`.
+- Up to 3 variations per call. Uses credits.
+
+**Step 4 — Review saved posts** (\`reddit_list_posts\`)
+Lists all saved Reddit post outputs. Each post's \`outputData\` has \`redditTitle\`, \`body\`, \`notes\`, \`subreddit\`, \`angle\`.
+
+**Helper:** \`reddit_global_pool\` — shows how many subreddits are in PostKing's global dataset (informational only).
+
+What content do you want to repurpose for Reddit?`,
+          },
+        },
+      ],
+    })
+  );
+
+  // ── Plan a storyline campaign ─────────────────────────────────────────────
+  server.prompt(
+    "plan_storyline_campaign",
+    "Plan and execute a full marketing storyline: clarify → brief → strategy → curate → execute",
+    {},
+    () => ({
+      messages: [
+        {
+          role: "user" as const,
+          content: {
+            type: "text" as const,
+            text: `Help me plan and execute a marketing campaign using PostKing storylines.`,
+          },
+        },
+        {
+          role: "assistant" as const,
+          content: {
+            type: "text" as const,
+            text: `I'll drive the full storyline campaign lifecycle — from intent to published drafts.
+
+**Step 1 — Create the storyline** (\`storyline_create\`)
+Describe your campaign goal (e.g. "Q3 product launch targeting SMBs"). I'll create the storyline record.
+
+**Step 2 — Clarify** (\`storyline_clarify\` — loop)
+The system asks follow-up questions to gather positioning, audience, timing, and tone context. Call iteratively until it signals readiness.
+
+**Step 3 — Generate the brief** (\`storyline_generate_brief\` → poll \`get_job\`)
+Async (~1–3 min). Produces positioning, key messages, audience, timing, proof points, dos/don'ts. Poll \`get_job\` until \`state=completed\`, then review with \`storyline_get\` (full detail).
+
+**Step 4 — Refine the brief** (\`storyline_edit_brief\`)
+Natural-language AI edit — e.g. "tighten the key messages, add a proof point about enterprise customers".
+
+**Step 5 — Confirm** (\`storyline_confirm_brief\`)
+Locks the brief and gates strategy generation.
+
+**Step 6 — Generate strategy** (\`storyline_generate_strategy\` → poll \`get_job\`)
+Async (~2–5 min). Produces a full set of line items (content pieces across channels). Poll \`get_job\`, then review with \`storyline_get_strategy\`.
+
+**Step 7 — Curate line items**
+- \`storyline_add_line_item\` — add a channel/type/title
+- \`storyline_update_line_item\` — edit any field
+- \`storyline_delete_line_item\` — remove (confirm: true)
+- \`storyline_regenerate_line_item\` — async regenerate a single item (poll \`get_job\`)
+
+**Step 8 — Estimate** (\`storyline_estimate\`)
+Dry-run: how many credits will execution cost?
+
+**Step 9 — Execute** (\`storyline_execute\` → poll \`get_job\`)
+Async (~3–8 min). Generates all selected drafts. Poll \`get_job\` until \`state=completed\`, then use \`list_posts\` / \`list_blogs\` to review the output.
+
+What campaign would you like to plan?`,
+          },
+        },
+      ],
+    })
+  );
+
+  // ── Competitor intelligence ───────────────────────────────────────────────
+  server.prompt(
+    "competitor_intelligence",
+    "Build a competitive intelligence picture: probe → add → analyze → comparison → overview",
+    {},
+    () => ({
+      messages: [
+        {
+          role: "user" as const,
+          content: {
+            type: "text" as const,
+            text: `Help me build competitive intelligence for my brand in PostKing.`,
+          },
+        },
+        {
+          role: "assistant" as const,
+          content: {
+            type: "text" as const,
+            text: `Here's the competitive intelligence workflow — from discovery to landscape overview.
+
+**Step 1 — Discover rival domains** (\`competitor_probe\` → \`competitor_probe_status\`)
+PostKing crawls and surfaces rival domains based on your brand. \`competitor_probe\` returns \`{ started: true }\` — poll \`competitor_probe_status\` until status=completed, then review the candidates list.
+
+**Step 2 — Classify candidates** (\`competitor_probe_classify\` — loop per candidate)
+For each candidate, classify as \`direct\`, \`similar\`, or \`not_relevant\`. Skip this step to add domains directly.
+
+**Step 3 — Add competitors** (\`competitor_add\` → poll \`get_job\`)
+Async (~2–5 min per batch). Pass up to 20 domains. Each triggers crawl + profile analysis.
+
+**Step 4 — Analyze pending rows** (\`competitor_analyze\` → poll \`get_job\`)
+Re-run analysis on any pending or failed competitor rows.
+
+**Step 5 — Review the list** (\`competitor_list\`)
+Check status, analysis state, and exclusion flags. Use \`competitor_update\` to toggle \`excludeFromSeoPull\` or \`competitor_delete\` to remove one.
+
+**Step 6 — Head-to-head comparison** (\`competitor_get_comparison\` / \`competitor_recompute_comparison\`)
+\`competitor_get_comparison\` returns the saved comparison. After adding new competitors, call \`competitor_recompute_comparison\` to refresh.
+
+**Step 7 — Landscape overview** (\`competitor_get_overview\` / \`competitor_generate_overview\` → poll \`get_job\`)
+\`competitor_get_overview\` returns the cached overview. \`competitor_generate_overview\` is async (~2–5 min) and produces a fresh AI-synthesized landscape summary.
+
+**Bonus** — \`competitor_comparison_sources\`: see which SEO sources feed the comparison.
+
+Which brand do you want to analyze competitors for?`,
+          },
+        },
+      ],
+    })
+  );
+
+  // ── Manage knowledge base ─────────────────────────────────────────────────
+  server.prompt(
+    "manage_knowledge_base",
+    "Browse, create, update, and delete brand knowledge base items",
+    {},
+    () => ({
+      messages: [
+        {
+          role: "user" as const,
+          content: {
+            type: "text" as const,
+            text: `Help me manage my brand's knowledge base in PostKing.`,
+          },
+        },
+        {
+          role: "assistant" as const,
+          content: {
+            type: "text" as const,
+            text: `The knowledge base stores structured brand facts — product details, positioning, FAQs, personas, and more — that PostKing uses when generating content.
+
+**Step 1 — Browse** (\`knowledge_list\`, short detail)
+Lists all active items with ID, name, and content type. Filter by \`tag\`, \`global\`, or \`activeOnly\`.
+
+**Step 2 — Inspect** (\`knowledge_get\`, full detail)
+Fetch the full content and metadata for a single item.
+
+**Step 3 — Create** (\`knowledge_create\` → poll \`get_job\`)
+Async (~15–30 s). Pass \`name\`, \`content\` (text or JSON string), \`contentType\` (text/json), optional \`description\` and \`tags[]\`. Set \`isGlobal: true\` to share across all brands on the account. Poll \`get_job\` until \`state=completed\`.
+
+**Step 4 — Update** (\`knowledge_update\`)
+Edit name, description, content, or tags for an existing item. Minor updates are sync; large content changes may queue a background enrichment job.
+
+**Step 5 — Retire** (\`knowledge_delete\`)
+Soft-deletes the item — it no longer appears in lists but is not permanently destroyed.
+
+What knowledge would you like to add or manage?`,
+          },
+        },
+      ],
+    })
+  );
+
+  // ── Trends to post ────────────────────────────────────────────────────────
+  server.prompt(
+    "trends_to_post",
+    "Browse trending posts, extract or pick a content template, then generate a post",
+    {},
+    () => ({
+      messages: [
+        {
+          role: "user" as const,
+          content: {
+            type: "text" as const,
+            text: `Help me turn trending content into a post for my brand using PostKing.`,
+          },
+        },
+        {
+          role: "assistant" as const,
+          content: {
+            type: "text" as const,
+            text: `Here's how to go from trending insights to a finished post.
+
+**Step 1 — Browse the trend feed** (\`trends_list\`)
+Account-scoped (no brand required). Filter by \`niche\`, \`platform\` (linkedin, x, instagram, threads), \`days\` (1–30), \`limit\`, and \`sort\` (recency | engagement). Returns trending posts with optional deconstruction data.
+
+**Step 2a — Extract a template from a trending post** (\`template_extract\`)
+Paste the post text and let PostKing AI deconstruct the underlying content pattern (hook, structure, CTA, format). Pass \`save: true\` to persist it as a template for reuse.
+
+**Step 2b — OR pick the best-fit template** (\`template_list\` then \`template_pick\`)
+\`template_list\` shows your saved templates. \`template_pick\` takes a theme or brief and AI-scores your existing templates to find the best match.
+
+**Step 3 — Save the template** (\`template_create\`)
+Persist a template with \`title\`, \`body\` (the post structure with placeholders), \`category\`, and optional \`platforms\` (array) and \`pattern\` (plain-language description of the structure). Update later with \`template_update\` or \`template_delete\`.
+
+**Step 4 — Generate a post**
+Use \`generate_post\` or \`repurpose_content\` with your chosen angle. Reference the template pattern in your instructions to guide the AI.
+
+What niche or platform do you want to pull trends from?`,
           },
         },
       ],

@@ -1,4 +1,12 @@
-import { config, requireToken } from "./config.js";
+import { config, oauthConfig, getTokenWithSource } from "./config.js";
+import { deleteToken } from "./auth.js";
+import { log } from "./log.js";
+
+export interface AgentCreditPack {
+  sku: string;
+  priceUsd: number;
+  credits: number;
+}
 
 export interface AgentErrorEnvelope {
   code?: string;
@@ -6,6 +14,9 @@ export interface AgentErrorEnvelope {
   docsUrl?: string;
   retryable?: boolean;
   checkoutUrl?: string;
+  packs?: AgentCreditPack[];
+  topupEndpoint?: string;
+  subscribeEndpoint?: string;
 }
 
 /**
@@ -19,6 +30,9 @@ export class ApiError extends Error {
   readonly docsUrl?: string;
   readonly retryable?: boolean;
   readonly checkoutUrl?: string;
+  readonly packs?: AgentCreditPack[];
+  readonly topupEndpoint?: string;
+  readonly subscribeEndpoint?: string;
 
   constructor(status: number, message: string, envelope?: AgentErrorEnvelope) {
     super(message);
@@ -28,6 +42,9 @@ export class ApiError extends Error {
     this.docsUrl = envelope?.docsUrl;
     this.retryable = envelope?.retryable;
     this.checkoutUrl = envelope?.checkoutUrl;
+    this.packs = envelope?.packs;
+    this.topupEndpoint = envelope?.topupEndpoint;
+    this.subscribeEndpoint = envelope?.subscribeEndpoint;
   }
 }
 
@@ -36,17 +53,41 @@ async function request<T>(
   path: string,
   body?: unknown
 ): Promise<T> {
-  const token = requireToken();
+  const tokenResult = getTokenWithSource();
+  if (!tokenResult) {
+    throw new Error(
+      "Not logged in. Call the login_start tool to authenticate with PostKing."
+    );
+  }
+  const { token, source } = tokenResult;
   const url = `${config.apiUrl}${path}`;
 
-  const res = await fetch(url, {
-    method,
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
-    },
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-  });
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${token}`,
+  };
+  if (oauthConfig.internalSecret) {
+    headers["x-internal-secret"] = oauthConfig.internalSecret;
+  }
+
+  const start = Date.now();
+  log("api", "→ " + method + " " + path, { source });
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method,
+      headers,
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+  } catch (err) {
+    const ms = Date.now() - start;
+    const cause = err instanceof Error
+      ? `${err.message}${err.cause ? ` (cause: ${String(err.cause)})` : ""}`
+      : String(err);
+    log("api", "✗ " + method + " " + path + " network error (" + ms + "ms)", { error: cause });
+    throw new Error(`Cannot reach PostKing at ${url}: ${cause}`);
+  }
 
   if (!res.ok) {
     let message = `HTTP ${res.status}`;
@@ -67,14 +108,87 @@ async function request<T>(
       // ignore — non-JSON body
     }
 
+    const ms = Date.now() - start;
+    log("api", "✗ " + method + " " + path + " " + res.status + " (" + ms + "ms)", { code: envelope?.code, message });
+
     if (res.status === 401) {
+      const isInvalidKey =
+        envelope?.code === "UNAUTHORIZED" &&
+        /invalid|revoked/i.test(envelope.message ?? "");
+
+      if (source === "file") {
+        if (isInvalidKey) {
+          deleteToken();
+          throw new ApiError(
+            401,
+            "Your PostKing session was revoked or expired. Call the login_start tool to sign in again.",
+            envelope
+          );
+        }
+        throw new ApiError(
+          401,
+          `401 Unauthorized on ${method} ${path}` +
+            (envelope?.code ? ` [${envelope.code}]` : "") +
+            (envelope?.message ? `: ${envelope.message}` : "") +
+            " — your saved credential was NOT cleared (this may be a per-route issue, not a bad key).",
+          envelope
+        );
+      }
       throw new ApiError(
         401,
-        envelope?.message ?? "Not authenticated. Check your POSTKING_API_TOKEN.",
+        envelope?.message ??
+          (source === "env"
+            ? "Invalid POSTKING_API_TOKEN. Check your environment variable."
+            : "Not authenticated."),
         envelope
       );
     }
     if (res.status === 402) {
+      if (envelope?.code === "INSUFFICIENT_CREDITS") {
+        let richMessage: string;
+        if (envelope.packs && envelope.packs.length > 0) {
+          const packLines = envelope.packs
+            .map((p) => `  • ${p.sku}: $${p.priceUsd} → ${p.credits} credits`)
+            .join("\n");
+          richMessage = [
+            "Out of credits — credits refill with subscription or can be topped up via billing_topup.",
+            "",
+            "Available credit packs:",
+            packLines,
+            "",
+            "AGENT INSTRUCTION: Present these packs to the USER and ask which one they want to purchase.",
+            "Do NOT choose a pack on the user's behalf.",
+            "Only AFTER the user explicitly picks a pack, call billing_topup with that packSku to get a Stripe checkout link.",
+            "Hand the checkout link to the user — they must complete payment in their browser.",
+            "Alternatively, show subscription options via billing_list_tiers / billing_subscribe.",
+          ].join("\n");
+        } else {
+          richMessage = [
+            "Out of credits — credits refill with subscription or can be topped up via billing_topup.",
+            "",
+            "AGENT INSTRUCTION: Call billing_list_packs to retrieve available credit packs,",
+            "then present them to the USER and ask which one they want to purchase.",
+            "Do NOT choose a pack on the user's behalf.",
+            "Only AFTER the user explicitly picks a pack, call billing_topup with that packSku to get a Stripe checkout link.",
+            "Alternatively, show subscription options via billing_list_tiers / billing_subscribe.",
+          ].join("\n");
+        }
+        throw new ApiError(402, richMessage, envelope);
+      }
+      if (
+        envelope?.code === "TRIAL_EXPIRED" ||
+        envelope?.code === "SUBSCRIPTION_REQUIRED"
+      ) {
+        const richMessage = envelope.checkoutUrl
+          ? [
+              message,
+              "",
+              "AGENT INSTRUCTION: Share this upgrade link with the user so they can complete payment in their browser:",
+              envelope.checkoutUrl,
+            ].join("\n")
+          : message;
+        throw new ApiError(402, richMessage, envelope);
+      }
       throw new ApiError(402, `Insufficient credits: ${message}`, envelope);
     }
     if (res.status === 403) {
@@ -86,6 +200,10 @@ async function request<T>(
     throw new ApiError(res.status, message, envelope);
   }
 
+  const ms = Date.now() - start;
+  log("api", "← " + method + " " + path + " " + res.status + " (" + ms + "ms)");
+
+  if (res.status === 204) return {} as T;
   return res.json() as Promise<T>;
 }
 

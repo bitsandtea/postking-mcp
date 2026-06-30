@@ -1,13 +1,14 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { api } from "../client.js";
 import { config } from "../config.js";
+import { detailParam, project, type Projector } from "../detail.js";
 
 export function registerUserTools(server: McpServer) {
   server.tool(
     "get_credits",
     "Check your current PostKing credit balance and free-tier status.",
-    {},
-    async () => {
+    { detail: detailParam("full") },
+    async ({ detail }) => {
       const data = await api.get<{
         credits: number;
         isPaid: boolean;
@@ -15,15 +16,18 @@ export function registerUserTools(server: McpServer) {
         freeTierUsed: number | null;
         freeTierCap: number;
       }>("/api/agent/v1/me");
-      const result = {
-        credits: data.credits,
-        isPaid: data.isPaid,
-        freeTierRemaining: data.freeTierRemaining,
-        freeTierUsed: data.freeTierUsed,
-        freeTierCap: data.freeTierCap,
+      const proj: Projector<typeof data> = {
+        short: (d) => ({ credits: d.credits, isPaid: d.isPaid }),
+        medium: (d) => ({
+          credits: d.credits,
+          isPaid: d.isPaid,
+          freeTierRemaining: d.freeTierRemaining,
+          freeTierUsed: d.freeTierUsed,
+          freeTierCap: d.freeTierCap,
+        }),
       };
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify(project(detail, data, proj)) }],
       };
     }
   );

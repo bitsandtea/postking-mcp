@@ -2,6 +2,38 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { api } from "../client.js";
 import { requireBrandId } from "../state.js";
+import { detailParam, project, truncate, type Projector } from "../detail.js";
+
+const socialProjector: Projector<Record<string, unknown>> = {
+  short: (data) => {
+    const posts = (data.posts ?? data.variations ?? []) as Record<string, unknown>[];
+    return { targetType: "social", postIds: posts.map((p) => p.id) };
+  },
+  medium: (data) => {
+    const posts = (data.posts ?? data.variations ?? []) as Record<string, unknown>[];
+    return {
+      targetType: "social",
+      variations: posts.map((p) => ({ platform: p.platform, content: p.content })),
+    };
+  },
+};
+
+const blogProjector: Projector<Record<string, unknown>> = {
+  short: (data) => {
+    const article = data.article as Record<string, unknown> | undefined;
+    return { targetType: "blog", articleId: article?.id ?? data.articleId ?? null };
+  },
+  medium: (data) => {
+    const article = (data.article as Record<string, unknown> | undefined) ?? {};
+    const body = article.body ?? article.content ?? null;
+    return {
+      articleId: article.id ?? data.articleId ?? null,
+      title: article.title ?? null,
+      wordCount: article.wordCount ?? null,
+      excerpt: truncate(body, 500),
+    };
+  },
+};
 
 export function registerRepurposeTools(server: McpServer) {
   server.tool(
@@ -11,6 +43,7 @@ export function registerRepurposeTools(server: McpServer) {
       "IMPORTANT: When the source is a URL, pass it directly to this tool via sourceUrl — do NOT fetch or crawl the URL yourself first. PostKing handles all crawling internally.",
       "Source types: url | text | blog | social_post.",
       "Target types: social (LinkedIn, X, etc.) | blog | text.",
+      "Supports detail param: short=ids only, medium=key fields (default), full=raw response.",
     ].join(" "),
     {
       sourceType: z
@@ -41,6 +74,7 @@ export function registerRepurposeTools(server: McpServer) {
         .array(z.string())
         .optional()
         .describe("Voice profile IDs. Single ID applies to all platforms: ['clxvoice1']. Per-platform: ['x:clxvoice1','linkedin:clxvoice2']. Get IDs from list_voices."),
+      detail: detailParam("medium"),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
     async ({
@@ -56,6 +90,7 @@ export function registerRepurposeTools(server: McpServer) {
       includeLink,
       textLength,
       voiceProfileIds,
+      detail,
       brandId,
     }) => {
       const id = requireBrandId(brandId);
@@ -79,7 +114,7 @@ export function registerRepurposeTools(server: McpServer) {
         }
       }
 
-      const data = await api.post(`/api/agent/v1/tools/repurpose`, {
+      const raw = await api.post(`/api/agent/v1/tools/repurpose`, {
         brandId: id,
         sourceType,
         sourceUrl,
@@ -94,8 +129,18 @@ export function registerRepurposeTools(server: McpServer) {
         textLength,
         voiceProfileIds: voiceMap,
       });
+
+      const data = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
+
+      let result: unknown;
+      if ("posts" in data || "variations" in data) {
+        result = project(detail, data, socialProjector);
+      } else {
+        result = project(detail, data, blogProjector);
+      }
+
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify(result) }],
       };
     }
   );

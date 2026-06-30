@@ -1,12 +1,22 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { config, getToken } from "../config.js";
+import { config, getToken, getSessionId } from "../config.js";
 import { saveToken, deleteToken } from "../auth.js";
 import { api } from "../client.js";
 
-// Shared in-process state for the two-step device flow
-let pendingDeviceCode: string | null = null;
-let pendingInterval = 5;
-let pendingExpiresAt = 0;
+// Per-session state for the two-step device flow.
+// Keyed by session ID so concurrent HTTP sessions don't interfere with each other.
+interface PendingFlow {
+  deviceCode: string;
+  interval: number;
+  expiresAt: number;
+}
+
+const pendingFlows = new Map<string, PendingFlow>();
+
+/** Resolve the session key — falls back to "stdio" for the stdio transport. */
+function sessionKey(): string {
+  return getSessionId() ?? "stdio";
+}
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
@@ -33,7 +43,9 @@ async function fetchJson<T>(path: string, body?: unknown): Promise<T> {
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
   } catch (err) {
-    const cause = err instanceof Error ? `${err.message}${err.cause ? ` (cause: ${String(err.cause)})` : ""}` : String(err);
+    const cause = err instanceof Error
+      ? `${err.message}${err.cause ? ` (cause: ${String(err.cause)})` : ""}`
+      : String(err);
     throw new Error(`Cannot reach PostKing at ${url}: ${cause}`);
   }
   if (!res.ok) {
@@ -52,47 +64,49 @@ export function registerAuthTools(server: McpServer) {
     ].join(" "),
     {},
     async () => {
-      // Already logged in?
       const existing = getToken();
       if (existing) {
-        return {
-          content: [
-            {
+        try {
+          const me = await api.get<{ email?: string }>("/api/agent/v1/me");
+          const asEmail = me.email ? ` as ${me.email}` : "";
+          return {
+            content: [{
               type: "text" as const,
-              text: "Already logged in. Call logout first if you want to switch accounts.",
-            },
-          ],
-        };
+              text: `Already logged in${asEmail}. Call logout first if you want to switch accounts.`,
+            }],
+          };
+        } catch {
+          // Token is stale (401 handler in client.ts already cleared it if it came
+          // from the credential file) or network/5xx — fall through to fresh login.
+        }
       }
 
-      const data = await fetchJson<DeviceCodeResponse>(
-        "/api/agent/auth/device/code",
-        {}
-      );
+      const data = await fetchJson<DeviceCodeResponse>("/api/agent/auth/device/code", {});
 
       if (!data.device_code) {
         throw new Error("Failed to start login: no device_code returned.");
       }
 
-      pendingDeviceCode = data.device_code;
-      pendingInterval = Math.max(1, data.interval || 5);
-      pendingExpiresAt = Date.now() + (data.expires_in || 600) * 1000;
+      pendingFlows.set(sessionKey(), {
+        deviceCode: data.device_code,
+        interval: Math.max(1, data.interval || 5),
+        expiresAt: Date.now() + (data.expires_in || 600) * 1000,
+      });
 
       return {
-        content: [
-          {
-            type: "text" as const,
-            text: [
-              "**PostKing Login**",
-              "",
-              `1. Visit: ${data.verification_uri}`,
-              `2. Enter code: **${data.user_code}**`,
-              "",
-              "I will now wait for you to approve in the browser — no need to tell me when you're done.",
-              `(Code expires in ${Math.floor(data.expires_in / 60)} minutes)`,
-            ].join("\n"),
-          },
-        ],
+        content: [{
+          type: "text" as const,
+          text: [
+            "**Action required: authorize PostKing in your browser.**",
+            "",
+            "IMPORTANT: Show the user this exact URL — do not paraphrase or omit it:",
+            data.verification_uri,
+            "",
+            `The user should open the above link. The page will auto-authorize using code ${data.user_code}.`,
+            "",
+            `I am now waiting for you to approve — no need to tell me when done. (Expires in ${Math.floor(data.expires_in / 60)} min)`,
+          ].join("\n"),
+        }],
       };
     }
   );
@@ -103,75 +117,80 @@ export function registerAuthTools(server: McpServer) {
     "Wait for the user to approve the PostKing login code in their browser and then save the token. Polls automatically; call this immediately after `login_start`.",
     {},
     async () => {
-      if (!pendingDeviceCode) {
+      const key = sessionKey();
+      const pending = pendingFlows.get(key);
+      if (!pending) {
         throw new Error("No login in progress. Call login_start first.");
       }
 
-      // Poll until approved, expired, or a hard safety cap is reached.
       const HARD_CAP_MS = 10 * 60 * 1000; // 10 minutes
       const started = Date.now();
 
       while (true) {
-        if (Date.now() > pendingExpiresAt || Date.now() - started > HARD_CAP_MS) {
-          pendingDeviceCode = null;
+        if (Date.now() > pending.expiresAt || Date.now() - started > HARD_CAP_MS) {
+          pendingFlows.delete(key);
           throw new Error("Login code expired. Call login_start to begin again.");
         }
 
-        const data = await fetchJson<TokenResponse>(
-          "/api/agent/auth/device/token",
-          { device_code: pendingDeviceCode }
-        );
+        const tokenUrl = `${config.apiUrl}/api/agent/auth/device/token`;
+        let tokenRes: Response;
+        try {
+          tokenRes = await fetch(tokenUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ device_code: pending.deviceCode }),
+          });
+        } catch (err) {
+          const cause = err instanceof Error
+            ? `${err.message}${err.cause ? ` (cause: ${String(err.cause)})` : ""}`
+            : String(err);
+          throw new Error(`Cannot reach PostKing at ${tokenUrl}: ${cause}`);
+        }
+        const data = await tokenRes.json() as TokenResponse;
 
         if (data.access_token) {
-          pendingDeviceCode = null;
+          pendingFlows.delete(key);
           const isRemote = process.env.POSTKING_MCP_TRANSPORT === "http";
           if (isRemote) {
-            // Hosted/remote MCP: we can't persist a shared credential file.
-            // Hand the token back to the user so they can paste it into their
-            // MCP client's Authorization header and re-connect.
             const MCP_REMOTE_URL = "https://mcp.postking.app/mcp";
             return {
-              content: [
-                {
-                  type: "text" as const,
-                  text: [
-                    "**You're signed in. One last step — paste this key into your MCP client.**",
-                    "",
-                    `API key: \`${data.access_token}\``,
-                    "",
-                    "For Hermes, run on your machine:",
-                    "",
-                    "```bash",
-                    "hermes mcp remove postking-remote 2>/dev/null || true",
-                    `hermes mcp add postking-remote --url ${MCP_REMOTE_URL} --header "Authorization: Bearer ${data.access_token}"`,
-                    "```",
-                    "",
-                    "After re-adding, all PostKing tools become available in this session.",
-                  ].join("\n"),
-                },
-              ],
+              content: [{
+                type: "text" as const,
+                text: [
+                  "**You're signed in. One last step — paste this key into your MCP client.**",
+                  "",
+                  `API key: \`${data.access_token}\``,
+                  "",
+                  "For Hermes, run on your machine:",
+                  "",
+                  "```bash",
+                  "hermes mcp remove postking-remote 2>/dev/null || true",
+                  `hermes mcp add postking-remote --url ${MCP_REMOTE_URL} --header "Authorization: Bearer ${data.access_token}"`,
+                  "```",
+                  "",
+                  "After re-adding, all PostKing tools become available in this session.",
+                ].join("\n"),
+              }],
             };
           }
           saveToken(data.access_token);
           return {
-            content: [
-              {
-                type: "text" as const,
-                text: "Logged in successfully. Your credentials are saved — you won't need to log in again.",
-              },
-            ],
+            content: [{
+              type: "text" as const,
+              text: "Logged in successfully. Your credentials are saved — you won't need to log in again.",
+            }],
           };
         }
 
         if (data.error && data.error !== "authorization_pending" && data.error !== "slow_down") {
           if (data.error === "expired_token") {
-            pendingDeviceCode = null;
+            pendingFlows.delete(key);
             throw new Error("Login code expired. Call login_start to begin again.");
           }
           throw new Error(`Login failed: ${data.error}`);
         }
 
-        const waitSecs = data.error === "slow_down" ? pendingInterval + 5 : pendingInterval;
+        const waitSecs = data.error === "slow_down" ? pending.interval + 5 : pending.interval;
         await sleep(waitSecs * 1000);
       }
     }
@@ -185,12 +204,10 @@ export function registerAuthTools(server: McpServer) {
     async () => {
       deleteToken();
       return {
-        content: [
-          {
-            type: "text" as const,
-            text: "Logged out. Your local credentials have been removed.",
-          },
-        ],
+        content: [{
+          type: "text" as const,
+          text: "Logged out. Your local credentials have been removed.",
+        }],
       };
     }
   );

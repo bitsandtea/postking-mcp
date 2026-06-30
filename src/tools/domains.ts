@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { api } from "../client.js";
 import { requireBrandId } from "../state.js";
+import { detailParam, projectList, type Projector } from "../detail.js";
 
 function slimDomain(d: any) {
   return {
@@ -20,15 +21,25 @@ export function registerDomainTools(server: McpServer) {
   // ── List domains ──────────────────────────────────────────────────────────
   server.tool(
     "list_domains",
-    "List all custom domains for the active brand, including verification status, SSL status, and what blogs or landing pages are connected to each.",
-    { brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)") },
-    async ({ brandId }) => {
+    "List all custom domains for the active brand. Lists default short; pass detail=medium/full for more fields including SSL status, verification, and connected blogs or landing pages.",
+    {
+      brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
+      detail: detailParam("short"),
+    },
+    async ({ brandId, detail }) => {
       const id = requireBrandId(brandId);
-      const data = await api.get<any>(`/api/agent/v1/domains?brandId=${id}`);
-      const domains = (data?.domains ?? (Array.isArray(data) ? data : [])).map(slimDomain);
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(domains, null, 2) }],
+      const data = await api.get<unknown>(`/api/agent/v1/domains?brandId=${id}`);
+      const raw = (data as any)?.domains ?? (Array.isArray(data) ? data : []);
+      const proj: Projector<unknown> = {
+        short: (d) => ({
+          id: (d as any).id,
+          domain: (d as any).domain,
+          status: (d as any).sslStatus ?? ((d as any).isVerified ? "verified" : "pending"),
+        }),
+        medium: (d) => slimDomain(d as any),
       };
+      const text = JSON.stringify({ count: raw.length, detail, domains: projectList(detail, raw, proj) });
+      return { content: [{ type: "text" as const, text }] };
     }
   );
 

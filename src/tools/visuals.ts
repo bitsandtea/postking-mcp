@@ -2,34 +2,54 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { api } from "../client.js";
 import { requireBrandId } from "../state.js";
+import { detailParam, project, projectList, truncate, type Projector } from "../detail.js";
 
 const brandOpt = z.string().optional().describe("Brand ID (defaults to active brand)");
 
-function slimAsset(a: any) {
+function slimAsset(a: Record<string, unknown>) {
   return {
-    id: a.id,
-    name: a.name ?? null,
-    type: a.type ?? null,
-    tags: a.tags ?? [],
-    url: a.url ?? null,
-    isActive: a.isActive ?? true,
-    description: a.description ?? null,
+    id: a.id as string | undefined,
+    name: (a.name ?? null) as string | null,
+    type: (a.type ?? null) as string | null,
+    tags: (a.tags ?? []) as string[],
+    url: (a.url ?? null) as string | null,
+    isActive: (a.isActive ?? true) as boolean,
+    description: (a.description ?? null) as string | null,
   };
 }
+
+const assetProjector: Projector<Record<string, unknown>> = {
+  short: (a) => ({ id: a.id, type: a.type ?? null, name: a.name ?? null }),
+  medium: (a) => slimAsset(a),
+};
+
+const stockProjector: Projector<Record<string, unknown>> = {
+  short: (r) => ({
+    url: r.url ?? r.photo_url ?? null,
+    thumbnailUrl: r.thumbnailUrl ?? r.thumbnail_url ?? null,
+  }),
+  medium: (r) => ({
+    url: r.url ?? r.photo_url ?? null,
+    thumbnailUrl: r.thumbnailUrl ?? r.thumbnail_url ?? null,
+    description: truncate(r.description ?? r.alt ?? null, 100),
+    credit: r.credit ?? r.photographer ?? null,
+  }),
+};
 
 export function registerVisualTools(server: McpServer) {
   // ── List assets ───────────────────────────────────────────────────────────
   server.tool(
     "list_assets",
-    "List assets in the brand's visual library. Filter by type (image|video|gif|pdf), tags, or search text.",
+    "List assets in the brand's visual library. Filter by type (IMAGE|DOCUMENT|VIDEO|LINK|LOTTIE), tags, or search text. Supports detail param: short=id+type+name, medium=key fields, full=raw.",
     {
-      type: z.enum(["image", "video", "gif", "pdf"]).optional().describe("Asset type filter"),
+      type: z.enum(["IMAGE", "DOCUMENT", "VIDEO", "LINK", "LOTTIE"]).optional().describe("Asset type filter: IMAGE | DOCUMENT | VIDEO | LINK | LOTTIE"),
       tags: z.string().optional().describe("Comma-separated tags to filter by"),
       search: z.string().optional().describe("Full-text search within asset name/description"),
       limit: z.number().int().min(1).max(200).optional().default(50),
+      detail: detailParam("short"),
       brandId: brandOpt,
     },
-    async ({ type, tags, search, limit, brandId }) => {
+    async ({ type, tags, search, limit, detail, brandId }) => {
       const id = requireBrandId(brandId);
       const params = new URLSearchParams();
       if (type) params.set("type", type);
@@ -38,24 +58,27 @@ export function registerVisualTools(server: McpServer) {
       if (limit) params.set("limit", String(limit));
       const qs = params.toString() ? `?${params}` : "";
       const data = await api.get<any>(`/api/agent/v1/brands/${id}/assets${qs}`);
-      const assets = (data?.assets ?? []).map(slimAsset);
-      return { content: [{ type: "text" as const, text: JSON.stringify(assets, null, 2) }] };
+      const rawAssets = (data?.assets ?? []) as Record<string, unknown>[];
+      const result = { count: rawAssets.length, detail, assets: projectList(detail, rawAssets, assetProjector) };
+      return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
     }
   );
 
   // ── View asset ────────────────────────────────────────────────────────────
   server.tool(
     "view_asset",
-    "View full details of a single asset by ID.",
+    "View details of a single asset by ID. Supports detail param: short=id+type+name, medium=key fields, full=raw.",
     {
       assetId: z.string().describe("Asset ID from list_assets"),
+      detail: detailParam("full"),
       brandId: brandOpt,
     },
-    async ({ assetId, brandId }) => {
+    async ({ assetId, detail, brandId }) => {
       const id = requireBrandId(brandId);
       const data = await api.get<any>(`/api/agent/v1/brands/${id}/assets/${assetId}`);
-      const a = data?.asset ?? data;
-      return { content: [{ type: "text" as const, text: JSON.stringify(slimAsset(a), null, 2) }] };
+      const a = (data?.asset ?? data) as Record<string, unknown>;
+      const result = project(detail, a, assetProjector);
+      return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
     }
   );
 
@@ -110,15 +133,23 @@ export function registerVisualTools(server: McpServer) {
   // ── Import assets from URL list ────────────────────────────────────────────
   server.tool(
     "import_assets_csv",
-    "Batch-import up to 50 assets by providing an array of public URLs. All are added to the brand library.",
+    "Batch-import up to 50 assets by providing an array of public URLs. All are added to the brand library. Supports detail param for the returned asset list.",
     {
       urls: z.array(z.string().url()).min(1).max(50).describe("Array of public URLs to import"),
+      detail: detailParam("short"),
       brandId: brandOpt,
     },
-    async ({ urls, brandId }) => {
+    async ({ urls, detail, brandId }) => {
       const id = requireBrandId(brandId);
       const data = await api.post<any>(`/api/agent/v1/brands/${id}/assets/import-urls`, { urls });
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      const dataRec = data as Record<string, unknown>;
+      const result = {
+        imported: dataRec.imported ?? 0,
+        errors: dataRec.errors ?? [],
+        detail,
+        assets: projectList(detail, (dataRec.assets ?? []) as Record<string, unknown>[], assetProjector),
+      };
+      return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
     }
   );
 
@@ -206,13 +237,15 @@ export function registerVisualTools(server: McpServer) {
     [
       "Search stock photo/video libraries for images matching a query.",
       "Returns URLs and descriptions. Use import_asset_from_url to add a result to the library.",
+      "Supports detail param: short=url+thumbnail, medium=adds description+credit, full=raw.",
     ].join(" "),
     {
       query: z.string().describe("Search query, e.g. 'startup team meeting'"),
       platform: z.string().optional().describe("Platform to optimize image dimensions for, e.g. 'linkedin'"),
+      detail: detailParam("short"),
       brandId: brandOpt,
     },
-    async ({ query, platform, brandId }) => {
+    async ({ query, platform, detail, brandId }) => {
       const id = requireBrandId(brandId);
       const body: Record<string, unknown> = { query };
       if (platform) body.medium = platform;
@@ -220,8 +253,9 @@ export function registerVisualTools(server: McpServer) {
         `/api/agent/v1/brands/${id}/assets/search-stock`,
         body
       );
-      const results = data?.results ?? data?.photos ?? [];
-      return { content: [{ type: "text" as const, text: JSON.stringify(results, null, 2) }] };
+      const rawResults = (data?.results ?? data?.photos ?? []) as Record<string, unknown>[];
+      const result = { count: rawResults.length, detail, results: projectList(detail, rawResults, stockProjector) };
+      return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
     }
   );
 }

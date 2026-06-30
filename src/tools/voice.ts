@@ -2,19 +2,27 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { api } from "../client.js";
 import { requireBrandId } from "../state.js";
+import { detailParam, projectList, type Projector } from "../detail.js";
 
 export function registerVoiceTools(server: McpServer) {
   server.tool(
     "list_voices",
-    "List all available voice profiles with their IDs.",
-    {},
-    async () => {
+    "List all available voice profiles with their IDs. Lists default short; pass detail=medium/full for more fields.",
+    { detail: detailParam("short") },
+    async ({ detail }) => {
       // Fire warmup in background so voices are ready for immediate use
       api.post("/api/voice-profiles/warm-up").catch(() => {});
       const data = await api.get<unknown[]>("/api/voice-profiles?slim=true");
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+      const raw = Array.isArray(data) ? data : [];
+      const proj: Projector<unknown> = {
+        short: (v) => ({ id: (v as any).id, name: (v as any).name }),
+        medium: (v) => {
+          const vr = v as Record<string, unknown>;
+          return { id: vr.id, name: vr.name, description: vr.description, language: vr.language, category: vr.category };
+        },
       };
+      const text = JSON.stringify({ count: raw.length, detail, voices: projectList(detail, raw, proj) });
+      return { content: [{ type: "text" as const, text }] };
     }
   );
 

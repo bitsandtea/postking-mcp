@@ -2,6 +2,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { api } from "../client.js";
 import { requireBrandId } from "../state.js";
+import { detailParam, project, type Projector } from "../detail.js";
+import { brandDashboardUrl } from "../links.js";
 
 const brandOpt = z.string().optional().describe("Brand ID (defaults to active brand)");
 
@@ -24,14 +26,32 @@ export function registerWeeklyScheduleTools(server: McpServer) {
       "Retrieve the current weekly content schedule for the active brand.",
       "Returns enabled status, lead time, timezone, and per-day platform configs.",
       "If no schedule is configured yet, returns suggested defaults.",
+      "Includes a viewInBrowser link to open the calendar page in the app.",
     ].join(" "),
-    { brandId: brandOpt },
-    async ({ brandId }) => {
+    { brandId: brandOpt, detail: detailParam("full") },
+    async ({ brandId, detail }) => {
       const id = requireBrandId(brandId);
       const data = await api.get<unknown>(
         `/api/agent/v1/brands/${id}/weekly-schedule`
       );
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      const proj: Projector<unknown> = {
+        short: (d) => ({ enabled: (d as any).enabled }),
+        medium: (d) => ({
+          enabled: (d as any).enabled,
+          timezone: (d as any).timezone,
+          leadTimeDays: (d as any).leadTimeDays,
+          activeDays: ((d as any).dayConfigs ?? []).length,
+          platforms: [
+            ...new Set(
+              ((d as any).dayConfigs ?? []).flatMap(
+                (dc: any) => dc.mediums?.map((m: any) => m.medium) ?? []
+              )
+            ),
+          ],
+        }),
+      };
+      const viewInBrowser = brandDashboardUrl(id, "weekly_schedule");
+      return { content: [{ type: "text" as const, text: JSON.stringify({ ...(project(detail, data, proj) as Record<string, unknown>), viewInBrowser }) }] };
     }
   );
 
@@ -71,7 +91,8 @@ export function registerWeeklyScheduleTools(server: McpServer) {
         `/api/agent/v1/brands/${id}/weekly-schedule`,
         { enabled, leadTimeDays, timezone, voiceProfileId, dayConfigs }
       );
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      const viewInBrowser = brandDashboardUrl(id, "weekly_schedule");
+      return { content: [{ type: "text" as const, text: JSON.stringify({ ...(data as Record<string, unknown>), viewInBrowser }, null, 2) }] };
     }
   );
 
@@ -86,7 +107,8 @@ export function registerWeeklyScheduleTools(server: McpServer) {
         `/api/agent/v1/brands/${id}/weekly-schedule`,
         { enabled: true }
       );
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      const viewInBrowser = brandDashboardUrl(id, "weekly_schedule");
+      return { content: [{ type: "text" as const, text: JSON.stringify({ ...(data as Record<string, unknown>), viewInBrowser }, null, 2) }] };
     }
   );
 
@@ -101,7 +123,8 @@ export function registerWeeklyScheduleTools(server: McpServer) {
         `/api/agent/v1/brands/${id}/weekly-schedule`,
         { enabled: false }
       );
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      const viewInBrowser = brandDashboardUrl(id, "weekly_schedule");
+      return { content: [{ type: "text" as const, text: JSON.stringify({ ...(data as Record<string, unknown>), viewInBrowser }, null, 2) }] };
     }
   );
 
@@ -141,7 +164,8 @@ export function registerWeeklyScheduleTools(server: McpServer) {
         `/api/agent/v1/brands/${id}/posts/smart-week`,
         { targetDate }
       );
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      const viewInBrowser = brandDashboardUrl(id, "weekly_schedule");
+      return { content: [{ type: "text" as const, text: JSON.stringify({ ...data, viewInBrowser }, null, 2) }] };
     }
   );
 }

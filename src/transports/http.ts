@@ -1,26 +1,29 @@
 /**
  * Streamable HTTP transport (per the MCP spec) for hosted deployments.
  *
- * Every request reads `Authorization: Bearer pk_live_*` from the inbound HTTP
- * headers and binds it to the current async context via `runWithToken`. That
- * keeps tokens scoped to a single request — no `process.env` mutation, no
- * cross-session leakage — while outbound `/api/agent/v1/*` calls pick the
- * token up through `config.getToken()`.
+ * OAuth RS behavior (RFC 9728 + RFC 6750):
+ *  - GET /.well-known/oauth-protected-resource   → resource metadata document
+ *  - GET /.well-known/oauth-protected-resource/mcp → same document (alias)
+ *  - POST /mcp with no / invalid bearer           → 401 + WWW-Authenticate
+ *  - POST /mcp with valid bearer                  → introspect, then handle
  *
- * Sessions are tracked in-memory (keyed by MCP session id). Horizontal scaling
- * is safe because each session's transport is sticky to a single process.
+ * Every request binds the validated bearer and the MCP session ID into
+ * AsyncLocalStorage so tools can read them without touching process.env.
  */
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createServer } from "../server.js";
-import { runWithToken } from "../config.js";
+import { runWithToken, runWithSession, oauthConfig } from "../config.js";
+import { introspectToken } from "../oauth/introspect.js";
+import { deleteSessionState } from "../state.js";
 
 interface SessionEntry {
   transport: StreamableHTTPServerTransport;
   server: McpServer;
-  token: string | null;
+  token: string;
+  sessionId: string;
 }
 
 const sessions = new Map<string, SessionEntry>();
@@ -48,56 +51,137 @@ async function readBody(req: http.IncomingMessage): Promise<unknown> {
   });
 }
 
+/**
+ * Derive the resource base URL (without /mcp suffix) for use in
+ * WWW-Authenticate challenges and the well-known document.
+ */
+function resourceBaseUrl(): string {
+  const uri = oauthConfig.resourceUri;
+  return uri.endsWith("/mcp") ? uri.slice(0, -4) : uri;
+}
+
+function sendUnauthorized(res: http.ServerResponse): void {
+  const base = resourceBaseUrl();
+  res.writeHead(401, {
+    "content-type": "application/json",
+    "access-control-allow-origin": "*",
+    "www-authenticate": `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource"`,
+  });
+  res.end(JSON.stringify({ error: "unauthorized", error_description: "Bearer token required" }));
+}
+
+function sendResourceMetadata(res: http.ServerResponse): void {
+  const body = JSON.stringify({
+    resource: oauthConfig.resourceUri,
+    authorization_servers: [oauthConfig.asIssuer],
+    scopes_supported: ["read", "write"],
+    bearer_methods_supported: ["header"],
+  });
+  res.writeHead(200, {
+    "content-type": "application/json",
+    "access-control-allow-origin": "*",
+    "cache-control": "public, max-age=3600",
+  });
+  res.end(body);
+}
+
 export interface HttpTransportOptions {
   port: number;
   healthPath?: string;
 }
 
 export async function runHttp(opts: HttpTransportOptions): Promise<http.Server> {
-  if (process.env.FF_REMOTE_MCP_ENABLED !== "true") {
-    process.stderr.write(
-      "FF_REMOTE_MCP_ENABLED is not 'true' — refusing to start remote MCP HTTP transport.\n"
-    );
-    process.exit(1);
-  }
-
   const { port, healthPath = "/health" } = opts;
 
   const httpServer = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url ?? "/", `http://localhost:${port}`);
 
+      // ── Health check ────────────────────────────────────────────────────────
       if (url.pathname === healthPath) {
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(
-          JSON.stringify({
-            status: "ok",
-            service: "postking-mcp",
-            transport: "http",
-            timestamp: new Date().toISOString(),
-          })
-        );
+        res.end(JSON.stringify({
+          status: "ok",
+          service: "postking-mcp",
+          transport: "http",
+          timestamp: new Date().toISOString(),
+        }));
         return;
       }
 
+      // ── RFC 9728 — OAuth Protected Resource Metadata ────────────────────────
+      if (
+        req.method === "GET" &&
+        (url.pathname === "/.well-known/oauth-protected-resource" ||
+          url.pathname === "/.well-known/oauth-protected-resource/mcp")
+      ) {
+        sendResourceMetadata(res);
+        return;
+      }
+
+      // ── CORS pre-flight for well-known routes ───────────────────────────────
+      if (
+        req.method === "OPTIONS" &&
+        (url.pathname === "/.well-known/oauth-protected-resource" ||
+          url.pathname === "/.well-known/oauth-protected-resource/mcp")
+      ) {
+        res.writeHead(204, {
+          "access-control-allow-origin": "*",
+          "access-control-allow-methods": "GET, OPTIONS",
+          "access-control-allow-headers": "authorization, content-type",
+        });
+        res.end();
+        return;
+      }
+
+      // ── MCP endpoint ─────────────────────────────────────────────────────────
       if (url.pathname !== "/mcp") {
         res.writeHead(404, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: "not_found" }));
         return;
       }
 
-      // Bearer is optional — an anonymous session can still call the device-code
-      // login tools (`login_start` / `login_complete`). Any tool that needs the
-      // PostKing API will 401 naturally via the api client.
-      const token = extractBearer(req);
+      // CORS pre-flight for /mcp — browser-based clients send OPTIONS before POST.
+      if (req.method === "OPTIONS") {
+        res.writeHead(204, {
+          "access-control-allow-origin": "*",
+          "access-control-allow-methods": "POST, OPTIONS",
+          "access-control-allow-headers": "authorization, content-type, mcp-session-id",
+        });
+        res.end();
+        return;
+      }
 
+      // Require a bearer token on the HTTP transport — no anonymous sessions.
+      const token = extractBearer(req);
+      if (!token) {
+        sendUnauthorized(res);
+        return;
+      }
+
+      // Validate the token via introspection (cached 45 s).
+      try {
+        await introspectToken(token);
+      } catch (err) {
+        const e = err as Error & { status?: number };
+        if (!e.status || e.status === 401) {
+          sendUnauthorized(res);
+          return;
+        }
+        // 503 / 500 — introspection endpoint unavailable; surface as 503
+        res.writeHead(503, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "service_unavailable", error_description: e.message }));
+        return;
+      }
+
+      // ── Session management ───────────────────────────────────────────────────
       const sessionIdHeader = req.headers["mcp-session-id"];
-      const sessionId = Array.isArray(sessionIdHeader)
+      const incomingSessionId = Array.isArray(sessionIdHeader)
         ? sessionIdHeader[0]
         : sessionIdHeader;
 
-      let entry: SessionEntry | undefined = sessionId
-        ? sessions.get(sessionId)
+      let entry: SessionEntry | undefined = incomingSessionId
+        ? sessions.get(incomingSessionId)
         : undefined;
 
       if (!entry) {
@@ -105,33 +189,39 @@ export async function runHttp(opts: HttpTransportOptions): Promise<http.Server> 
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => newSessionId,
         });
-        // Each session owns its own closure-scoped token.
-        const server = createServer(token ?? undefined);
+        const server = createServer(token);
         await server.connect(transport);
-        entry = { transport, server, token };
+        entry = { transport, server, token, sessionId: newSessionId };
         sessions.set(newSessionId, entry);
         transport.onclose = () => {
           sessions.delete(newSessionId);
+          deleteSessionState(newSessionId);
         };
       }
 
+      // Update the stored token to the current request's validated bearer.
+      // Hermes rotates tokens on OAuth refresh; keeping the entry token current
+      // ensures the forwarded Authorization header is never a revoked token.
+      entry.token = token;
+
       const body = await readBody(req).catch(() => undefined);
-      // Bind the request-scoped token via AsyncLocalStorage for the duration
-      // of this request so every outbound `api.*` call picks it up without
-      // touching `process.env`.
-      await runWithToken(entry.token, () =>
-        entry!.transport.handleRequest(req, res, body)
+
+      // Bind the validated bearer AND the session ID for the duration of this
+      // request so all tool calls downstream can read them without process.env.
+      const currentEntry = entry;
+      await runWithToken(currentEntry.token, () =>
+        runWithSession(currentEntry.sessionId, () =>
+          currentEntry.transport.handleRequest(req, res, body)
+        )
       );
     } catch (err) {
       const e = err as Error;
       process.stderr.write(`[http] error: ${e.message}\n`);
       if (!res.headersSent) {
         res.writeHead(500, { "content-type": "application/json" });
-        res.end(
-          JSON.stringify({
-            error: { code: "INTERNAL", message: e.message || "internal error" },
-          })
-        );
+        res.end(JSON.stringify({
+          error: { code: "INTERNAL", message: e.message || "internal error" },
+        }));
       } else {
         res.end();
       }
