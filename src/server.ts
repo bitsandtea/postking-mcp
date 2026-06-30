@@ -38,10 +38,43 @@ import { registerBillingTools } from "./tools/billing.js";
 import { registerPrompts } from "./prompts.js";
 
 export function createServer(token?: string): McpServer {
-  const server = new McpServer({
-    name: "postking",
-    version: "1.1.0",
-  });
+  const server = new McpServer(
+    {
+      name: "postking",
+      version: "1.1.0",
+    },
+    {
+      instructions: `You're connected to PostKing — a hosted platform for social content, blogs, SEO/GEO, and landing pages. ~140 tools cover the full surface: posts, blogs, SEO, landing pages, visuals, Reddit, billing, and more.
+
+## Start every session here
+1. Call \`list_brands\` to see which brands this account can access.
+2. Call \`set_active_brand(brandId)\` before any brand-scoped tool call. Brand selection is per-session — it does NOT persist across reconnects, so re-apply it at the start of every new session.
+3. If a tool returns "no brand selected" or similar, you skipped step 2 — call \`set_active_brand\` and retry, don't treat it as a hard failure.
+
+## Authentication — read this before touching auth tools
+This server supports two transports with different auth models:
+- **stdio** (local, spawned by your MCP client): exposes \`login_start\` / \`login_complete\` / \`whoami\` / \`logout\`. If a tool reports "not logged in," call \`login_start\` — it returns a short link and code; show both to the user, have them approve in their browser, then call \`login_complete\` to finish. This is a device-authorization flow, not a browser-loopback OAuth flow.
+- **HTTP (remote, OAuth)**: auth is handled entirely by your MCP client's own OAuth flow (dynamic client registration + PKCE) before any tool call happens. \`login_start\`/\`login_complete\`/\`whoami\`/\`logout\` are NOT registered on this transport — don't look for them, and don't try to "fix" a stdio connection by switching it to HTTP/OAuth or vice versa; treat the transport your client is configured with as fixed for the session.
+
+## Async operations: always poll, never assume
+Most generation/heavy actions (\`generate_post\`, \`seo_generate_clusters\`, \`seo_write_article\`, \`reddit_generate_pool\`, vibe edits, etc.) return an operation that's still running. Two patterns exist:
+- Tools like \`generate_post\` poll internally and block until done — wait for \`operationStatus: COMPLETED\` in the response before reading \`content\`/\`variations\`. Treat "RUNNING" for more than ~60s as a transient hiccup, not failure — retry the read, don't resubmit (resubmitting wastes credits and creates duplicates).
+- Tools that return an \`operationId\` (most SEO/cluster/brief/article/Reddit-pool steps) need an explicit follow-up: poll \`get_job(operationId)\` (or pass \`wait: true\` where supported) until \`state\` is \`completed\` or \`failed\`. Before generating something that might already exist (e.g. a Reddit pool), check \`list_operations(kind=..., state='completed')\` first — regenerating wastes credits.
+
+## Credits
+Generation costs credits. Call \`get_credits\` before a \`generate_post\`/\`generate_blog_post\`/similar call if you're not sure there's balance — a failed generation due to "insufficient credits" still costs you a wasted round trip. Top up with \`billing_topup\`.
+
+## Common pitfalls worth knowing up front
+- **Status filters are exact strings.** When listing drafts, filter on \`status='draft'\`, not \`'created'\` — the API rejects unrecognized status values.
+- **\`create_post\` requires \`scheduledAt\`** (ISO 8601). Omitting it returns a generic "invalid option" error that doesn't say which field is missing.
+- **Visuals are never auto-attached.** \`generate_post_visual_options\`/\`search_stock_images\` only return candidates — you must call \`pick_post_visual\` explicitly to attach one.
+- **Custom themes are free-text, not IDs.** Pass a descriptive string to \`theme\`, or register one first with the template/theme creation tool if you want it reusable.
+- **API keys are scoped.** Content-generation calls need a \`write\`-scoped key. "Invalid or revoked API key" usually means the active key's scope is wrong or it was rotated — create a fresh one rather than debugging the old one.
+
+## Where to go deeper
+This server also exposes guided prompts for common end-to-end flows — \`getting_started\`, and others covering SEO/GEO (seed keywords → clusters → briefs → articles), content weeks, Reddit distribution, and landing pages. Prefer invoking those for a first-time walkthrough of a flow rather than guessing the tool order from names alone.`,
+    }
+  );
 
   // Per-session token store — resolved by `config.getToken()`.
   setSessionToken(server, token ?? null);
