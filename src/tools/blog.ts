@@ -160,18 +160,30 @@ export function registerBlogTools(server: McpServer) {
       voiceProfileId: z.string().optional().describe("Voice profile ID for writing style (from list_voices)"),
       targetLength: z.enum(["short", "medium", "long"]).optional().default("medium"),
       primaryKeywords: z.array(z.string()).optional().describe("SEO keywords to target"),
+      secondaryKeywords: z.array(z.string()).optional().describe("Secondary SEO keywords to target"),
+      readabilityTarget: z.string().optional().describe("Readability level for the writing, e.g. 'grade-8'"),
       generateAiImage: z.boolean().optional().default(false).describe("Generate an AI header image"),
+      imageVariationCount: z.number().int().min(1).max(5).optional().describe("Number of AI image variations to generate (1-5). Only used when generateAiImage is true."),
+      attachVisualAsset: z.boolean().optional().describe("Use a brand visual asset (with branding) for the header image"),
+      selectedAssetId: z.string().optional().describe("ID of the brand asset to use for the header image"),
+      skipBrandContext: z.boolean().optional().describe("Omit brand context from the generation prompt when true"),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ publicationId, topic, voiceProfileId, targetLength, primaryKeywords, generateAiImage, brandId }) => {
+    async ({ publicationId, topic, voiceProfileId, targetLength, primaryKeywords, secondaryKeywords, readabilityTarget, generateAiImage, imageVariationCount, attachVisualAsset, selectedAssetId, skipBrandContext, brandId }) => {
       const id = requireBrandId(brandId);
       const data = await api.post<any>(`/api/agent/v1/brands/${id}/blogs/generate`, {
-        clusterId: publicationId,
+        blogId: publicationId,
         topic,
         voiceProfileId,
         targetLength,
         primaryKeywords,
+        secondaryKeywords,
+        readabilityTarget,
         generateAiImage,
+        imageVariationCount,
+        attachVisualAsset,
+        selectedAssetId,
+        skipBrandContext,
         assignAsset: false,
       });
       const article = data?.blog ?? data?.article ?? null;
