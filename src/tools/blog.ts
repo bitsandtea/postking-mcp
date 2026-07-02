@@ -294,7 +294,7 @@ export function registerBlogTools(server: McpServer) {
     },
     async ({ articleId, title, content, excerpt, status, metaTitle, metaDescription, authorId, categoryId, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.put<any>(`/api/agent/v1/brands/${id}/blogs/${articleId}`, {
+      const data = await api.patch<any>(`/api/agent/v1/brands/${id}/blogs/${articleId}`, {
         postTitle: title,
         postText: content,
         postExcerpt: excerpt,

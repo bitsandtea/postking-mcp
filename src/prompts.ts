@@ -21,9 +21,10 @@ export function registerPrompts(server: McpServer) {
             type: "text" as const,
             text: `Welcome to PostKing! Here's how to get set up:
 
-**Step 1 — Log in or register**
-- New user? I can call \`register\` with your email+password — PostKing sends a magic-link confirmation.
-- Existing user via device code? I'll call \`login_start\` to get you a login link and finish with \`login_complete\`.
+**Step 1 — Check login state, then log in or register**
+- I'll call \`health\` first — it needs no valid token and tells me whether you're already logged in (and, if not, exactly what to do next for this connection type).
+- On a local (stdio) connection? I'll call \`login_start\` to get you a login link and finish with \`login_complete\` — this works for both new and existing users.
+- On a remote (OAuth) connection, login already happened when the connection was set up — \`health\` will confirm this.
 
 **Step 2 — Create or onboard a brand**
 - If you have a website: I'll call \`onboard_brand\` with your URL. PostKing crawls it and auto-generates your brand profile + 10 content themes.
@@ -38,7 +39,7 @@ Choose a flow:
 - **Repurpose a URL**: \`repurpose_content\` with a URL → then \`create_post\` + \`approve_post\`
 - **Write your own**: \`create_post\` directly with your content
 
-Ready to start? I'll call \`login_start\` now.`,
+Ready to start? I'll call \`health\` now to check your login state and follow its guidance.`,
           },
         },
       ],

@@ -78,6 +78,9 @@ export function getSessionId(): string | null {
  */
 export type TokenSource = "als" | "env" | "file";
 
+/** Public-facing token source names (as reported by `health` / `whoami`). */
+export type PublicTokenSource = "oauth" | "env" | "file";
+
 export function getTokenWithSource(): { token: string; source: TokenSource } | null {
   const req = tokenStore.getStore();
   if (req) return { token: req, source: "als" };
@@ -91,12 +94,33 @@ export function getToken(): string | null {
   return getTokenWithSource()?.token ?? null;
 }
 
+/** Maps the internal token source to the name used in user-facing tool output. */
+export function toPublicTokenSource(source: TokenSource): PublicTokenSource {
+  return source === "als" ? "oauth" : source;
+}
+
+/**
+ * Which transport this process is running as. Set by the two bin entrypoints
+ * (postking-mcp.ts → "stdio", postking-mcp-http.ts → "http") before the
+ * server is created.
+ */
+export type Transport = "stdio" | "http";
+
+export function getTransport(): Transport {
+  return process.env.POSTKING_MCP_TRANSPORT === "http" ? "http" : "stdio";
+}
+
+/** Transport-aware guidance for "no token could be resolved at all". */
+export function notLoggedInMessage(): string {
+  return getTransport() === "http"
+    ? "Not authenticated. This connection uses OAuth bearer authentication — your MCP client should complete its OAuth flow before making tool calls. Call the health tool for details, or reconnect the client."
+    : "Not logged in. Call the login_start tool to authenticate with PostKing.";
+}
+
 export function requireToken(): string {
   const token = getToken();
   if (!token) {
-    throw new Error(
-      "Not logged in. Call the login_start tool to authenticate with PostKing."
-    );
+    throw new Error(notLoggedInMessage());
   }
   return token;
 }

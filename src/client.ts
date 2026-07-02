@@ -1,4 +1,4 @@
-import { config, oauthConfig, getTokenWithSource } from "./config.js";
+import { config, oauthConfig, getTokenWithSource, notLoggedInMessage } from "./config.js";
 import { deleteToken } from "./auth.js";
 import { log } from "./log.js";
 
@@ -11,6 +11,13 @@ export interface AgentCreditPack {
 export interface AgentErrorEnvelope {
   code?: string;
   message?: string;
+  /**
+   * Machine-readable sub-reason for the error, e.g. "key_invalid" for a
+   * revoked/expired/malformed API key on a 401. Optional because older
+   * server versions don't emit it — callers should fall back to matching
+   * on `message` when absent.
+   */
+  reason?: string;
   docsUrl?: string;
   retryable?: boolean;
   checkoutUrl?: string;
@@ -55,9 +62,7 @@ async function request<T>(
 ): Promise<T> {
   const tokenResult = getTokenWithSource();
   if (!tokenResult) {
-    throw new Error(
-      "Not logged in. Call the login_start tool to authenticate with PostKing."
-    );
+    throw new Error(notLoggedInMessage());
   }
   const { token, source } = tokenResult;
   const url = `${config.apiUrl}${path}`;
@@ -112,9 +117,12 @@ async function request<T>(
     log("api", "✗ " + method + " " + path + " " + res.status + " (" + ms + "ms)", { code: envelope?.code, message });
 
     if (res.status === 401) {
+      // Prefer the explicit machine-readable `reason` the server sends for a
+      // revoked/expired/malformed key; fall back to a message-text match for
+      // older server versions that don't emit `reason` yet.
       const isInvalidKey =
         envelope?.code === "UNAUTHORIZED" &&
-        /invalid|revoked/i.test(envelope.message ?? "");
+        (envelope.reason === "key_invalid" || /invalid|revoked/i.test(envelope.message ?? ""));
 
       if (source === "file") {
         if (isInvalidKey) {

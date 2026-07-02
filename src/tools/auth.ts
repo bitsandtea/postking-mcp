@@ -1,7 +1,25 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { config, getToken, getSessionId } from "../config.js";
+import { config, getToken, getSessionId, getTransport, getTokenWithSource, toPublicTokenSource } from "../config.js";
 import { saveToken, deleteToken } from "../auth.js";
 import { api } from "../client.js";
+
+const MCP_REMOTE_URL = "https://mcp.postking.app/mcp";
+
+/** Guidance shown when a login/logout tool is called on the http (OAuth) transport. */
+const REMOTE_AUTH_EXPLAINER = [
+  "This connection authenticates via an OAuth bearer token supplied by your MCP client — there is no device-code flow to run here.",
+  "",
+  "Your MCP client should have completed OAuth (dynamic client registration + PKCE) before this session was created. If tool calls are failing with auth errors, the fix is on the client side — reconnect / re-authorize — not by calling login_start/login_complete/logout.",
+  "",
+  "To (re-)connect a remote client such as Hermes with a PostKing API key instead of interactive OAuth:",
+  "",
+  "```bash",
+  "hermes mcp remove postking-remote 2>/dev/null || true",
+  `hermes mcp add postking-remote --url ${MCP_REMOTE_URL} --header \"Authorization: Bearer <your-api-key>\"`,
+  "```",
+  "",
+  "Get an API key by running login_start/login_complete on a stdio connection (e.g. Claude Desktop, Claude Code, or the CLI), or from the PostKing dashboard's API keys page.",
+].join("\n");
 
 // Per-session state for the two-step device flow.
 // Keyed by session ID so concurrent HTTP sessions don't interfere with each other.
@@ -64,6 +82,10 @@ export function registerAuthTools(server: McpServer) {
     ].join(" "),
     {},
     async () => {
+      if (getTransport() === "http") {
+        return { content: [{ type: "text" as const, text: REMOTE_AUTH_EXPLAINER }] };
+      }
+
       const existing = getToken();
       if (existing) {
         try {
@@ -117,6 +139,10 @@ export function registerAuthTools(server: McpServer) {
     "Wait for the user to approve the PostKing login code in their browser and then save the token. Polls automatically; call this immediately after `login_start`.",
     {},
     async () => {
+      if (getTransport() === "http") {
+        return { content: [{ type: "text" as const, text: REMOTE_AUTH_EXPLAINER }] };
+      }
+
       const key = sessionKey();
       const pending = pendingFlows.get(key);
       if (!pending) {
@@ -150,34 +176,14 @@ export function registerAuthTools(server: McpServer) {
 
         if (data.access_token) {
           pendingFlows.delete(key);
-          const isRemote = process.env.POSTKING_MCP_TRANSPORT === "http";
-          if (isRemote) {
-            const MCP_REMOTE_URL = "https://mcp.postking.app/mcp";
-            return {
-              content: [{
-                type: "text" as const,
-                text: [
-                  "**You're signed in. One last step — paste this key into your MCP client.**",
-                  "",
-                  `API key: \`${data.access_token}\``,
-                  "",
-                  "For Hermes, run on your machine:",
-                  "",
-                  "```bash",
-                  "hermes mcp remove postking-remote 2>/dev/null || true",
-                  `hermes mcp add postking-remote --url ${MCP_REMOTE_URL} --header "Authorization: Bearer ${data.access_token}"`,
-                  "```",
-                  "",
-                  "After re-adding, all PostKing tools become available in this session.",
-                ].join("\n"),
-              }],
-            };
-          }
           saveToken(data.access_token);
+          const envWarning = process.env.POSTKING_API_TOKEN
+            ? "\n\nWARNING: the POSTKING_API_TOKEN environment variable is set and takes precedence over the file credential just saved — this login will NOT take effect until that environment variable is unset."
+            : "";
           return {
             content: [{
               type: "text" as const,
-              text: "Logged in successfully. Your credentials are saved — you won't need to log in again.",
+              text: "Logged in successfully. Your credentials are saved — you won't need to log in again." + envWarning,
             }],
           };
         }
@@ -202,11 +208,27 @@ export function registerAuthTools(server: McpServer) {
     "Clear locally stored PostKing credentials.",
     {},
     async () => {
+      if (getTransport() === "http") {
+        return {
+          content: [{
+            type: "text" as const,
+            text: [
+              "This transport authenticates via an OAuth bearer token supplied per-connection by your MCP client — there is no local credential file to clear here.",
+              "",
+              "To fully log out, revoke access from your MCP client's connection settings or from the PostKing dashboard's connected apps page.",
+            ].join("\n"),
+          }],
+        };
+      }
+
       deleteToken();
+      const envWarning = process.env.POSTKING_API_TOKEN
+        ? "\n\nWARNING: the POSTKING_API_TOKEN environment variable is still set and remains active as the credential source even though the file credential was removed."
+        : "";
       return {
         content: [{
           type: "text" as const,
-          text: "Logged out. Your local credentials have been removed.",
+          text: "Logged out. Your local credentials have been removed." + envWarning,
         }],
       };
     }
@@ -215,12 +237,14 @@ export function registerAuthTools(server: McpServer) {
   // ── whoami ────────────────────────────────────────────────────────────────
   server.tool(
     "whoami",
-    "Return the profile of the currently authenticated PostKing user (email, plan, credit balance).",
+    "Return the profile of the currently authenticated PostKing user (email, plan, credit balance, token source).",
     {},
     async () => {
+      const tokenResult = getTokenWithSource();
       const data = await api.get<Record<string, unknown>>("/api/agent/v1/me");
+      const tokenSource = tokenResult ? toPublicTokenSource(tokenResult.source) : null;
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify({ ...data, tokenSource }, null, 2) }],
       };
     }
   );
