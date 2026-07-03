@@ -1,4 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { basename } from "node:path";
 import { z } from "zod";
 import { api } from "../client.js";
 import { requireBrandId } from "../state.js";
@@ -82,30 +85,75 @@ export function registerVisualTools(server: McpServer) {
     }
   );
 
-  // ── Upload asset (base64) ─────────────────────────────────────────────────
+  // ── Upload asset (file path or base64) ────────────────────────────────────
   server.tool(
     "upload_asset",
     [
-      "Upload an asset to the brand library by providing base64-encoded file content.",
-      "Encode the file as base64 and pass it as fileBase64. Also provide the original fileName.",
+      "Upload an asset to the brand library from a local file path or base64-encoded content.",
+      "Prefer filePath for local files: the server reads and base64-encodes the file itself, avoiding truncation of large base64 strings over the tool_call boundary.",
+      "fileBase64 is still supported for remote/inline use where no local path is available.",
+      "Provide exactly one of filePath or fileBase64.",
       "Returns the new asset ID and URL.",
     ].join(" "),
     {
-      fileBase64: z.string().describe("Base64-encoded file content"),
-      fileName: z.string().describe("Original file name including extension, e.g. 'logo.png'"),
+      filePath: z.string().optional().describe("Absolute path to a local file to upload. Preferred over fileBase64 for local files."),
+      fileBase64: z.string().optional().describe("Base64-encoded file content. Use filePath instead when the file is local."),
+      fileName: z.string().optional().describe("Original file name including extension, e.g. 'logo.png'. Derived from filePath if omitted."),
+      mimeType: z.string().optional().describe("MIME type of the file, e.g. 'image/png'"),
       name: z.string().optional().describe("Display name for the asset"),
       description: z.string().optional(),
       tags: z.array(z.string()).optional().describe("Tags to apply, e.g. ['logo', 'brand']"),
       brandId: brandOpt,
     },
-    async ({ fileBase64, fileName, name, description, tags, brandId }) => {
+    async ({ filePath, fileBase64, fileName, mimeType, name, description, tags, brandId }) => {
+      if (!filePath && !fileBase64) {
+        return {
+          content: [{ type: "text" as const, text: "Provide exactly one of filePath or fileBase64." }],
+        };
+      }
+      if (filePath && fileBase64) {
+        return {
+          content: [{ type: "text" as const, text: "Provide only one of filePath or fileBase64, not both." }],
+        };
+      }
+
       const id = requireBrandId(brandId);
+
+      let resolvedFileBase64: string;
+      let resolvedFileName: string | undefined = fileName;
+      let fileSize: number;
+      let sha256: string;
+
+      if (filePath) {
+        let buffer: Buffer;
+        try {
+          buffer = await readFile(filePath);
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : String(err);
+          return {
+            content: [{ type: "text" as const, text: `Could not read file at ${filePath}: ${reason}` }],
+          };
+        }
+        resolvedFileName = resolvedFileName ?? basename(filePath);
+        fileSize = buffer.byteLength;
+        sha256 = createHash("sha256").update(buffer).digest("hex");
+        resolvedFileBase64 = buffer.toString("base64");
+      } else {
+        const buffer = Buffer.from(fileBase64 as string, "base64");
+        fileSize = buffer.byteLength;
+        sha256 = createHash("sha256").update(buffer).digest("hex");
+        resolvedFileBase64 = fileBase64 as string;
+      }
+
       const data = await api.post<any>(`/api/agent/v1/brands/${id}/assets`, {
-        fileBase64,
-        fileName,
+        fileBase64: resolvedFileBase64,
+        fileName: resolvedFileName,
         name,
         description,
         tags,
+        mimeType,
+        fileSize,
+        sha256,
       });
       const a = data?.asset ?? data;
       return { content: [{ type: "text" as const, text: JSON.stringify(slimAsset(a), null, 2) }] };
