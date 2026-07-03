@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { setSessionToken } from "./config.js";
-import { log } from "./log.js";
+import { log, redactForLog } from "./log.js";
 import { registerAuthTools } from "./tools/auth.js";
 import { registerBrandTools } from "./tools/brand.js";
 import { registerPostTools } from "./tools/posts.js";
@@ -97,7 +97,7 @@ This server also exposes guided prompts for common end-to-end flows — \`gettin
       const originalHandler = lastArg;
       toolArgs[toolArgs.length - 1] = async (...handlerArgs: any[]) => {
         const args = handlerArgs[0];
-        log("tool", "→ " + name, args);
+        log("tool", "→ " + name, redactForLog(args));
         const start = Date.now();
         try {
           const result = await originalHandler(...handlerArgs);

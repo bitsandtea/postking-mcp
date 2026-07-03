@@ -44,6 +44,54 @@ function evictStaleUploads() {
   }
 }
 
+// Checks decoded file bytes against known image magic numbers. Returns a
+// human-readable mismatch message if `mimeType` is a known image type and the
+// leading bytes don't match, or `null` if they match / mimeType is absent or
+// unrecognized (non-image uploads skip this check entirely).
+function imageMagicMismatch(buffer: Buffer, mimeType?: string): string | null {
+  if (!mimeType) return null;
+  const mismatch = `leading bytes do not match ${mimeType} magic number`;
+  switch (mimeType) {
+    case "image/jpeg":
+    case "image/jpg":
+      if (buffer.length < 3 || buffer[0] !== 0xff || buffer[1] !== 0xd8 || buffer[2] !== 0xff) return mismatch;
+      return null;
+    case "image/png":
+      if (
+        buffer.length < 8 ||
+        buffer[0] !== 0x89 ||
+        buffer[1] !== 0x50 ||
+        buffer[2] !== 0x4e ||
+        buffer[3] !== 0x47 ||
+        buffer[4] !== 0x0d ||
+        buffer[5] !== 0x0a ||
+        buffer[6] !== 0x1a ||
+        buffer[7] !== 0x0a
+      )
+        return mismatch;
+      return null;
+    case "image/gif":
+      if (buffer.length < 3 || buffer[0] !== 0x47 || buffer[1] !== 0x49 || buffer[2] !== 0x46) return mismatch;
+      return null;
+    case "image/webp":
+      if (
+        buffer.length < 12 ||
+        buffer[0] !== 0x52 ||
+        buffer[1] !== 0x49 ||
+        buffer[2] !== 0x46 ||
+        buffer[3] !== 0x46 ||
+        buffer[8] !== 0x57 ||
+        buffer[9] !== 0x45 ||
+        buffer[10] !== 0x42 ||
+        buffer[11] !== 0x50
+      )
+        return mismatch;
+      return null;
+    default:
+      return null;
+  }
+}
+
 function slimAsset(a: Record<string, unknown>) {
   return {
     id: a.id as string | undefined,
@@ -176,6 +224,17 @@ export function registerVisualTools(server: McpServer) {
         resolvedFileBase64 = buffer.toString("base64");
       } else {
         const buffer = Buffer.from(fileBase64 as string, "base64");
+        const mismatch = imageMagicMismatch(buffer, mimeType);
+        if (mismatch) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: `Decoded data is not a valid ${mimeType} image (leading bytes don't match). The base64 was likely corrupted or double-encoded — re-read/re-encode the file and retry.`,
+              },
+            ],
+          };
+        }
         fileSize = buffer.byteLength;
         sha256 = createHash("sha256").update(buffer).digest("hex");
         resolvedFileBase64 = fileBase64 as string;
@@ -329,6 +388,19 @@ export function registerVisualTools(server: McpServer) {
             {
               type: "text" as const,
               text: `Reassembled file appears truncated or corrupt: sha256 mismatch (expected ${entry.expectedSha256}, got ${sha256}). The upload has been discarded — start over with upload_asset_begin.`,
+            },
+          ],
+        };
+      }
+
+      const magicMismatch = imageMagicMismatch(decoded, entry.mimeType);
+      if (magicMismatch) {
+        uploads.delete(uploadId);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Decoded data is not a valid ${entry.mimeType} image (leading bytes don't match). The base64 was likely corrupted or double-encoded — the upload has been discarded, start over with upload_asset_begin using a correct encode.`,
             },
           ],
         };
