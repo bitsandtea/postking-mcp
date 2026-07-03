@@ -310,6 +310,27 @@ export function registerBlogTools(server: McpServer) {
     }
   );
 
+  // ── Schedule blog article ─────────────────────────────────────────────────
+  server.tool(
+    "schedule_blog_article",
+    "Schedule an existing blog article to auto-publish at a future date/time. scheduledAt must be a future ISO 8601 datetime. When the time arrives, the article publishes to the PostKing blog and auto-pushes to any connected external platforms flagged autoPublish. To publish immediately instead, use update_blog_article with status='published'.",
+    {
+      articleId: z.string().describe("Blog article ID"),
+      scheduledAt: z.string().datetime().describe("ISO 8601 datetime in the future, e.g. 2026-07-10T14:30:00Z, when the article should auto-publish"),
+      brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
+    },
+    async ({ articleId, scheduledAt, brandId }) => {
+      const id = requireBrandId(brandId);
+      const data = await api.patch<any>(`/api/agent/v1/brands/${id}/blogs/${articleId}`, {
+        status: "scheduled",
+        scheduledAt,
+      });
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(slimArticle(data?.blog ?? data?.article ?? data), null, 2) }],
+      };
+    }
+  );
+
   // ── Delete blog article ───────────────────────────────────────────────────
   server.tool(
     "delete_blog_article",
