@@ -1,5 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import { z } from "zod";
@@ -8,6 +8,41 @@ import { requireBrandId } from "../state.js";
 import { detailParam, project, projectList, truncate, type Projector } from "../detail.js";
 
 const brandOpt = z.string().optional().describe("Brand ID (defaults to active brand)");
+
+// ── Chunked upload state ──────────────────────────────────────────────────
+// Chunking only needs to survive the LLM→MCP tool_call hop (large base64
+// strings get truncated crossing that boundary over the remote/HTTP
+// transport). The MCP→PostKing hop is a normal server-to-server request with
+// no such limit, so we buffer chunks in memory here, reassemble the full
+// base64 string, and make one existing-shape call to PostKing — identical to
+// what `upload_asset` already does.
+const UPLOAD_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const MAX_BUFFERED_BASE64_CHARS = 20 * 1024 * 1024; // ~20MB of base64 chars
+
+interface PendingUpload {
+  fileName?: string;
+  mimeType?: string;
+  name?: string;
+  description?: string;
+  tags?: string[];
+  brandId?: string;
+  expectedSize?: number;
+  expectedSha256?: string;
+  chunks: Map<number, string>;
+  createdAt: number;
+  totalBufferedBytes: number;
+}
+
+const uploads = new Map<string, PendingUpload>();
+
+function evictStaleUploads() {
+  const now = Date.now();
+  for (const [uploadId, entry] of uploads) {
+    if (now - entry.createdAt > UPLOAD_TTL_MS) {
+      uploads.delete(uploadId);
+    }
+  }
+}
 
 function slimAsset(a: Record<string, unknown>) {
   return {
@@ -92,6 +127,7 @@ export function registerVisualTools(server: McpServer) {
       "Upload an asset to the brand library from a local file path or base64-encoded content.",
       "Prefer filePath for local files: the server reads and base64-encodes the file itself, avoiding truncation of large base64 strings over the tool_call boundary.",
       "fileBase64 is still supported for remote/inline use where no local path is available.",
+      "For large files over the remote/HTTP transport, a single fileBase64 string can get truncated crossing the LLM→tool_call boundary — use the chunked flow instead: upload_asset_begin → upload_asset_chunk (× N) → upload_asset_finish.",
       "Provide exactly one of filePath or fileBase64.",
       "Returns the new asset ID and URL.",
     ].join(" "),
@@ -157,6 +193,178 @@ export function registerVisualTools(server: McpServer) {
       });
       const a = data?.asset ?? data;
       return { content: [{ type: "text" as const, text: JSON.stringify(slimAsset(a), null, 2) }] };
+    }
+  );
+
+  // ── Upload asset — chunked flow (begin) ────────────────────────────────────
+  server.tool(
+    "upload_asset_begin",
+    [
+      "Start a chunked asset upload. Use this instead of upload_asset's fileBase64 param for large files over the remote/HTTP transport, where a single large base64 string can get truncated crossing the LLM→tool_call boundary.",
+      "Flow: upload_asset_begin (once) → upload_asset_chunk (once per chunk, in order) → upload_asset_finish (once).",
+      "Returns an uploadId that expires after 10 minutes of inactivity.",
+    ].join(" "),
+    {
+      fileName: z.string().describe("Original file name including extension, e.g. 'logo.png'."),
+      fileSize: z.number().optional().describe("Raw decoded byte length of the original file. Recommended — enables truncation/corruption detection at finish time."),
+      sha256: z.string().optional().describe("Sha256 hex digest of the original file's decoded bytes. Recommended — enables end-to-end integrity verification at finish time."),
+      mimeType: z.string().optional().describe("MIME type of the file, e.g. 'image/png'"),
+      name: z.string().optional().describe("Display name for the asset"),
+      description: z.string().optional(),
+      tags: z.array(z.string()).optional().describe("Tags to apply, e.g. ['logo', 'brand']"),
+      brandId: brandOpt,
+    },
+    async ({ fileName, fileSize, sha256, mimeType, name, description, tags, brandId }) => {
+      evictStaleUploads();
+      const id = requireBrandId(brandId);
+      const uploadId = randomUUID();
+      uploads.set(uploadId, {
+        fileName,
+        mimeType,
+        name,
+        description,
+        tags,
+        brandId: id,
+        expectedSize: fileSize,
+        expectedSha256: sha256,
+        chunks: new Map(),
+        createdAt: Date.now(),
+        totalBufferedBytes: 0,
+      });
+      const recommendedChunkChars = 16000;
+      const result = {
+        uploadId,
+        recommendedChunkChars,
+        hint: `Base64-encode the file, split the base64 string into ordered chunks of at most ${recommendedChunkChars} characters each, then call upload_asset_chunk once per chunk with index starting at 0 and increasing contiguously. After the last chunk, call upload_asset_finish with this uploadId.`,
+      };
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    }
+  );
+
+  // ── Upload asset — chunked flow (chunk) ─────────────────────────────────────
+  server.tool(
+    "upload_asset_chunk",
+    "Send one chunk of a base64-encoded file previously started with upload_asset_begin. Chunks must be sent in order, index starting at 0, with no gaps.",
+    {
+      uploadId: z.string().describe("Upload ID returned by upload_asset_begin"),
+      index: z.number().int().min(0).describe("0-based, contiguous chunk index"),
+      fileBase64Chunk: z.string().describe("A slice of the full base64 string for this chunk"),
+    },
+    async ({ uploadId, index, fileBase64Chunk }) => {
+      const entry = uploads.get(uploadId);
+      if (!entry) {
+        return {
+          content: [{ type: "text" as const, text: `Unknown or expired uploadId ${uploadId}. Call upload_asset_begin first.` }],
+        };
+      }
+
+      entry.totalBufferedBytes += fileBase64Chunk.length;
+      if (entry.totalBufferedBytes > MAX_BUFFERED_BASE64_CHARS) {
+        uploads.delete(uploadId);
+        return {
+          content: [{ type: "text" as const, text: `File is too large for chunked upload (exceeds ${MAX_BUFFERED_BASE64_CHARS} base64 characters). The upload has been aborted; try a smaller file.` }],
+        };
+      }
+
+      entry.chunks.set(index, fileBase64Chunk);
+      const result = {
+        uploadId,
+        received: entry.chunks.size,
+        bufferedBase64Chars: entry.totalBufferedBytes,
+      };
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+    }
+  );
+
+  // ── Upload asset — chunked flow (finish) ────────────────────────────────────
+  server.tool(
+    "upload_asset_finish",
+    "Finalize a chunked asset upload: reassembles the buffered chunks, verifies integrity, and uploads the asset to the brand library. Returns the new asset ID and URL.",
+    { uploadId: z.string().describe("Upload ID returned by upload_asset_begin") },
+    async ({ uploadId }) => {
+      const entry = uploads.get(uploadId);
+      if (!entry) {
+        return {
+          content: [{ type: "text" as const, text: `Unknown or expired uploadId ${uploadId}. Call upload_asset_begin first.` }],
+        };
+      }
+
+      const total = entry.chunks.size;
+      const missing: number[] = [];
+      for (let i = 0; i < total; i++) {
+        if (!entry.chunks.has(i)) missing.push(i);
+      }
+      if (missing.length > 0) {
+        return {
+          content: [{ type: "text" as const, text: `Chunk sequence has gaps at index ${missing.join(", ")}. Resend the missing chunk(s) via upload_asset_chunk, then call upload_asset_finish again.` }],
+        };
+      }
+
+      const parts: string[] = [];
+      for (let i = 0; i < total; i++) {
+        parts.push(entry.chunks.get(i) as string);
+      }
+      const full = parts.join("");
+      const decoded = Buffer.from(full, "base64");
+
+      if (entry.expectedSize !== undefined && decoded.byteLength !== entry.expectedSize) {
+        uploads.delete(uploadId);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Reassembled file appears truncated or corrupt: expected ${entry.expectedSize} bytes, got ${decoded.byteLength} bytes. The upload has been discarded — start over with upload_asset_begin.`,
+            },
+          ],
+        };
+      }
+
+      const fileSize = decoded.byteLength;
+      const sha256 = createHash("sha256").update(decoded).digest("hex");
+
+      if (entry.expectedSha256 !== undefined && sha256.toLowerCase() !== entry.expectedSha256.toLowerCase()) {
+        uploads.delete(uploadId);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Reassembled file appears truncated or corrupt: sha256 mismatch (expected ${entry.expectedSha256}, got ${sha256}). The upload has been discarded — start over with upload_asset_begin.`,
+            },
+          ],
+        };
+      }
+
+      const data = await api.post<any>(`/api/agent/v1/brands/${entry.brandId}/assets`, {
+        fileBase64: full,
+        fileName: entry.fileName,
+        name: entry.name,
+        description: entry.description,
+        tags: entry.tags,
+        mimeType: entry.mimeType,
+        fileSize,
+        sha256,
+      });
+      uploads.delete(uploadId);
+      const a = data?.asset ?? data;
+      return { content: [{ type: "text" as const, text: JSON.stringify(slimAsset(a), null, 2) }] };
+    }
+  );
+
+  // ── Upload asset — chunked flow (abort) ─────────────────────────────────────
+  server.tool(
+    "upload_asset_abort",
+    "Cancel a chunked asset upload in progress and discard any buffered chunks.",
+    { uploadId: z.string().describe("Upload ID returned by upload_asset_begin") },
+    async ({ uploadId }) => {
+      const found = uploads.delete(uploadId);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: found ? `Upload ${uploadId} aborted and buffered chunks discarded.` : `No in-progress upload found for uploadId ${uploadId}; nothing to abort.`,
+          },
+        ],
+      };
     }
   );
 
