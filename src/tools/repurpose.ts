@@ -55,6 +55,7 @@ export function registerRepurposeTools(server: McpServer) {
         .string()
         .optional()
         .describe("Existing PostKing post ID (when sourceType=social_post)"),
+      sourceBlogId: z.string().optional().describe("Existing PostKing blog article ID (when sourceType=blog). Get IDs from list_blogs."),
       targetType: z
         .enum(["social", "blog", "text"])
         .describe("What to generate"),
@@ -82,6 +83,7 @@ export function registerRepurposeTools(server: McpServer) {
       sourceUrl,
       sourceContent,
       sourcePostId,
+      sourceBlogId,
       targetType,
       targetPlatforms,
       variations,
@@ -120,6 +122,7 @@ export function registerRepurposeTools(server: McpServer) {
         sourceUrl,
         sourceContent,
         sourcePostId,
+        sourceBlogId,
         targetType,
         targetPlatforms,
         variationCount: variations,
