@@ -443,16 +443,18 @@ export function registerVisualTools(server: McpServer) {
   // ── Import asset from URL ─────────────────────────────────────────────────
   server.tool(
     "import_asset_from_url",
-    "Import an asset into the brand library from a public URL. The server fetches and stores the file.",
+    "Import an asset into the brand library from a public URL. The server fetches and stores the file. Set assetType (e.g. 'google-image') when importing a result surfaced by search_web_images — it is recorded as a tag on the asset to preserve provenance.",
     {
       url: z.string().url().describe("Publicly accessible URL of the image/video/PDF to import"),
       name: z.string().optional().describe("Display name for the asset"),
       tags: z.array(z.string()).optional(),
+      assetType: z.string().optional().describe("Optional source-provenance for the imported asset, e.g. 'google-image' when importing a search_web_images result. Recorded as a tag (not a separate field)."),
       brandId: brandOpt,
     },
-    async ({ url, name, tags, brandId }) => {
+    async ({ url, name, tags, assetType, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.post<any>(`/api/agent/v1/brands/${id}/assets`, { url, name, tags });
+      const resolvedTags = assetType ? Array.from(new Set([...(tags ?? []), assetType])) : tags;
+      const data = await api.post<any>(`/api/agent/v1/brands/${id}/assets`, { url, name, tags: resolvedTags });
       const a = data?.asset ?? data;
       return { content: [{ type: "text" as const, text: JSON.stringify(slimAsset(a), null, 2) }] };
     }
