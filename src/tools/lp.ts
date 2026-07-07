@@ -4,16 +4,37 @@
  * All tools wrap /api/agent/v1/landing-pages/* and /api/agent/v1/brands/{id}/landing-pages
  * as mapped in docs/43-agentic/08-update-mcp/00-reqs.md §3.1.
  *
- * Async ops (generate, vibe-edit, side-page generate) return { operationId }
- * — use get_job to poll them.
+ * Async ops (generate, side-page generate) return { operationId } — use get_job to poll them.
+ * vibe-edit is the exception: it lives in a separate session store, not the generic
+ * job/operation queue — poll it with get_vibe_edit_status, not get_job.
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { api } from "../client.js";
+import { api, ApiError } from "../client.js";
 import { requireBrandId } from "../state.js";
-import { detailParam, project, projectList, pick } from "../detail.js";
+import { detailParam, project, projectList, pick, truncate } from "../detail.js";
 
 const brandOpt = z.string().optional().describe("Brand ID (defaults to active brand)");
+
+/** The 11 valid landing-page section-order keys. */
+const SECTION_ORDER_KEYS = [
+  "hero",
+  "features",
+  "pricing",
+  "cta",
+  "faq",
+  "howItWorks",
+  "showcase",
+  "categoryExplorer",
+  "replacesStack",
+  "comparisonMatrix",
+  "roiCalculator",
+] as const;
+
+/** Truncate string values to `n` chars; pass non-strings through unchanged. */
+function truncateVal(v: unknown, n: number): unknown {
+  return typeof v === "string" ? truncate(v, n) : v;
+}
 
 // ── Section helpers ──────────────────────────────────────────────────────────
 
@@ -157,10 +178,39 @@ interface SidePageDetail {
   [k: string]: unknown;
 }
 
+interface VibeEditChange {
+  index?: number;
+  path?: string;
+  before?: unknown;
+  after?: unknown;
+  [k: string]: unknown;
+}
+
 interface VibeEditStatus {
-  state?: string;
+  status?: string;
   progress?: number | string;
-  result?: unknown;
+  stale?: boolean;
+  baseVersionId?: string | number;
+  currentVersionId?: string | number;
+  changesCount?: number;
+  credits?: unknown;
+  changes?: VibeEditChange[];
+  editedData?: unknown;
+  error?: string;
+  result?: {
+    changes?: VibeEditChange[];
+    credits?: unknown;
+    [k: string]: unknown;
+  };
+  [k: string]: unknown;
+}
+
+interface ApplyVibeEditResult {
+  success?: boolean;
+  versionId?: string | number;
+  applied?: number;
+  skipped?: number;
+  previousVersionId?: string | number;
   [k: string]: unknown;
 }
 
@@ -200,6 +250,7 @@ export function registerLpTools(server: McpServer) {
       "Step 1: Creates the LP record with the given slug.",
       "Step 2: Kicks off async AI content generation immediately.",
       "Returns { slug, operationId, pollUrl } — poll with get_job(operationId) until state is 'completed' (or 'failed'/'partially_failed'/'cancelled' on error).",
+      "For targeted edits to an existing page, prefer vibe_edit_landing_page.",
     ].join(" "),
     {
       topic: z.string().describe("Topic or product this landing page should be about"),
@@ -246,7 +297,10 @@ export function registerLpTools(server: McpServer) {
   // ── Edit landing page (manual patch) ─────────────────────────────────────
   server.tool(
     "edit_landing_page",
-    "Update the title or instructions of a landing page. For AI-powered edits, use vibe_edit_landing_page.",
+    [
+      "Update METADATA ONLY — title and/or instructions — of a landing page. Does NOT touch page content.",
+      "For content changes, use set_landing_page_section (targeted field/section writes) or vibe_edit_landing_page (AI-powered edits).",
+    ].join(" "),
     {
       slug: z.string().describe("Landing page slug"),
       title: z.string().optional().describe("New title"),
@@ -261,36 +315,13 @@ export function registerLpTools(server: McpServer) {
     }
   );
 
-  // ── Set landing page content (manual write) ───────────────────────────────
-  server.tool(
-    "set_landing_page",
-    [
-      "Overwrite the content and/or metadata of a landing page.",
-      "Pass content as a string (HTML or markdown). Pass metadata as a JSON object.",
-      "Returns a versionId — all writes are versioned.",
-    ].join(" "),
-    {
-      slug: z.string().describe("Landing page slug"),
-      title: z.string().optional().describe("New title"),
-      content: z.string().optional().describe("Full page content (HTML or markdown)"),
-      metadata: z.record(z.unknown()).optional().describe("Arbitrary metadata object"),
-    },
-    async ({ slug, title, content, metadata }) => {
-      const body: Record<string, unknown> = {};
-      if (title !== undefined) body.title = title;
-      if (content !== undefined) body.content = content;
-      if (metadata !== undefined) body.metadata = metadata;
-      const data = await api.put<Record<string, unknown>>(`/api/agent/v1/landing-pages/${slug}/content`, body);
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
-    }
-  );
-
   // ── Regenerate landing page ───────────────────────────────────────────────
   server.tool(
     "regenerate_landing_page",
     [
       "Re-generate a landing page's content using AI. Optionally restrict to specific sections.",
       "Returns an operationId — poll with get_job to track progress.",
+      "For targeted edits to an existing page, prefer vibe_edit_landing_page.",
     ].join(" "),
     {
       slug: z.string().describe("Landing page slug"),
@@ -315,9 +346,13 @@ export function registerLpTools(server: McpServer) {
   server.tool(
     "vibe_edit_landing_page",
     [
-      "Use AI to edit a landing page based on natural-language instructions.",
-      "Returns an operationId — poll with get_vibe_edit_status or get_job until status is 'completed'.",
-      "Optionally limit to a specific scope ('headline' | 'cta' | 'full') or a single sectionId.",
+      "Use AI to propose an edit to a landing page based on natural-language instructions. This is step 1 of a propose → review → apply flow — it does NOT change anything by itself:",
+      "1) Call this tool. Returns { operationId } — nothing is applied yet.",
+      "2) Poll get_vibe_edit_status(slug, operationId) — NOT get_job — until status is 'completed'. Vibe-edit sessions live in a separate store from the generic job/operation queue, so get_job will not find them.",
+      "3) Review the `changes` array returned by get_vibe_edit_status: field-level before/after entries, each with an `index` and a `path`.",
+      "4) Call apply_vibe_edit with all=true (accept everything) or a subset via indices/paths.",
+      "5) Call publish_landing_page to make the applied changes live.",
+      "scope='full' edits the whole page; scope='section' restricts the edit to one section — sectionId is REQUIRED when scope='section'. Example section keys: hero, features, pricing, cta, faq, howItWorks, showcase, categoryExplorer, replacesStack, comparisonMatrix, roiCalculator.",
     ].join(" "),
     {
       slug: z.string().describe("Landing page slug"),
@@ -325,12 +360,20 @@ export function registerLpTools(server: McpServer) {
         .string()
         .describe("Natural-language edit instructions, e.g. 'Make the CTA more urgent'"),
       scope: z
-        .enum(["headline", "cta", "full"])
+        .enum(["full", "section"])
         .optional()
-        .describe("Restrict edits to a specific section type"),
-      sectionId: z.string().optional().describe("Specific section ID to edit"),
+        .describe("'full' edits the whole page; 'section' restricts the edit to one section (sectionId required)"),
+      sectionId: z
+        .string()
+        .optional()
+        .describe(
+          "REQUIRED when scope='section'. E.g. hero, features, pricing, cta, faq, howItWorks, showcase, categoryExplorer, replacesStack, comparisonMatrix, roiCalculator."
+        ),
     },
     async ({ slug, instructions, scope, sectionId }) => {
+      if (scope === "section" && !sectionId) {
+        throw new Error("sectionId is required when scope='section'");
+      }
       const body: Record<string, unknown> = { instructions };
       if (scope) body.scope = scope;
       if (sectionId) body.sectionId = sectionId;
@@ -342,11 +385,17 @@ export function registerLpTools(server: McpServer) {
   // ── Get vibe edit status ──────────────────────────────────────────────────
   server.tool(
     "get_vibe_edit_status",
-    "Poll vibe (AI) edit status. detail='full' (default) includes the result payload; 'short'/'medium' return just state+progress.",
+    [
+      "Poll vibe (AI) edit session status. detail='medium' (default) is the REVIEW view: { status, progress, stale, baseVersionId, currentVersionId, changesCount, credits, changes, error }",
+      "where each `changes` entry is { index, path, before, after } (before/after truncated to 200 chars) — use these `index`/`path` values to select a subset in apply_vibe_edit.",
+      "'short' returns just { status, progress, error }. 'full' returns the raw payload including the untruncated editedData.",
+      "`error` is populated when status is 'failed' and carries the failure reason — surface it to the user instead of just reporting 'failed'.",
+      "When status is 'completed', call apply_vibe_edit next (this tool never applies anything).",
+    ].join(" "),
     {
       slug: z.string().describe("Landing page slug"),
       operationId: z.string().describe("Operation ID from vibe_edit_landing_page"),
-      detail: detailParam("full"),
+      detail: detailParam("medium"),
     },
     async ({ slug, operationId, detail }) => {
       const raw = await api.get<Record<string, unknown>>(
@@ -354,11 +403,206 @@ export function registerLpTools(server: McpServer) {
       );
       const p = raw as VibeEditStatus;
       const proj = {
-        short: (row: VibeEditStatus) => pick(row, ["state", "progress"]),
-        medium: (row: VibeEditStatus) => pick(row, ["state", "progress"]),
+        short: (row: VibeEditStatus) => pick(row, ["status", "progress", "error"]),
+        medium: (row: VibeEditStatus) => ({
+          ...pick(row, ["status", "progress", "stale", "baseVersionId", "currentVersionId", "changesCount", "error"]),
+          credits: row.result?.credits,
+          changes: Array.isArray(row.result?.changes)
+            ? row.result.changes.map((c, i) => ({
+                index: typeof c.index === "number" ? c.index : i,
+                path: c.path,
+                before: truncateVal(c.before, 200),
+                after: truncateVal(c.after, 200),
+              }))
+            : [],
+        }),
       };
       const text = JSON.stringify(project(detail, p, proj));
       return { content: [{ type: "text" as const, text }] };
+    }
+  );
+
+  // ── Apply vibe edit ───────────────────────────────────────────────────────
+  server.tool(
+    "apply_vibe_edit",
+    [
+      "Applies a completed vibe edit (from vibe_edit_landing_page) to the DRAFT as ONE new version.",
+      "Pass exactly one of: all=true (accept every change), indices (subset by their `index` from get_vibe_edit_status), or paths (subset by their `path`).",
+      "This does NOT publish — call publish_landing_page next to go live. Can be undone via restore_lp_version using the returned previousVersionId.",
+      "If the draft has moved on since the edit was proposed (stale session), this returns a structured { error: 'stale_session', ... } payload instead of applying — either re-run vibe_edit_landing_page against the current draft, or retry this call with force=true to layer the selected changes onto the current draft.",
+    ].join(" "),
+    {
+      slug: z.string().describe("Landing page slug"),
+      operationId: z.string().describe("Operation ID from vibe_edit_landing_page"),
+      all: z.boolean().optional().describe("Apply every proposed change"),
+      indices: z.array(z.number().int()).optional().describe("Subset of change `index` values to apply"),
+      paths: z.array(z.string()).optional().describe("Subset of change `path` values to apply"),
+      force: z
+        .boolean()
+        .optional()
+        .describe("Apply even if the draft has moved on since the edit was proposed (stale session)"),
+      name: z.string().optional().describe("Name for the new version"),
+      description: z.string().optional().describe("Description for the new version"),
+    },
+    async ({ slug, operationId, all, indices, paths, force, name, description }) => {
+      const selectorFlags = [
+        all === true,
+        Array.isArray(indices) && indices.length > 0,
+        Array.isArray(paths) && paths.length > 0,
+      ];
+      const selectors = selectorFlags.filter(Boolean).length;
+      if (selectors !== 1) {
+        throw new Error(
+          "Pass exactly one of: all=true, a non-empty indices array, or a non-empty paths array. Empty arrays don't count as a selector."
+        );
+      }
+      const body: Record<string, unknown> = {};
+      if (all !== undefined) body.all = all;
+      if (indices !== undefined) body.indices = indices;
+      if (paths !== undefined) body.paths = paths;
+      if (force !== undefined) body.force = force;
+      if (name !== undefined) body.name = name;
+      if (description !== undefined) body.description = description;
+      try {
+        const data = await api.post<ApplyVibeEditResult>(
+          `/api/agent/v1/landing-pages/${slug}/ai-edit/session/${operationId}/apply`,
+          body
+        );
+        return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 409 && err.code === "STALE_SESSION") {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  error: "stale_session",
+                  message:
+                    (err.message || "The draft has moved on since this vibe edit was proposed.") +
+                    " Re-run vibe_edit_landing_page against the current draft, or retry apply_vibe_edit with force=true to layer the selected changes onto the current draft.",
+                  baseVersionId: err.details?.baseVersionId,
+                  currentVersionId: err.details?.currentVersionId,
+                }),
+              },
+            ],
+          };
+        }
+        throw err;
+      }
+    }
+  );
+
+  // ── Set landing page section (structured manual edit) ─────────────────────
+  server.tool(
+    "set_landing_page_section",
+    [
+      "Set one field on a landing page section (dot-paths in `field` supported, e.g. 'plans.0.ctaUrl'), or replace a whole section with replaceSection=true.",
+      "Pass the bare content-section key (e.g. 'hero', 'features', 'pricing') — the server maps it into the page's content tree. Top-level roots like slotMap, config, navigation, siteMetadata are also accepted as-is.",
+      "Each call creates a new draft version — for many related changes across a page, prefer vibe_edit_landing_page instead.",
+      "Example: section='hero', field='title', value='New headline'.",
+    ].join(" "),
+    {
+      slug: z.string().describe("Landing page slug"),
+      section: z
+        .string()
+        .describe(
+          "Bare section key. For content sections use e.g. hero, features, pricing, cta, faq — the server maps these into the page's content tree. Top-level roots like slotMap, config, navigation, siteMetadata are also accepted."
+        ),
+      field: z
+        .string()
+        .optional()
+        .describe("Dot-path field within the section to set, e.g. 'title' or 'plans.0.ctaUrl'. Required unless replaceSection=true."),
+      value: z.any().describe("New value for the field (or the whole section when replaceSection=true)"),
+      replaceSection: z.boolean().optional().describe("Replace the entire section with `value` instead of setting one field"),
+      name: z.string().optional().describe("Name for the new version"),
+      description: z.string().optional().describe("Description for the new version"),
+    },
+    async ({ slug, section, field, value, replaceSection, name, description }) => {
+      if (!replaceSection && field === undefined) {
+        throw new Error("field is required unless replaceSection=true");
+      }
+      const body: Record<string, unknown> = replaceSection
+        ? { replaceSection: true, section, value }
+        : { section, field, value, nested: true };
+      if (name !== undefined) body.name = name;
+      if (description !== undefined) body.description = description;
+      const data = await api.post<Record<string, unknown>>(`/api/agent/v1/landing-pages/${slug}/update`, body);
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    }
+  );
+
+  // ── Set landing page section layout (order + visibility) ──────────────────
+  server.tool(
+    "set_lp_section_layout",
+    [
+      "Reorder and/or toggle visibility of a landing page's sections. Pass at least one of sectionOrder/sectionVisibility.",
+      `Valid section-order keys (all 11): ${SECTION_ORDER_KEYS.join(", ")}.`,
+      "sectionVisibility keys are the toggleable subset of the above.",
+      "When both are given, order is attempted first, then visibility — each is applied independently, so one can succeed while the other fails.",
+      "The result always reports both outcomes: { order: <result>|{error}, visibility: <result>|{error}, partialFailure: true } if only one part failed.",
+      "This tool only throws if every requested part fails (or if a single requested part fails).",
+    ].join(" "),
+    {
+      slug: z.string().describe("Landing page slug"),
+      sectionOrder: z
+        .array(z.enum(SECTION_ORDER_KEYS))
+        .optional()
+        .describe("Full ordered list of section keys"),
+      sectionVisibility: z
+        .record(z.boolean())
+        .optional()
+        .describe("Map of section key → visible (true/false) for the toggleable sections"),
+    },
+    async ({ slug, sectionOrder, sectionVisibility }) => {
+      if (sectionOrder === undefined && sectionVisibility === undefined) {
+        throw new Error("Pass at least one of sectionOrder or sectionVisibility.");
+      }
+
+      const requested = (sectionOrder !== undefined ? 1 : 0) + (sectionVisibility !== undefined ? 1 : 0);
+
+      let orderResult: unknown;
+      let orderError: string | undefined;
+      if (sectionOrder !== undefined) {
+        try {
+          orderResult = await api.patch<Record<string, unknown>>(
+            `/api/agent/v1/landing-pages/${slug}/section-order`,
+            { sectionOrder }
+          );
+        } catch (err) {
+          orderError = err instanceof Error ? err.message : String(err);
+          if (requested === 1) throw err;
+        }
+      }
+
+      let visibilityResult: unknown;
+      let visibilityError: string | undefined;
+      if (sectionVisibility !== undefined) {
+        try {
+          visibilityResult = await api.patch<Record<string, unknown>>(
+            `/api/agent/v1/landing-pages/${slug}/section-visibility`,
+            { sections: sectionVisibility }
+          );
+        } catch (err) {
+          visibilityError = err instanceof Error ? err.message : String(err);
+          if (requested === 1) throw err;
+        }
+      }
+
+      if (orderError !== undefined && visibilityError !== undefined) {
+        throw new Error(`Both section-order and section-visibility updates failed. order: ${orderError}; visibility: ${visibilityError}`);
+      }
+
+      const result: Record<string, unknown> = {};
+      if (sectionOrder !== undefined) {
+        result.order = orderError !== undefined ? { error: orderError } : orderResult;
+      }
+      if (sectionVisibility !== undefined) {
+        result.visibility = visibilityError !== undefined ? { error: visibilityError } : visibilityResult;
+      }
+      if (orderError !== undefined || visibilityError !== undefined) {
+        result.partialFailure = true;
+      }
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
     }
   );
 
@@ -463,6 +707,40 @@ export function registerLpTools(server: McpServer) {
       };
       const text = JSON.stringify(project(detail, p, proj));
       return { content: [{ type: "text" as const, text }] };
+    }
+  );
+
+  // ── Restore version ───────────────────────────────────────────────────────
+  server.tool(
+    "restore_lp_version",
+    "Undo/rollback the draft to a prior version. Find valid version IDs via list_lp_versions. This does not touch the published version.",
+    {
+      slug: z.string().describe("Landing page slug"),
+      versionId: z.number().int().describe("Numeric version ID from list_lp_versions to restore as the draft"),
+    },
+    async ({ slug, versionId }) => {
+      const data = await api.put<Record<string, unknown>>(
+        `/api/agent/v1/landing-pages/${slug}/versions/${versionId}`,
+        { action: "make-current" }
+      );
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    }
+  );
+
+  // ── Delete version ────────────────────────────────────────────────────────
+  server.tool(
+    "delete_lp_version",
+    "Permanently delete a historical landing page version. Cannot delete the published version or the only remaining version (the server will reject those). Pass confirm: true to proceed.",
+    {
+      slug: z.string().describe("Landing page slug"),
+      versionId: z.number().int().describe("Numeric version ID from list_lp_versions"),
+      confirm: z.literal(true).describe("Must be true to confirm deletion"),
+    },
+    async ({ slug, versionId }) => {
+      await api.delete(`/api/agent/v1/landing-pages/${slug}/versions/${versionId}`);
+      return {
+        content: [{ type: "text" as const, text: `Version ${versionId} deleted from "${slug}".` }],
+      };
     }
   );
 

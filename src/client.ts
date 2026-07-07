@@ -24,6 +24,11 @@ export interface AgentErrorEnvelope {
   packs?: AgentCreditPack[];
   topupEndpoint?: string;
   subscribeEndpoint?: string;
+  /**
+   * Free-form machine-readable payload attached to specific error codes, e.g.
+   * `{ baseVersionId, currentVersionId }` on a `STALE_SESSION` 409.
+   */
+  details?: Record<string, unknown>;
 }
 
 /**
@@ -40,6 +45,7 @@ export class ApiError extends Error {
   readonly packs?: AgentCreditPack[];
   readonly topupEndpoint?: string;
   readonly subscribeEndpoint?: string;
+  readonly details?: Record<string, unknown>;
 
   constructor(status: number, message: string, envelope?: AgentErrorEnvelope) {
     super(message);
@@ -52,6 +58,7 @@ export class ApiError extends Error {
     this.packs = envelope?.packs;
     this.topupEndpoint = envelope?.topupEndpoint;
     this.subscribeEndpoint = envelope?.subscribeEndpoint;
+    this.details = envelope?.details;
   }
 }
 

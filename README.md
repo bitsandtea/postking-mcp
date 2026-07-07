@@ -221,15 +221,19 @@ _Canonical flow: `seo_add_seeds` → `seo_generate_keywords` → `seo_categorize
 | `generate_landing_page` | Create and AI-generate a new landing page (async; poll via `get_job`) |
 | `view_landing_page` | View a landing page including full section content |
 | `view_lp_draft` | View the current unpublished draft |
-| `edit_landing_page` | Edit landing page title or instructions |
-| `set_landing_page` | Overwrite the content and/or metadata of a landing page |
+| `edit_landing_page` | Edit landing page title or instructions (metadata only — does not touch page content) |
+| `set_landing_page_section` | Set one field (dot-path) or replace a whole section on a landing page's draft |
 | `regenerate_landing_page` | Re-generate a landing page's content using AI (async; poll via `get_job`) |
-| `vibe_edit_landing_page` | Apply a natural-language AI edit to a landing page (async) |
-| `get_vibe_edit_status` | Poll vibe-edit job status |
+| `vibe_edit_landing_page` | Apply a natural-language AI edit to a landing page (async; propose → review → apply flow) |
+| `get_vibe_edit_status` | Poll vibe-edit session status and review the field-level `changes` diff |
+| `apply_vibe_edit` | Apply a completed vibe edit (all or a subset) to the draft as one new version |
+| `set_lp_section_layout` | Reorder and/or toggle visibility of landing page sections |
 | `publish_landing_page` | Publish the current draft |
 | `delete_landing_page` | Permanently delete a landing page |
 | `list_lp_versions` | List historical versions of a landing page |
 | `view_lp_version` | View a specific historical version |
+| `restore_lp_version` | Roll the draft back to a prior version |
+| `delete_lp_version` | Permanently delete a historical version |
 | `list_side_pages` | List side pages attached to a landing page |
 | `generate_side_page` | AI-generate a side page under a parent landing page (async; poll via `get_job`) |
 | `view_side_page` | View a side page including sections and rendered HTML |
@@ -280,6 +284,7 @@ _Canonical flow: `seo_add_seeds` → `seo_generate_keywords` → `seo_categorize
 | `list_jobs` | List recent async jobs for the active brand |
 | `list_operations` | List recent Operations (the newer async-op system) with kind and state filters |
 | `get_job` | Poll a specific operation by ID or pollUrl; supports `wait=true` to block until done |
+| `cancel_job` | Cancel a pending or running job/operation by operationId |
 
 ### API keys (self-service)
 | Tool | Description |

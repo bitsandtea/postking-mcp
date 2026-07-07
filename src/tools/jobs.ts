@@ -256,4 +256,23 @@ export function registerJobTools(server: McpServer) {
       };
     }
   );
+
+  // ── Cancel job ────────────────────────────────────────────────────────────
+  server.tool(
+    "cancel_job",
+    "Cancel a pending or running job/operation. Flips it to `cancelled` and stops it from being polled. Note: work already in flight may still finish server-side, but its result is discarded. Already-finished jobs cannot be cancelled. Pass the operationId (from list_jobs pollUrl / get_job).",
+    {
+      operationId: z.string().describe("Operation ID to cancel"),
+      brandId: z.string().optional().describe("Brand ID; defaults to active brand"),
+    },
+    async ({ operationId, brandId }) => {
+      const id = requireBrandId(brandId);
+      const data = await api.post<any>(`/api/agent/v1/brands/${id}/operations/${operationId}/cancel`, {});
+      const dataRec = data as Record<string, unknown>;
+      const { done, summary } = derivedJobFields(dataRec);
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify({ operationId: (dataRec?.id as string | undefined) ?? operationId, state: dataRec?.state, done, summary }) }],
+      };
+    }
+  );
 }
