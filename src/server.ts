@@ -30,6 +30,7 @@ import { registerWeeklyScheduleTools } from "./tools/weekly-schedule.js";
 import { registerVisualTools } from "./tools/visuals.js";
 import { registerVisualsPostTools } from "./tools/visuals-post.js";
 import { registerImageSuggestionTools } from "./tools/image-suggestions.js";
+import { registerPerplexitySearchTools } from "./tools/perplexity-search.js";
 import { registerLpTools } from "./tools/lp.js";
 import { registerLinkTools } from "./tools/links.js";
 import { registerRedditTools } from "./tools/reddit.js";
@@ -138,6 +139,7 @@ This server also exposes guided prompts for common end-to-end flows — \`gettin
   registerVisualTools(server);
   registerVisualsPostTools(server);
   registerImageSuggestionTools(server);
+  registerPerplexitySearchTools(server);
   registerLpTools(server);
   registerLinkTools(server);
   registerRedditTools(server);
