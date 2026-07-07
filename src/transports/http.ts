@@ -9,15 +9,52 @@
  *
  * Every request binds the validated bearer and the MCP session ID into
  * AsyncLocalStorage so tools can read them without touching process.env.
+ *
+ * GET /.well-known/mcp/server-card.json → static tool listing so scanners
+ * that can't complete the OAuth dance (e.g. Smithery) can still index the
+ * server. Generated once by driving the real McpServer through an in-memory
+ * client, so it can never drift from the actual registered tools.
  */
 import http from "node:http";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createServer } from "../server.js";
 import { runWithToken, runWithSession, oauthConfig } from "../config.js";
 import { introspectToken } from "../oauth/introspect.js";
 import { deleteSessionState } from "../state.js";
+
+const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "../../package.json");
+const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as { version: string };
+
+let serverCardPromise: Promise<string> | undefined;
+
+async function buildServerCard(): Promise<string> {
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "postking-mcp-server-card-generator", version: pkg.version });
+  const server = createServer();
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  const { tools } = await client.listTools();
+  await client.close();
+  await server.close();
+
+  return JSON.stringify({
+    serverInfo: { name: "postking", version: pkg.version },
+    authentication: { required: true, schemes: ["oauth2"] },
+    tools: tools.map((t) => ({
+      name: t.name,
+      description: t.description,
+      inputSchema: t.inputSchema,
+    })),
+    resources: [],
+    prompts: [],
+  });
+}
 
 interface SessionEntry {
   transport: StreamableHTTPServerTransport;
@@ -106,6 +143,24 @@ export async function runHttp(opts: HttpTransportOptions): Promise<http.Server> 
           transport: "http",
           timestamp: new Date().toISOString(),
         }));
+        return;
+      }
+
+      // ── Static server card (SEP-1649) for scanners that can't do OAuth ──────
+      if (req.method === "GET" && url.pathname === "/.well-known/mcp/server-card.json") {
+        if (!serverCardPromise) serverCardPromise = buildServerCard();
+        try {
+          const body = await serverCardPromise;
+          res.writeHead(200, {
+            "content-type": "application/json",
+            "access-control-allow-origin": "*",
+            "cache-control": "public, max-age=3600",
+          });
+          res.end(body);
+        } catch (err) {
+          serverCardPromise = undefined;
+          throw err;
+        }
         return;
       }
 
