@@ -16,6 +16,43 @@ import { detailParam, project, projectList, pick, truncate } from "../detail.js"
 
 const brandOpt = z.string().optional().describe("Brand ID (defaults to active brand)");
 
+/**
+ * Arbitrary JSON value for section/field writes (set_landing_page_section).
+ *
+ * `z.any()` renders as an unconstrained `{}` JSON-schema node (no `type`), which
+ * some MCP clients / tool-calling layers interpret as "string" and pre-stringify
+ * arrays/objects before sending — silently corrupting non-scalar values on the
+ * wire (e.g. `tiers: []` arrives as the literal string `"[]"`). Declaring an
+ * explicit union gives callers a real `type: array|object|...` to target.
+ */
+const jsonValueSchema: z.ZodType<unknown> = z.union([
+  z.string(),
+  z.number(),
+  z.boolean(),
+  z.null(),
+  z.array(z.any()),
+  z.record(z.string(), z.any()),
+]);
+
+/**
+ * Defensive unwrap for callers that pass a JSON-looking string anyway (common,
+ * since many agent runtimes stringify tool args). If `value` is a string whose
+ * trimmed form looks like a JSON array/object and parses cleanly, unwrap it once
+ * so the server receives the real array/object instead of a doubly-encoded string.
+ * A literal content string that happens to start with `{`/`[` and also parses as
+ * valid JSON is vanishingly unlikely for LP section/field values.
+ */
+function coerceJsonValue(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return value;
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return value;
+  }
+}
+
 /** The 11 valid landing-page section-order keys. */
 const SECTION_ORDER_KEYS = [
   "hero",
@@ -107,6 +144,7 @@ interface LpDetail {
   currentVersionId?: string | number;
   publishedVersionId?: string | number;
   webUrl?: string;
+  previewUrl?: string;
   data?: unknown;
   content?: unknown;
   sections?: unknown;
@@ -122,6 +160,7 @@ interface LpDraft {
   data?: unknown;
   content?: unknown;
   sections?: unknown;
+  _meta?: { previewUrl?: string; [k: string]: unknown };
   [k: string]: unknown;
 }
 
@@ -131,6 +170,7 @@ interface LpVersionItem {
   createdAt?: string;
   editorId?: string;
   description?: string;
+  previewUrl?: string;
   [k: string]: unknown;
 }
 
@@ -143,6 +183,7 @@ interface LpVersionDetail {
   data?: unknown;
   content?: unknown;
   sections?: unknown;
+  previewUrl?: string;
   [k: string]: unknown;
 }
 
@@ -273,7 +314,7 @@ export function registerLpTools(server: McpServer) {
   // ── View landing page ─────────────────────────────────────────────────────
   server.tool(
     "view_landing_page",
-    "Fetch a landing page by slug. detail='full' (default) returns full data JSONB; 'medium' returns summary + sectionKeys/sectionWordCounts; 'short' returns id/slug/name/status. Section bodies and rendered HTML appear only at full.",
+    "Fetch a landing page by slug. detail='full' (default) returns full data JSONB plus previewUrl (public GUI preview link) and webUrl (dashboard editor link); 'medium' returns summary + sectionKeys/sectionWordCounts + previewUrl + webUrl; 'short' returns id/slug/name/status. Section bodies and rendered HTML appear only at full.",
     {
       slug: z.string().describe("Landing page slug"),
       detail: detailParam("full"),
@@ -284,7 +325,7 @@ export function registerLpTools(server: McpServer) {
       const proj = {
         short: (row: LpDetail) => pick(row, ["id", "slug", "name", "status"]),
         medium: (row: LpDetail) => ({
-          ...pick(row, ["id", "slug", "name", "status", "updatedAt", "currentVersionId", "publishedVersionId", "webUrl"]),
+          ...pick(row, ["id", "slug", "name", "status", "updatedAt", "currentVersionId", "publishedVersionId", "webUrl", "previewUrl"]),
           sectionKeys: sectionKeys(row),
           sectionWordCounts: sectionWordCounts(row),
         }),
@@ -512,7 +553,9 @@ export function registerLpTools(server: McpServer) {
         .string()
         .optional()
         .describe("Dot-path field within the section to set, e.g. 'title' or 'plans.0.ctaUrl'. Required unless replaceSection=true."),
-      value: z.any().describe("New value for the field (or the whole section when replaceSection=true)"),
+      value: jsonValueSchema.describe(
+        "New value for the field (or the whole section when replaceSection=true). May be any JSON type — string, number, boolean, null, array, or object — sent verbatim, not stringified."
+      ),
       replaceSection: z.boolean().optional().describe("Replace the entire section with `value` instead of setting one field"),
       name: z.string().optional().describe("Name for the new version"),
       description: z.string().optional().describe("Description for the new version"),
@@ -521,9 +564,10 @@ export function registerLpTools(server: McpServer) {
       if (!replaceSection && field === undefined) {
         throw new Error("field is required unless replaceSection=true");
       }
+      const resolvedValue = coerceJsonValue(value);
       const body: Record<string, unknown> = replaceSection
-        ? { replaceSection: true, section, value }
-        : { section, field, value, nested: true };
+        ? { replaceSection: true, section, value: resolvedValue }
+        : { section, field, value: resolvedValue, nested: true };
       if (name !== undefined) body.name = name;
       if (description !== undefined) body.description = description;
       const data = await api.post<Record<string, unknown>>(`/api/agent/v1/landing-pages/${slug}/update`, body);
@@ -638,7 +682,7 @@ export function registerLpTools(server: McpServer) {
   // ── View draft ────────────────────────────────────────────────────────────
   server.tool(
     "view_lp_draft",
-    "View the unpublished draft of a landing page. detail='full' (default) includes full versionData; 'medium' adds sectionKeys/sectionWordCounts; 'short' is id/slug/name/status only.",
+    "View the unpublished draft of a landing page. detail='full' (default) includes full versionData plus previewUrl (public GUI preview link, ?version= form); 'medium' adds sectionKeys/sectionWordCounts + previewUrl; 'short' is id/slug/name/status only.",
     {
       slug: z.string().describe("Landing page slug"),
       detail: detailParam("full"),
@@ -646,12 +690,14 @@ export function registerLpTools(server: McpServer) {
     async ({ slug, detail }) => {
       const raw = await api.get<Record<string, unknown>>(`/api/agent/v1/landing-pages/${slug}/draft`);
       const p = raw as LpDraft;
+      const previewUrl = p._meta?.previewUrl;
       const proj = {
         short: (row: LpDraft) => pick(row, ["id", "slug", "name", "status"]),
         medium: (row: LpDraft) => ({
           ...pick(row, ["id", "slug", "name", "status"]),
           sectionKeys: sectionKeys(row),
           sectionWordCounts: sectionWordCounts(row),
+          previewUrl,
         }),
       };
       const text = JSON.stringify(project(detail, p, proj));
@@ -662,7 +708,7 @@ export function registerLpTools(server: McpServer) {
   // ── List versions ─────────────────────────────────────────────────────────
   server.tool(
     "list_lp_versions",
-    "List all saved versions of a landing page. Default detail='short'. Use view_lp_version to see section content.",
+    "List all saved versions of a landing page. Default detail='short'. Each version includes previewUrl (public GUI preview link — the published version's form when that version is the live one, otherwise the ?version= form); the top-level previewUrl is for the current draft. Use view_lp_version to see section content.",
     {
       slug: z.string().describe("Landing page slug"),
       detail: detailParam("short"),
@@ -674,11 +720,17 @@ export function registerLpTools(server: McpServer) {
         : Array.isArray(raw["versions"])
         ? (raw["versions"] as LpVersionItem[])
         : [];
+      const previewUrl = typeof raw["previewUrl"] === "string" ? raw["previewUrl"] : null;
       const proj = {
-        short: (row: LpVersionItem) => pick(row, ["id", "name", "createdAt"]),
-        medium: (row: LpVersionItem) => pick(row, ["id", "name", "createdAt", "editorId", "description"]),
+        short: (row: LpVersionItem) => pick(row, ["id", "name", "createdAt", "previewUrl"]),
+        medium: (row: LpVersionItem) => pick(row, ["id", "name", "createdAt", "editorId", "description", "previewUrl"]),
       };
-      const text = JSON.stringify({ count: versions.length, detail, versions: projectList(detail, versions, proj) });
+      const text = JSON.stringify({
+        count: versions.length,
+        detail,
+        previewUrl,
+        versions: projectList(detail, versions, proj),
+      });
       return { content: [{ type: "text" as const, text }] };
     }
   );
@@ -686,7 +738,7 @@ export function registerLpTools(server: McpServer) {
   // ── View version ──────────────────────────────────────────────────────────
   server.tool(
     "view_lp_version",
-    "View a specific LP version. detail='full' (default) returns full data; 'medium' adds sectionKeys/sectionWordCounts.",
+    "View a specific LP version. detail='full' (default) returns full data plus previewUrl (public GUI preview link — the published form if this is the live version, otherwise the ?version= form); 'medium' adds sectionKeys/sectionWordCounts + previewUrl.",
     {
       slug: z.string().describe("Landing page slug"),
       versionId: z.number().int().describe("Numeric version ID from list_lp_versions"),
@@ -700,7 +752,7 @@ export function registerLpTools(server: McpServer) {
       const proj = {
         short: (row: LpVersionDetail) => pick(row, ["id", "name", "createdAt"]),
         medium: (row: LpVersionDetail) => ({
-          ...pick(row, ["id", "name", "description", "createdAt"]),
+          ...pick(row, ["id", "name", "description", "createdAt", "previewUrl"]),
           sectionKeys: sectionKeys(row),
           sectionWordCounts: sectionWordCounts(row),
         }),
@@ -835,7 +887,7 @@ export function registerLpTools(server: McpServer) {
   // ── View side page ────────────────────────────────────────────────────────
   server.tool(
     "view_side_page",
-    "View a side page including sections and rendered HTML. detail='full' (default) includes rendered HTML and full overrides; 'medium' gives summary + overrideSectionKeys; 'short' gives id/slug/name/type/isPublished. Rendered HTML appears only at full.",
+    "View a side page including sections and rendered HTML. detail='full' (default) includes rendered HTML and full overrides (use this to read a section's typed shape before editing it with set_side_page_section); 'medium' gives summary + overrideSectionKeys (the section ids you can pass to set_side_page_section); 'short' gives id/slug/name/type/isPublished. Rendered HTML appears only at full.",
     {
       slug: z.string().describe("Parent landing page slug"),
       sideKey: z.string().describe("Side page key (from list_side_pages)"),
@@ -864,7 +916,7 @@ export function registerLpTools(server: McpServer) {
   // ── Edit side page ────────────────────────────────────────────────────────
   server.tool(
     "edit_side_page",
-    "Update the instructions or metadata of a side page. For section-level edits, use set_side_page_section.",
+    "Update page-level instructions or metadata of a side page. `instructions` is stored as an annotation for future context — it does NOT trigger an AI edit/regeneration. For section-level edits, use set_side_page_section. Side-page writes are in-place and irreversible: there is no version history or undo (unlike landing-page section edits, which create a new draft version each call).",
     {
       slug: z.string().describe("Parent landing page slug"),
       sideKey: z.string().describe("Side page key"),
@@ -901,17 +953,37 @@ export function registerLpTools(server: McpServer) {
   // ── Edit side page section ────────────────────────────────────────────────
   server.tool(
     "set_side_page_section",
-    "Update the content of a specific section within a side page.",
+    "Update one section of a side page with STRUCTURED, typed fields (not a content string). " +
+      "The write must match the section's real shape or it is rejected with a 400 validation error. " +
+      "Landing sections use typed objects, e.g. hero → { title: { prefix, suffix }, description, testimonials: [...] }; " +
+      "comparison sections (matrix, verdict, scorecard, decisionTree, priceCalculator, competitorClaims, ...) use their comparison-schema shape. " +
+      "Use view_side_page(detail:'full') first to see the current section shape, then send the same shape back with your edits. " +
+      "Pass EITHER `fields` (a partial section object merged onto the current section) OR `field` (a dot-path) + `value` for a single nested change. " +
+      "Writes in-place and irreversibly: there is no version history or undo (unlike landing-page section edits, which create a new draft version each call).",
     {
       slug: z.string().describe("Parent landing page slug"),
       sideKey: z.string().describe("Side page key"),
-      sectionId: z.string().describe("Section ID from view_side_page"),
-      content: z.string().optional().describe("New section content (HTML or markdown)"),
-      instructions: z.string().optional().describe("AI-guided edit instructions for this section"),
+      sectionId: z.string().describe("Section ID from view_side_page (e.g. hero, features, matrix, verdict)"),
+      fields: z
+        .record(z.string(), jsonValueSchema)
+        .optional()
+        .describe(
+          "Structured partial section object, shallow-merged onto the current section. Must conform to the section's typed shape."
+        ),
+      field: z
+        .string()
+        .optional()
+        .describe("Dot-path to a single nested field (e.g. 'title.prefix'). Requires `value`."),
+      value: jsonValueSchema
+        .optional()
+        .describe("New value for the single `field` above."),
+      instructions: z.string().optional().describe("Optional annotation stored for future AI-edit context (does not trigger an AI pass)"),
     },
-    async ({ slug, sideKey, sectionId, content, instructions }) => {
+    async ({ slug, sideKey, sectionId, fields, field, value, instructions }) => {
       const body: Record<string, unknown> = { sectionId };
-      if (content !== undefined) body.content = content;
+      if (fields !== undefined) body.fields = coerceJsonValue(fields);
+      if (field !== undefined) body.field = field;
+      if (value !== undefined) body.value = coerceJsonValue(value);
       if (instructions !== undefined) body.instructions = instructions;
       const data = await api.patch<Record<string, unknown>>(
         `/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}/section`,
@@ -924,7 +996,7 @@ export function registerLpTools(server: McpServer) {
   // ── Set side page state ───────────────────────────────────────────────────
   server.tool(
     "set_side_page_state",
-    "Publish or unpublish a side page. Set published=true to make it live, false to pull it back to draft.",
+    "Publish or unpublish a side page. Set published=true to make it live, false to pull it back to draft. This writes in-place immediately — there is no version history or undo.",
     {
       slug: z.string().describe("Parent landing page slug"),
       sideKey: z.string().describe("Side page key"),
