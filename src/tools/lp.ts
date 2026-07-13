@@ -958,7 +958,7 @@ export function registerLpTools(server: McpServer) {
       "Landing sections use typed objects, e.g. hero → { title: { prefix, suffix }, description, testimonials: [...] }; " +
       "comparison sections (matrix, verdict, scorecard, decisionTree, priceCalculator, competitorClaims, ...) use their comparison-schema shape. " +
       "Use view_side_page(detail:'full') first to see the current section shape, then send the same shape back with your edits. " +
-      "Pass EITHER `fields` (a partial section object merged onto the current section) OR `field` (a dot-path) + `value` for a single nested change. " +
+      "Pass EITHER `fields` (a partial section object merged onto the current section) OR `field` (a dot-path) + `value` for a single nested change, OR `instructions` alone for a natural-language edit (the server runs an AI pass scoped to this section). " +
       "Writes in-place and irreversibly: there is no version history or undo (unlike landing-page section edits, which create a new draft version each call).",
     {
       slug: z.string().describe("Parent landing page slug"),
@@ -977,7 +977,12 @@ export function registerLpTools(server: McpServer) {
       value: jsonValueSchema
         .optional()
         .describe("New value for the single `field` above."),
-      instructions: z.string().optional().describe("Optional annotation stored for future AI-edit context (does not trigger an AI pass)"),
+      instructions: z
+        .string()
+        .optional()
+        .describe(
+          "Natural-language edit instructions. When provided alone (no fields/field), triggers an AI pass that rewrites this section's content according to the instructions. When combined with fields/field, stored only as an annotation for future context — no AI pass runs."
+        ),
     },
     async ({ slug, sideKey, sectionId, fields, field, value, instructions }) => {
       const body: Record<string, unknown> = { sectionId };

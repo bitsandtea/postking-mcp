@@ -8,16 +8,42 @@ function resolveApiUrl(): string {
   return process.env.POSTKING_API_URL || DEFAULT_API_URL;
 }
 
+/** True when `u` points at localhost, a loopback address, or a private-network host. */
+function isLocalHost(u: string): boolean {
+  try {
+    const { hostname } = new URL(u);
+    if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "0.0.0.0" || hostname === "::1") {
+      return true;
+    }
+    if (/^127\./.test(hostname)) return true;
+    if (/^10\./.test(hostname)) return true;
+    if (/^192\.168\./.test(hostname)) return true;
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(hostname)) return true;
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function parseGracePollMs(): number {
+  const raw = process.env.POSTKING_GENERATE_GRACE_MS;
+  const parsed = raw ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 20_000;
+}
+
 export const config = {
   apiUrl: resolveApiUrl(),
   pollIntervalMs: 3000,
   pollTimeoutMs: 120_000,
   // Content generation (multi-variation + voice rewrite + Modal cold starts) can
-  // take several minutes; poll longer before falling back to a "still running" message.
+  // take several minutes; kept for reference / other callers but no longer used to
+  // block generate_post — see generateGracePollMs below.
   generatePollTimeoutMs: 300_000,
+  // generate_post only holds the MCP request open for this short grace window so fast
+  // generations can return inline; anything slower falls back to a "generating" status
+  // and the caller polls get_post. Keeps well under remote-gateway request timeouts.
+  generateGracePollMs: parseGracePollMs(),
 } as const;
-
-export const webUrl = process.env.POSTKING_WEB_URL || resolveApiUrl();
 
 /**
  * OAuth Resource Server configuration.
@@ -109,6 +135,25 @@ export type Transport = "stdio" | "http";
 export function getTransport(): Transport {
   return process.env.POSTKING_MCP_TRANSPORT === "http" ? "http" : "stdio";
 }
+
+/**
+ * Resolves the public web URL used to build user-facing links (visual editor,
+ * dashboard, generate session). On the HTTP (remote/hosted) transport this must
+ * never resolve to a localhost/private address — a remote client can't reach it.
+ * On stdio (local dev) a localhost value is expected and left as-is.
+ */
+function resolveWebUrl(): string {
+  const resolved = process.env.POSTKING_WEB_URL || resolveApiUrl();
+  if (getTransport() === "http" && isLocalHost(resolved)) {
+    console.warn(
+      `[postking-mcp] HTTP transport resolved a localhost web URL (${resolved}); falling back to ${DEFAULT_API_URL}. Set POSTKING_WEB_URL (or POSTKING_API_URL) to a public URL for hosted deployments.`
+    );
+    return DEFAULT_API_URL;
+  }
+  return resolved;
+}
+
+export const webUrl = resolveWebUrl();
 
 /** Transport-aware guidance for "no token could be resolved at all". */
 export function notLoggedInMessage(): string {

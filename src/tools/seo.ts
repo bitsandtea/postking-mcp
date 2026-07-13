@@ -867,7 +867,9 @@ export function registerSeoTools(server: McpServer) {
       generateHeroImage: z
         .boolean()
         .optional()
-        .describe("When approving, also generate a hero image (extra credits)."),
+        .describe(
+          "When approving, also generate a hero image (extra credits). Article-type briefs only — comparison/landing-type briefs return a 400 if this is set."
+        ),
       voiceProfileId: z
         .string()
         .optional()

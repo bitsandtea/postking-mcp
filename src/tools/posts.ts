@@ -115,15 +115,15 @@ export function registerPostTools(server: McpServer) {
   server.tool(
     "generate_post",
     [
-      "Generate AI content for a platform. Polls until complete. Deducts 10 credits per variation.",
+      "Generate AI content for a platform. Returns quickly with a postId and a 'generating' or 'completed' status — it does NOT block until generation fully finishes. Deducts 10 credits per variation.",
       "To control what the post is about, pass `theme` with a free-text brief (any topic/angle/facts/tone). If you omit `theme`, the topic is RANDOM — so always pass it when the user wants specific content.",
       "When variations > 1, ALL variations are returned under a SINGLE postId in the `variations` array — it does NOT create one post per variation. `content` is variation 1 (the primary, already saved on the post). Never call generate_post again to 'get the other variations' — they're all in the response.",
       "`originalContent` (if seen elsewhere) is the pre-voice-rewrite draft, not a separate variation.",
       "After generating, use create_post to save a chosen variation, then approve_post to schedule it.",
       "To repurpose: call repurpose_content first, then create_post with the result, then approve_post.",
-      "Generation can take 1-5 minutes (longer with multiple variations or voice rewrite); this tool waits for completion. If it ever returns status 'still_generating', DO NOT write the post yourself — poll get_post with the returned postId until operationStatus is 'completed', then use that content.",
+      "Generation can take 1-5 minutes (longer with multiple variations or voice rewrite). This tool only waits a short grace period so fast generations can return inline content; if it returns status 'generating', the job is still running server-side — poll get_post with the returned postId until operationStatus is 'completed', then use that content. Do NOT call generate_post again for the same request while it's pending — retrying creates a duplicate draft and wastes credits.",
       "After generation, brand visual options (quote/card templates, brand images, stock photos) are prepared but NOT attached — share viewInBrowser for the visual picker, or call pick_post_visual to attach one. Do not attach a visual unless the user chooses it.",
-      "The response includes editInVisualEditor: a direct URL to edit the post in the visual editor.",
+      "The response includes editInVisualEditor: a direct URL to edit the post in the visual editor (once completed).",
     ].join(" "),
     {
       platform: z
@@ -155,9 +155,9 @@ export function registerPostTools(server: McpServer) {
       const postId = resp.postId;
       const sessionId = resp.sessionId;
       const viewInBrowser = sessionId ? generateSessionUrl(id, sessionId) : undefined;
-      const maxAttempts = Math.ceil(config.generatePollTimeoutMs / config.pollIntervalMs);
+      const maxAttempts = Math.ceil(config.generateGracePollMs / config.pollIntervalMs);
       let post: Record<string, unknown> = {};
-      let timedOut = false;
+      let completed = false;
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         await new Promise<void>((r) => setTimeout(r, config.pollIntervalMs));
         post = await api.get<Record<string, unknown>>(`/api/agent/v1/posts/${postId}`);
@@ -167,28 +167,37 @@ export function registerPostTools(server: McpServer) {
           const errMsg = (inner.errorMessage as string | undefined) ?? "Generation failed";
           throw new Error(`Post generation failed: ${errMsg}`);
         }
-        if (opStatus === "COMPLETED") break;
-        if (!opStatus && inner.content) break;
-        if (attempt === maxAttempts - 1) timedOut = true;
+        if (opStatus === "COMPLETED") {
+          completed = true;
+          break;
+        }
+        if (!opStatus && inner.content) {
+          completed = true;
+          break;
+        }
       }
 
-      const inner = (post.post ?? post) as Record<string, unknown>;
-      if (timedOut) {
+      if (!completed) {
+        // Grace window elapsed but the job is still running server-side — do not
+        // hold the MCP request open any longer. The caller must poll get_post.
         return {
           content: [
             {
               type: "text" as const,
               text: JSON.stringify({
-                status: "still_generating",
+                status: "generating",
                 postId,
+                ...(sessionId ? { sessionId } : {}),
                 ...(viewInBrowser ? { viewInBrowser } : {}),
-                instruction:
-                  "Generation is STILL RUNNING — it has NOT failed. Do NOT write or create this post yourself, and do NOT call create_post with your own text. The AI-generated, voice-matched content is on its way and will be better than a hand-written draft. Wait ~15 seconds, then call get_post with this postId. Repeat until operationStatus is 'completed' (or the post has content), then use that returned content. Only treat it as failed if get_post shows operationStatus 'failed'. You can also share viewInBrowser with the user to watch progress in the browser.",
+                message:
+                  "Generation is in progress and will finish server-side. Poll it with get_post using this postId. Do NOT call generate_post again for this request — retrying will create duplicate drafts.",
               }),
             },
           ],
         };
       }
+
+      const inner = (post.post ?? post) as Record<string, unknown>;
       let visuals: { bestPick?: Record<string, unknown>; options?: Record<string, unknown>[]; note: string } | undefined;
       try {
         await api.post(`/api/agent/v1/posts/${postId}/visuals/regenerate`, { loadExternal: true });
