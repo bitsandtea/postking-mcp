@@ -4,7 +4,7 @@ import { api } from "../client.js";
 import { requireBrandId } from "../state.js";
 import { config } from "../config.js";
 import { detailParam, project, projectList, type Projector } from "../detail.js";
-import { generateSessionUrl, visualEditorUrl } from "../links.js";
+import { generateSessionUrl, postDetailUrl, visualEditorUrl } from "../links.js";
 
 const PLATFORMS = ["x", "linkedin", "instagram", "threads", "facebook"] as const;
 
@@ -353,7 +353,7 @@ export function registerPostTools(server: McpServer) {
   // ── View post ─────────────────────────────────────────────────────────────
   server.tool(
     "get_post",
-    "View the full content and status of a single post. Use detail='short'|'medium'|'full' to control verbosity (default full). Multi-variation posts expose a `variations` array (all variations live on one postId). Output shows the final voice-rewritten content by default; pass includeOriginal=true to also see the pre-rewrite draft. Includes editInVisualEditor: a direct URL to edit the post in the visual editor.",
+    "View the full content and status of a single post. Use detail='short'|'medium'|'full' to control verbosity (default full). Multi-variation posts expose a `variations` array (all variations live on one postId). Output shows the final voice-rewritten content by default; pass includeOriginal=true to also see the pre-rewrite draft. Includes contentReviewUrl: a direct link to read and approve the generated body, and editInVisualEditor: a direct URL to edit the post in the visual editor.",
     {
       postId: z.string().describe("Post ID"),
       detail: detailParam("full"),
@@ -373,6 +373,13 @@ export function registerPostTools(server: McpServer) {
       }
       if (!includeOriginal) {
         delete projected.originalContent;
+      }
+      if (detail !== "short") {
+        if (typeof raw.webUrl === "string") {
+          projected.contentReviewUrl = raw.webUrl;
+        } else if (typeof post.brandId === "string") {
+          projected.contentReviewUrl = postDetailUrl(post.brandId, postId);
+        }
       }
       if (typeof post.brandId === "string" && typeof post.platform === "string") {
         projected.editInVisualEditor = visualEditorUrl(post.brandId, postId, post.platform);

@@ -53,3 +53,7 @@ export function generateSessionUrl(brandId: string, sessionId: string): string {
 export function visualEditorUrl(brandId: string, postId: string, platform: string): string {
   return `${webUrl}/dashboard/brands/${brandId}/visual-creator/${postId}/edit?platform=${encodeURIComponent(platform)}`;
 }
+
+export function postDetailUrl(brandId: string, postId: string): string {
+  return `${webUrl}/dashboard/brands/${brandId}/posts/${postId}`;
+}
