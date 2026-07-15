@@ -70,6 +70,14 @@ const jobProjector: Projector<Record<string, unknown>> = {
   },
 };
 
+/**
+ * Hard cap on how long a single `get_job` wait:true call may block, regardless
+ * of what the caller passes in maxWaitSeconds. get_job is the designated poller
+ * every other tool tells callers to use, so a bounded wait is fine here — but it
+ * must never block past the remote gateway's own request timeout either.
+ */
+const GET_JOB_MAX_WAIT_SECONDS = 30;
+
 const jobsListProjector: Projector<Record<string, unknown>> = {
   short: (j) => ({ id: j.id, kind: j.title ?? null, state: j.status ?? null }),
   medium: (j) => ({
@@ -159,7 +167,7 @@ export function registerJobTools(server: McpServer) {
       "Poll the status of any background Operation by its operationId or pollUrl.",
       "Returns the Operation row: { id, kind, state (pending|running|completed|partially_failed|failed|cancelled), brandId, scopeType, scopeId, progress, result, errors, startedAt, finishedAt, createdAt, updatedAt }.",
       "Call repeatedly until state is 'completed' or 'failed' (or 'cancelled'). When completed, the payload you want is in `result`; on failure, see `errors`.",
-      "Pass wait:true to block until the job is done (polls every 3s, up to ~2 min) — preferred over calling repeatedly.",
+      "Pass wait:true to block until the job is done (polls every 3s, capped at ~30s per call) — preferred over calling repeatedly. For longer-running jobs, call get_job again with wait:true to keep polling until it completes.",
       "Most generate_* and vibe_edit_* tools (including seo_generate_clusters and seo_generate_keywords) return an operationId — use this to poll them.",
       "Supports detail param: short=id+kind+state+progress, medium=adds timestamps+resultRef (key IDs from result, no full payload), full=raw including complete result JSONB.",
     ].join(" "),
@@ -181,7 +189,7 @@ export function registerJobTools(server: McpServer) {
         .min(5)
         .max(280)
         .optional()
-        .describe("Wait-window cap in seconds (default ~120s). Only applies when wait=true."),
+        .describe(`Requested wait window in seconds, clamped to a hard cap of ${GET_JOB_MAX_WAIT_SECONDS}s (default ~${GET_JOB_MAX_WAIT_SECONDS}s) regardless of the value passed — the remote gateway kills longer-blocking calls. Only applies when wait=true. For longer operations, call get_job again with wait:true to keep polling.`),
       detail: detailParam("full"),
       brandId: z.string().optional().describe("Brand ID — required if pollUrl is a bare operationId"),
     },
@@ -225,7 +233,10 @@ export function registerJobTools(server: McpServer) {
       }
 
       // ── Blocking wait — poll until terminal or the window elapses ──────────
-      const windowSeconds = maxWaitSeconds ?? Math.floor(config.pollTimeoutMs / 1000);
+      // Clamp (not just default) so a caller-supplied maxWaitSeconds can never
+      // hold the MCP request open past the remote gateway's own timeout.
+      const requested = maxWaitSeconds ?? GET_JOB_MAX_WAIT_SECONDS;
+      const windowSeconds = Math.min(Math.max(requested, 1), GET_JOB_MAX_WAIT_SECONDS);
       const maxAttempts = Math.ceil((windowSeconds * 1000) / config.pollIntervalMs);
       const startedAt = Date.now();
       let dataRec: Record<string, unknown> = {};

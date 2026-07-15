@@ -1364,11 +1364,11 @@ export function registerSeoTools(server: McpServer) {
   server.tool(
     "create_comparison_page",
     [
-      "Create a comparison / 'X vs Y' / 'best <category>' page for the brand WITHOUT going through the full SEO cluster → brief flow. One call kicks off generation, then this tool polls until the page is built and returns its slug(s) + link.",
+      "Create a comparison / 'X vs Y' / 'best <category>' page for the brand WITHOUT going through the full SEO cluster → brief flow. One call kicks off generation and returns quickly with an operationId and a 'still_generating' or 'completed' status — it does NOT block until the page is fully built.",
       "`mode` controls the engine: 'research' crawls the named competitors + live SERP results before writing — slower (can take several minutes) but produces the strongest, best-grounded page; 'simple' skips all crawling and lets the LLM author from what you provide — fast, best when you already have the facts or just want a quick draft.",
       "When your inputs are sparse (few/no options, no domains, no seedData), prefer 'research' — it will discover and ground the comparison for you and yield a far stronger page than 'simple'.",
       "`seedData` (simple mode): paste your own raw facts/notes/competitor details here and the LLM writes from them instead of crawling — this is how you feed your own data and avoid a crawl.",
-      "Async — fires the create, then polls the operation up to ~5 min. On success returns { briefId, sidePageId, sidePageSlug, landingPageSlug, webUrl, warnings }. If it is still running after the wait, returns { status: 'still_generating', operationId } — poll get_job with that operationId until state is 'completed'; do NOT fabricate the page yourself.",
+      "Async — fires the create, then waits only a short grace window before responding. On success returns { briefId, sidePageId, sidePageSlug, landingPageSlug, webUrl, warnings }. If it is still running past the grace window, returns { status: 'still_generating', operationId } — poll get_job with that operationId until state is 'completed'; do NOT fabricate the page yourself, and do NOT call create_comparison_page again for the same request while it's pending.",
       "Any `warnings` are surfaced verbatim — relay them to the user (e.g. sparse-input notes such as 'research mode would produce a stronger page').",
     ].join(" "),
     {
@@ -1448,11 +1448,12 @@ export function registerSeoTools(server: McpServer) {
       const webUrl = created.webUrl;
 
       // Comparison pages (especially research mode) can take minutes, so we
-      // wait up to generatePollTimeoutMs (mirrors generate_post) before handing
-      // the agent a "still running, keep polling" instruction instead of letting
-      // it fabricate the page. Terminal-state detection reuses derivedJobFields
-      // (the same helper get_job uses against the operations endpoint).
-      const maxAttempts = Math.ceil(config.generatePollTimeoutMs / config.pollIntervalMs);
+      // only wait up to generateGracePollMs (mirrors generate_post) before handing
+      // the agent a "still running, keep polling" instruction instead of holding
+      // the MCP request open — the remote gateway kills longer-blocking calls.
+      // Terminal-state detection reuses derivedJobFields (the same helper
+      // get_job uses against the operations endpoint).
+      const maxAttempts = Math.ceil(config.generateGracePollMs / config.pollIntervalMs);
       let op: Record<string, unknown> = {};
       let timedOut = false;
       for (let attempt = 0; attempt < maxAttempts; attempt++) {

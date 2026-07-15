@@ -50,18 +50,22 @@ const TERMINAL_FAILURE = new Set([
 ]);
 
 /**
- * Poll a URL until operationStatus reaches a terminal state.
+ * Poll a URL until operationStatus reaches a terminal state, or a short grace
+ * window elapses — whichever comes first. Never blocks past
+ * `config.generateGracePollMs`, so it stays well under remote-gateway request
+ * timeouts.
  *
  * Success  — state/status === "completed"  → returns the final response body.
  * Failure  — state/status is a terminal-failure value → throws with the state
  *            and any error message from the operation.
  * In-flight — pending | processing | running (and any unrecognised value) →
- *             keeps polling until the deadline.
+ *             keeps polling until the grace window elapses, then returns
+ *             `null` (still running, not failed) instead of throwing.
  */
 export async function pollUntilDone<T extends WithOperationStatus>(
   pollUrl: string
-): Promise<T> {
-  const deadline = Date.now() + config.pollTimeoutMs;
+): Promise<T | null> {
+  const deadline = Date.now() + config.generateGracePollMs;
 
   while (Date.now() < deadline) {
     await sleep(config.pollIntervalMs);
@@ -88,7 +92,9 @@ export async function pollUntilDone<T extends WithOperationStatus>(
     // Non-terminal: pending | processing | running | (unrecognised) → keep polling
   }
 
-  throw new Error(`Operation timed out after ${config.pollTimeoutMs / 1000}s`);
+  // Grace window elapsed with the operation still pending — not a failure,
+  // just still running server-side. Let the caller decide how to report that.
+  return null;
 }
 
 function sleep(ms: number): Promise<void> {

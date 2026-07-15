@@ -23,6 +23,7 @@ function slimArticle(a: any) {
     author: a.author ? `${a.author.authorFirstName} ${a.author.authorLastName}`.trim() : null,
     createdAt: a.createdAt,
     publicationId: a.blogId,
+    featuredImageUrl: a.postImage ?? null,
   };
 }
 
@@ -246,6 +247,9 @@ export function registerBlogTools(server: McpServer) {
             : {}),
           metaTitle: a.postMetaTitle,
           metaDescription: a.postMetaDescription,
+          featuredImageUrl: a.postImage ?? null,
+          featuredImageAlt: a.postImageAlt ?? null,
+          featuredImageDescription: a.postImageDesc ?? null,
           category: (a.category as Record<string, unknown>)?.name ?? null,
           author: a.author
             ? `${(a.author as Record<string, unknown>).authorFirstName} ${(a.author as Record<string, unknown>).authorLastName}`.trim()
@@ -279,7 +283,7 @@ export function registerBlogTools(server: McpServer) {
   // ── Update blog article ───────────────────────────────────────────────────
   server.tool(
     "update_blog_article",
-    "Edit a blog article — title, content, excerpt, SEO fields, status, author, or category. Set status='published' to make it live on your PostKing blog.",
+    "Edit a blog article — title, content, excerpt, SEO fields, status, author, category, or the featured/header image. Set status='published' to make it live on your PostKing blog.",
     {
       articleId: z.string().describe("Blog article ID"),
       title: z.string().optional(),
@@ -290,9 +294,12 @@ export function registerBlogTools(server: McpServer) {
       metaDescription: z.string().optional(),
       authorId: z.string().optional().describe("Author ID (from list_blog_authors)"),
       categoryId: z.string().optional().describe("Category ID (from list_blog_categories)"),
+      featuredImageUrl: z.string().optional().describe("The header/featured image — pass an image URL, a brand-asset path (the `fileUrl` from list_assets), an uploaded asset path, or a data: URI; external URLs are auto-downloaded when the article is published; pass an empty string to remove the current image."),
+      featuredImageAlt: z.string().optional().describe("Alt text for the featured/header image"),
+      featuredImageDescription: z.string().optional().describe("Description/caption for the featured/header image"),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ articleId, title, content, excerpt, status, metaTitle, metaDescription, authorId, categoryId, brandId }) => {
+    async ({ articleId, title, content, excerpt, status, metaTitle, metaDescription, authorId, categoryId, featuredImageUrl, featuredImageAlt, featuredImageDescription, brandId }) => {
       const id = requireBrandId(brandId);
       const data = await api.patch<any>(`/api/agent/v1/brands/${id}/blogs/${articleId}`, {
         postTitle: title,
@@ -303,6 +310,9 @@ export function registerBlogTools(server: McpServer) {
         postMetaDescription: metaDescription,
         authorId,
         categoryId,
+        postImage: featuredImageUrl,
+        postImageAlt: featuredImageAlt,
+        postImageDesc: featuredImageDescription,
       });
       return {
         content: [{ type: "text" as const, text: JSON.stringify(slimArticle(data?.blog ?? data?.article ?? data), null, 2) }],

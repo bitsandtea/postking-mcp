@@ -191,8 +191,7 @@ export function registerRedditTools(server: McpServer) {
     [
       "Async. Rewrite a blog article (or raw content) into a Reddit-native post for a specific subreddit.",
       "Typically takes ~30–90 sec per variation.",
-      "This tool polls inline and returns the finished Reddit post once generation completes — you do NOT need to poll separately.",
-      "If it times out before completing, it returns a postId; call get_post with that postId until operationStatus is COMPLETED.",
+      "Returns quickly — if generation finishes within a short grace window, the finished Reddit post is returned inline; otherwise it returns a postId and a 'still in progress' status. Poll get_post with that postId until operationStatus is COMPLETED. Do NOT call reddit_rewrite again for the same request while it's pending.",
       "Requires pool to exist. The subreddit must be in the brand's pool.",
       "Flow step 3 of 4: pool → suggest → REWRITE → list_posts.",
     ].join(" "),
@@ -218,13 +217,15 @@ export function registerRedditTools(server: McpServer) {
       if (variations !== undefined) body.variations = variations;
 
       // The rewrite route creates a Post (not an Operation) and returns { jobId }.
-      // Poll the post endpoint inline — mirrors generate_post in posts.ts.
+      // Poll the post endpoint inline — mirrors generate_post in posts.ts. Only
+      // wait up to generateGracePollMs so we never hold the MCP request open
+      // longer than the remote gateway tolerates.
       const resp = await api.post<{ jobId: string }>(
         `/api/agent/v1/brands/${id}/reddit/rewrite`,
         body
       );
       const postId = resp.jobId;
-      const maxAttempts = Math.ceil(config.pollTimeoutMs / config.pollIntervalMs);
+      const maxAttempts = Math.ceil(config.generateGracePollMs / config.pollIntervalMs);
       let post: Record<string, unknown> = {};
       let timedOut = false;
       for (let attempt = 0; attempt < maxAttempts; attempt++) {

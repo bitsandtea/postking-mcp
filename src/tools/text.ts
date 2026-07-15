@@ -18,13 +18,14 @@ export function registerTextTools(server: McpServer) {
   server.tool(
     "generate_text",
     [
-      "Generate or rewrite general-purpose, email-style/formal text — follow-up emails, cover letters, outreach messages, formal notes, etc. Polls until complete.",
+      "Generate or rewrite general-purpose, email-style/formal text — follow-up emails, cover letters, outreach messages, formal notes, etc. Returns quickly with an operationId and a 'still_generating' or 'completed' status — it does NOT block until generation fully finishes.",
       "This is NOT for social media posts — use generate_post for those.",
       "This is also NOT for a simple voice-only rewrite of existing text with no other options — for that, use rewrite_with_voice or rewrite_text instead. Reach for generate_text when you need mode selection (generate vs rewrite), a stated purpose, a target length, or when there's no source text at all (mode='generate').",
       "mode='generate' writes new text from a `prompt` (what to write, e.g. 'a follow-up email after a sales call, polite but direct'). mode='rewrite' rewrites existing `sourceText` into a new form/tone.",
       "`purpose` is optional free text describing the goal, e.g. 'win-back email' or 'job application cover letter'.",
       "`length` can be short | medium | long, or a specific target word count (20-5000).",
       "Supports detail param: short=status+wordCount only, medium=truncated content (500 chars)+wordCount (default), full=raw result including content, aiDetectionScore, burstinessScore, promptLogId, wordCount.",
+      "If it returns status 'still_generating', the job is still running server-side — poll get_job with the returned operationId (wait:true) until state is 'completed', then read the text from the operation's result. Do NOT call generate_text again for the same request while it's pending — retrying wastes effort and may create duplicate work.",
     ].join(" "),
     {
       mode: z.enum(["generate", "rewrite"]).describe("generate = write new text from a prompt; rewrite = rework existing sourceText"),
@@ -74,10 +75,11 @@ export function registerTextTools(server: McpServer) {
       );
       const operationId = created.operationId;
 
-      // Same block-and-poll mechanism as generate_post / comparison pages:
+      // Same short-grace-window mechanism as generate_post / comparison pages:
       // poll the generic operations endpoint and use derivedJobFields (shared
-      // with get_job) to detect terminal state.
-      const maxAttempts = Math.ceil(config.generatePollTimeoutMs / config.pollIntervalMs);
+      // with get_job) to detect terminal state, but never hold the MCP request
+      // open past generateGracePollMs — the gateway kills longer-blocking calls.
+      const maxAttempts = Math.ceil(config.generateGracePollMs / config.pollIntervalMs);
       let op: Record<string, unknown> = {};
       let timedOut = false;
       for (let attempt = 0; attempt < maxAttempts; attempt++) {

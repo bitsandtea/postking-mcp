@@ -163,9 +163,9 @@ _Reddit is a repurpose-to-Reddit workflow, not a scheduled publishing medium. Fl
 | `create_publication` | Create a new blog publication |
 | `update_publication` | Update an existing publication's title, description, domain/routing, or layout (partial update) |
 | `generate_blog_post` | AI-generate a full blog article with optional voice |
-| `get_blog_article` | Fetch full article content |
+| `get_blog_article` | Fetch full article content, including the featured/header image (`featuredImageUrl`, `featuredImageAlt`, `featuredImageDescription`) |
 | `get_blog_status` | Poll generation/publish status for an article |
-| `update_blog_article` | Edit title, content, SEO fields, author, category, or status |
+| `update_blog_article` | Edit title, content, SEO fields, author, category, status, or the featured/header image (`featuredImageUrl`, `featuredImageAlt`, `featuredImageDescription`) |
 | `delete_blog_article` | Permanently delete an article |
 | `publish_blog_article` | Push to WordPress, Medium, Substack, etc. |
 | `list_publishing_connections` | List external platform connections |

@@ -354,7 +354,7 @@ export function registerBrandTools(server: McpServer) {
   // ── Generate themes ───────────────────────────────────────────────────────
   server.tool(
     "generate_themes",
-    "Generate new content themes using AI. Polls until complete. Deducts credits.",
+    "Generate new content themes using AI. Waits a short grace window for generation to finish; if it's still running server-side after that, returns a 'generating' status instead of blocking — call list_themes a few seconds later to retrieve the new themes. Deducts credits.",
     {
       count: z.number().min(1).max(20).optional().default(5).describe("Number of themes to generate"),
       instructions: z.string().optional().describe("Custom instructions, e.g. 'Focus on startup growth'"),
@@ -370,8 +370,21 @@ export function registerBrandTools(server: McpServer) {
         input,
       });
 
-      // Poll brand until theme generation is complete
-      await pollUntilDone(`/api/agent/v1/brands/${id}`);
+      // Poll brand until theme generation is complete, or the grace window elapses.
+      const done = await pollUntilDone(`/api/agent/v1/brands/${id}`);
+      if (done === null) {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                status: "generating",
+                note: "Theme generation is still running server-side. Call list_themes in a few seconds to retrieve the new themes once ready.",
+              }),
+            },
+          ],
+        };
+      }
 
       // Fetch the freshly generated themes
       const themes = await api.get<unknown[]>(`/api/agent/v1/brands/${id}/themes`);
