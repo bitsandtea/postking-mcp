@@ -192,12 +192,12 @@ export function registerRedditTools(server: McpServer) {
       "Async. Rewrite a blog article (or raw content) into a Reddit-native post for a specific subreddit.",
       "Typically takes ~30–90 sec per variation.",
       "Returns quickly — if generation finishes within a short grace window, the finished Reddit post is returned inline; otherwise it returns a postId and a 'still in progress' status. Poll get_post with that postId until operationStatus is COMPLETED. Do NOT call reddit_rewrite again for the same request while it's pending.",
-      "Requires pool to exist. The subreddit must be in the brand's pool.",
+      "The subreddit does NOT need to be in the brand's pool — if it isn't, the rewrite still proceeds using general Reddit best-practices, and the result includes a `subredditNotice` string flagging that this subreddit hasn't been onboarded yet.",
       "Flow step 3 of 4: pool → suggest → REWRITE → list_posts.",
     ].join(" "),
     {
       subreddit: z.string().describe("Target subreddit name (from reddit_suggest results, e.g. 'entrepreneur')"),
-      voiceId: z.string().describe("Voice profile ID (use list_voices to get IDs; pass 'none' for no voice)"),
+      voiceId: z.string().optional().describe("Voice profile ID (use list_voices to get IDs; pass 'none' for no voice)"),
       sourcePostId: z.string().optional().describe("BlogArticle ID to rewrite (use this OR sourceContent)"),
       sourceContent: z.string().optional().describe("Raw content body to rewrite (use this OR sourcePostId)"),
       sourceTitle: z.string().optional().describe("Title of the source content (used with sourceContent)"),
@@ -208,7 +208,8 @@ export function registerRedditTools(server: McpServer) {
     },
     async ({ subreddit, voiceId, sourcePostId, sourceContent, sourceTitle, angle, length, variations, brandId }) => {
       const id = requireBrandId(brandId);
-      const body: Record<string, unknown> = { subreddit, voiceId };
+      const body: Record<string, unknown> = { subreddit };
+      if (voiceId !== undefined) body.voiceId = voiceId;
       if (sourcePostId !== undefined) body.sourcePostId = sourcePostId;
       if (sourceContent !== undefined) body.sourceContent = sourceContent;
       if (sourceTitle !== undefined) body.sourceTitle = sourceTitle;
@@ -217,14 +218,18 @@ export function registerRedditTools(server: McpServer) {
       if (variations !== undefined) body.variations = variations;
 
       // The rewrite route creates a Post (not an Operation) and returns { jobId }.
+      // It also returns `subredditNotice` (only when the target subreddit
+      // isn't in the brand's pool yet) — captured here at kickoff since it's
+      // computed synchronously in the route before the background job runs.
       // Poll the post endpoint inline — mirrors generate_post in posts.ts. Only
       // wait up to generateGracePollMs so we never hold the MCP request open
       // longer than the remote gateway tolerates.
-      const resp = await api.post<{ jobId: string }>(
+      const resp = await api.post<{ jobId: string; subredditNotice?: string }>(
         `/api/agent/v1/brands/${id}/reddit/rewrite`,
         body
       );
       const postId = resp.jobId;
+      const subredditNotice = resp.subredditNotice;
       const maxAttempts = Math.ceil(config.generateGracePollMs / config.pollIntervalMs);
       let post: Record<string, unknown> = {};
       let timedOut = false;
@@ -245,16 +250,20 @@ export function registerRedditTools(server: McpServer) {
       }
 
       if (timedOut) {
+        const noticeSuffix = subredditNotice ? `\n\n${subredditNotice}` : "";
         return {
           content: [{
             type: "text" as const,
-            text: `Reddit rewrite still in progress. Poll get_post with postId: ${postId} until operationStatus is COMPLETED.`,
+            text: `Reddit rewrite still in progress. Poll get_post with postId: ${postId} until operationStatus is COMPLETED.${noticeSuffix}`,
           }],
         };
       }
       const inner = (post.post ?? post) as Record<string, unknown>;
       return {
-        content: [{ type: "text" as const, text: JSON.stringify({ postId, ...inner }) }],
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({ postId, ...inner, ...(subredditNotice ? { subredditNotice } : {}) }),
+        }],
       };
     }
   );
