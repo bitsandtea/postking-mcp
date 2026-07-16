@@ -916,16 +916,41 @@ export function registerLpTools(server: McpServer) {
   // ── Edit side page ────────────────────────────────────────────────────────
   server.tool(
     "edit_side_page",
-    "Update page-level instructions or metadata of a side page. `instructions` is stored as an annotation for future context — it does NOT trigger an AI edit/regeneration. For section-level edits, use set_side_page_section. Side-page writes are in-place and irreversible: there is no version history or undo (unlike landing-page section edits, which create a new draft version each call).",
+    "Update a side page's page-level metadata: `name` (display title, shown in auto-generated footer/nav 'Solutions' links and breadcrumbs), `newKey` (rename the URL-slug fragment; old URL 404s, no redirect; internal references are rewritten in the background), and `instructions` (stored as an annotation for future context — does NOT trigger an AI edit; for section content use set_side_page_section). Writes are in-place and irreversible (no version history/undo). When newKey triggers a reference rewrite, the response includes slugRewriteOperationId — poll it to confirm the cascade finished.",
     {
       slug: z.string().describe("Parent landing page slug"),
       sideKey: z.string().describe("Side page key"),
       instructions: z.string().optional().describe("Updated instructions for the AI"),
+      name: z
+        .string()
+        .optional()
+        .describe(
+          "New display title for the side page. This is the title shown in auto-generated footer/nav 'Solutions' links and breadcrumbs. Changing it updates those links automatically."
+        ),
+      newKey: z
+        .string()
+        .optional()
+        .describe(
+          "New URL-slug fragment to RENAME the side page's key. The old URL will stop working (404) after rename — there is no redirect. Existing internal links from blogs/other pages to this page are rewritten automatically in the background (poll the returned slugRewriteOperationId)."
+        ),
+      updateReferences: z
+        .boolean()
+        .optional()
+        .describe(
+          "When renaming via newKey, rewrite existing internal references (blog backlinks, internalLinks) to point at the new slug. Defaults to true; set false to skip the cascade."
+        ),
     },
-    async ({ slug, sideKey, instructions }) => {
+    async ({ slug, sideKey, instructions, name, newKey, updateReferences }) => {
+      const body: Record<string, unknown> = {};
+      if (instructions !== undefined) body.instructions = instructions;
+      if (name !== undefined) body.name = name;
+      if (newKey !== undefined) {
+        body.slug = newKey;
+        body.updateReferences = updateReferences !== undefined ? updateReferences : true;
+      }
       const data = await api.patch<Record<string, unknown>>(
         `/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}`,
-        { instructions }
+        body
       );
       return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
     }
