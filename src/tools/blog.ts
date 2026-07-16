@@ -283,11 +283,16 @@ export function registerBlogTools(server: McpServer) {
   // ── Update blog article ───────────────────────────────────────────────────
   server.tool(
     "update_blog_article",
-    "Edit a blog article — title, content, excerpt, SEO fields, status, author, category, or the featured/header image. Set status='published' to make it live on your PostKing blog.",
+    [
+      "Edit a blog article — title, content, excerpt, SEO fields, status, author, category, featured/header image, or CTA. Set status='published' to make it live on your PostKing blog.",
+      "CTA (call-to-action) is structured data, NOT part of the article body — never write CTA markup into `content`.",
+      "Use `cta: { url, label, headline, body }` to set it (url is required when enabling), or `cta: { enabled: false }` to remove it.",
+      "`cta` and `sidePageInfo` are mutually exclusive — pass `sidePageInfo` only if you need to link to an existing side page by id/slug (from list_side_pages) instead of a raw url; either way, malformed CTA shapes are now rejected by the server rather than silently persisted, so pass exactly the documented fields.",
+    ].join(" "),
     {
       articleId: z.string().describe("Blog article ID"),
       title: z.string().optional(),
-      content: z.string().optional().describe("Full post body (HTML or markdown)"),
+      content: z.string().optional().describe("Full post body (HTML or markdown). Do not put CTA content here — use the `cta` field."),
       excerpt: z.string().optional(),
       status: z.enum(["draft", "published"]).optional().describe("'published' makes it live on your blog"),
       metaTitle: z.string().optional(),
@@ -297,9 +302,35 @@ export function registerBlogTools(server: McpServer) {
       featuredImageUrl: z.string().optional().describe("The header/featured image — pass an image URL, a brand-asset path (the `fileUrl` from list_assets), an uploaded asset path, or a data: URI; external URLs are auto-downloaded when the article is published; pass an empty string to remove the current image."),
       featuredImageAlt: z.string().optional().describe("Alt text for the featured/header image"),
       featuredImageDescription: z.string().optional().describe("Description/caption for the featured/header image"),
+      cta: z
+        .object({
+          enabled: z.boolean().optional().describe("Set to false to remove the CTA."),
+          url: z.string().optional().describe("CTA link target. Required unless enabled is false."),
+          label: z.string().optional().describe("CTA button text."),
+          headline: z.string().optional().describe("CTA block headline."),
+          body: z.string().optional().describe("CTA block body copy."),
+        })
+        .strict()
+        .optional()
+        .describe("Set or clear the article's CTA block. Mutually exclusive with sidePageInfo."),
+      sidePageInfo: z
+        .object({
+          id: z.string().nullable().optional().describe("Link the CTA to an existing side page by id (from list_side_pages)."),
+          name: z.string().optional(),
+          slug: z.string().optional(),
+          header: z.string().optional(),
+          ctaText: z.string().optional(),
+          ctaButtonText: z.string().optional(),
+          ctaHref: z.string().optional(),
+          ctaSource: z.string().optional(),
+        })
+        .strict()
+        .nullable()
+        .optional()
+        .describe("Full CTA object (advanced). Must include at least one of id/slug/ctaHref. Pass null to clear the CTA. Mutually exclusive with cta."),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ articleId, title, content, excerpt, status, metaTitle, metaDescription, authorId, categoryId, featuredImageUrl, featuredImageAlt, featuredImageDescription, brandId }) => {
+    async ({ articleId, title, content, excerpt, status, metaTitle, metaDescription, authorId, categoryId, featuredImageUrl, featuredImageAlt, featuredImageDescription, cta, sidePageInfo, brandId }) => {
       const id = requireBrandId(brandId);
       const data = await api.patch<any>(`/api/agent/v1/brands/${id}/blogs/${articleId}`, {
         postTitle: title,
@@ -313,6 +344,8 @@ export function registerBlogTools(server: McpServer) {
         postImage: featuredImageUrl,
         postImageAlt: featuredImageAlt,
         postImageDesc: featuredImageDescription,
+        cta,
+        sidePageInfo,
       });
       return {
         content: [{ type: "text" as const, text: JSON.stringify(slimArticle(data?.blog ?? data?.article ?? data), null, 2) }],

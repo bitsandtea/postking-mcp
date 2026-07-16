@@ -244,6 +244,7 @@ If you don't have one: \`create_publication\` with a title. Returns a publicatio
 **Step 3 — Review & edit**
 \`get_blog_article\` — shows the full content (first 2000 chars).
 \`update_blog_article\` — edit title, content, excerpt, or SEO fields.
+- To edit the article's CTA (call-to-action block), use the \`cta\` field — e.g. \`{ url, label, headline, body }\` — or \`cta: { enabled: false }\` to remove it. Never put a CTA inline in \`content\`; it lives in structured data and is rejected/dropped there.
 
 **Step 4 — Publish**
 Two options:

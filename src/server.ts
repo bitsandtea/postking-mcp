@@ -23,7 +23,7 @@ import { registerSocialTools } from "./tools/social.js";
 import { registerDomainTools } from "./tools/domains.js";
 import { registerUserTools } from "./tools/user.js";
 import { registerBlogTools } from "./tools/blog.js";
-import { registerSeoTools } from "./tools/seo.js";
+import { registerSeoTools } from "./tools/seo/index.js";
 import { registerKeyTools } from "./tools/keys.js";
 import { registerJobTools } from "./tools/jobs.js";
 import { registerWeeklyScheduleTools } from "./tools/weekly-schedule.js";
