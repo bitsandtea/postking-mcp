@@ -26,6 +26,8 @@ interface CompactCluster {
   topKeywords: string[];
   firstBriefId: string | null;
   description: string | null;
+  productFit: string | null;
+  relevanceScore: number | null;
 }
 
 function projectCluster(c: Record<string, unknown>): CompactCluster {
@@ -33,6 +35,7 @@ function projectCluster(c: Record<string, unknown>): CompactCluster {
   const keywords = Array.isArray(c.keywords) ? c.keywords : [];
   const keywordCount = keywordsMeta.length > 0 ? keywordsMeta.length : keywords.length;
   const topKeywords = (keywords as unknown[]).slice(0, 8).filter((k): k is string => typeof k === "string");
+  const clusterMeta = c.clusterMeta != null && typeof c.clusterMeta === "object" ? (c.clusterMeta as Record<string, unknown>) : null;
   return {
     id: String(c.id ?? ""),
     name: String(c.name ?? ""),
@@ -44,6 +47,8 @@ function projectCluster(c: Record<string, unknown>): CompactCluster {
     topKeywords,
     firstBriefId: c.firstBriefId != null ? String(c.firstBriefId) : null,
     description: truncate(c.description, 200),
+    productFit: clusterMeta != null && typeof clusterMeta.productFit === "string" ? clusterMeta.productFit : null,
+    relevanceScore: clusterMeta != null && typeof clusterMeta.relevanceScore === "number" ? clusterMeta.relevanceScore : null,
   };
 }
 
@@ -128,23 +133,129 @@ export function registerSeoClusterTools(server: McpServer) {
     }
   );
 
+  // ── Edit a cluster (housekeeping) ─────────────────────────────────────────
+  server.tool(
+    "seo_edit_cluster",
+    [
+      "Edit a cluster's name, pillarKeyword, description, keywordsMeta, contentMix, and/or briefAssignments. Housekeeping op — not part of the main flow. At least one field must be supplied.",
+      "MEMBERSHIP: there is no separate add/remove-member endpoint. Cluster membership is entirely controlled by `keywordsMeta` — it is a REPLACEMENT array, not a delta/patch. To add a keyword to the cluster, fetch the cluster's current keywordsMeta (seo_list_clusters with detail=\"full\"), append a new entry `{keyword, id, volume, kd, intent, relevance, priority, excluded?}` (use the SeoScoredKeyword id from seo_list_keywords / seo_list_keyword_ids), and send the WHOLE array back. To remove a keyword, send the array with that entry omitted. Sending a partial array will drop the missing members from the cluster.",
+      "`contentMix` must be an object with blog/tool/comparison/landing fractions summing to 1.0 (the server normalizes small rounding drift). `briefAssignments` is an array of `{keyword, type, ...}` entries (type ∈ hub|blog|comparison|tool|landing|skip); duplicate keywords are rejected.",
+      'Example (rename): {"clusterId":"kwc_123","name":"Better cluster name"}.',
+      'Example (remove a member): fetch full keywordsMeta, filter out the unwanted keyword, then {"clusterId":"kwc_123","keywordsMeta":[...remaining members]}.',
+    ].join(" "),
+    {
+      clusterId: z.string().min(1).describe("Cluster ID from seo_list_clusters"),
+      name: z.string().trim().min(1).max(200).optional().describe("New cluster name"),
+      pillarKeyword: z.string().trim().nullable().optional().describe("New pillar keyword (null clears it)"),
+      description: z.string().trim().nullable().optional().describe("New description (null clears it)"),
+      keywordsMeta: z
+        .array(z.record(z.string(), z.unknown()))
+        .optional()
+        .describe(
+          "REPLACEMENT array of cluster members: [{keyword, id?, volume?, kd?, intent?, relevance?, priority?, excluded?}, ...]. This is how membership is added/removed — see tool description."
+        ),
+      contentMix: z
+        .record(z.string(), z.unknown())
+        .optional()
+        .describe("Content-type distribution {blog, tool, comparison, landing} — fractions must sum to 1.0"),
+      briefAssignments: z
+        .array(z.record(z.string(), z.unknown()))
+        .optional()
+        .describe("Per-keyword brief assignments: [{keyword, type, ...}, ...]"),
+      brandId: brandOpt,
+    },
+    async ({ clusterId, name, pillarKeyword, description, keywordsMeta, contentMix, briefAssignments, brandId }) => {
+      const id = requireBrandId(brandId);
+      const body: Record<string, unknown> = {};
+      if (name !== undefined) body.name = name;
+      if (pillarKeyword !== undefined) body.pillarKeyword = pillarKeyword;
+      if (description !== undefined) body.description = description;
+      if (keywordsMeta !== undefined) body.keywordsMeta = keywordsMeta;
+      if (contentMix !== undefined) body.contentMix = contentMix;
+      if (briefAssignments !== undefined) body.briefAssignments = briefAssignments;
+      const data = await api.patch<unknown>(
+        `/api/agent/v1/brands/${id}/seo/clusters/${clusterId}`,
+        body
+      );
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    }
+  );
+
+  // ── Merge two clusters (housekeeping) ─────────────────────────────────────
+  server.tool(
+    "seo_merge_clusters",
+    [
+      "Merge one cluster into another: reassigns the source cluster's keywords, roadmap items (and their briefs, which follow transitively), and any linked blog articles to the target cluster, then deletes the source cluster. Not undoable.",
+      "Housekeeping op — not part of the main flow. Use when seo_list_clusters or a rescan report shows near-duplicate clusters that should be consolidated.",
+      "The target cluster's own name/description/keywordsMeta/contentMix are NOT changed by the merge — only the FK relations (keyword.clusterId, roadmap.clusterId, blogArticle.clusterId) move over. Use seo_edit_cluster afterward if the target's keywordsMeta needs updating to include the newly reassigned keywords.",
+    ].join(" "),
+    {
+      clusterId: z.string().min(1).describe("Target cluster ID (survives the merge) — from seo_list_clusters"),
+      sourceClusterId: z.string().min(1).describe("Source cluster ID (deleted after its content is reassigned to clusterId)"),
+      brandId: brandOpt,
+    },
+    async ({ clusterId, sourceClusterId, brandId }) => {
+      const id = requireBrandId(brandId);
+      const data = await api.post<unknown>(
+        `/api/agent/v1/brands/${id}/seo/clusters/${clusterId}/merge`,
+        { sourceClusterId }
+      );
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    }
+  );
+
+  // ── Hard-delete a cluster (housekeeping, destructive) ─────────────────────
+  server.tool(
+    "seo_delete_cluster",
+    [
+      "Hard-delete a cluster. This CASCADES: every SeoRoadmap item under this cluster is deleted, along with its brief. Blog articles and keywords that pointed at this cluster are NOT deleted but have their cluster link cleared.",
+      "This is NOT UNDOABLE — there is no soft-delete for clusters (unlike keywords). Housekeeping op — not part of the main flow. Pass `confirm: true` to proceed.",
+      "Prefer seo_reject_cluster if you just want to remove a cluster from the active pipeline without destroying its roadmap items and briefs — reject is reversible via seo_restore_cluster, delete is not.",
+    ].join(" "),
+    {
+      clusterId: z.string().min(1).describe("Cluster ID from seo_list_clusters"),
+      confirm: z.literal(true).describe("Must be true to confirm the cascading hard-delete"),
+      brandId: brandOpt,
+    },
+    async ({ clusterId, brandId }) => {
+      const id = requireBrandId(brandId);
+      const data = await api.delete<unknown>(
+        `/api/agent/v1/brands/${id}/seo/clusters/${clusterId}`
+      );
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    }
+  );
+
   // ── 5. List clusters ──────────────────────────────────────────────────────
   server.tool(
     "seo_list_clusters",
     [
       "Step 5. List clusters so the agent can pick one (or several) to approve before brief and roadmap generation.",
       "Returns short detail by default: {id, name, status} per cluster.",
-      "Use detail=\"medium\" for the full compact summary (pillarKeyword, briefGenerationStatus, briefCount, keywordCount, topKeywords, firstBriefId, description) or detail=\"full\" for raw cluster objects.",
+      "Use detail=\"medium\" for the full compact summary (pillarKeyword, briefGenerationStatus, briefCount, keywordCount, topKeywords, firstBriefId, description, productFit, relevanceScore) or detail=\"full\" for raw cluster objects.",
       "Full keyword detail (keywordsMeta, contentMix, briefAssignments) is intentionally omitted at short/medium to keep context small — use cluster IDs with approve/reject tools directly.",
+      "Supports server-side filtering: status (CSV of pending_review/approved/rejected), productFit (core/adjacent/out_of_scope), archetype (competitor), origin (CSV of pipeline/manual), q (text search over name/description/pillarKeyword).",
     ].join(" "),
     {
       detail: detailParam("short"),
+      status: z.string().optional().describe("CSV of cluster statuses to filter by (pending_review, approved, rejected)"),
+      productFit: z.enum(["core", "adjacent", "out_of_scope"]).optional().describe("Filter by product-fit classification"),
+      archetype: z.enum(["competitor"]).optional().describe("Filter by cluster archetype"),
+      origin: z.string().optional().describe("CSV of origins to filter by (pipeline, manual)"),
+      q: z.string().optional().describe("Text search over cluster name, description, and pillarKeyword"),
       brandId: brandOpt,
     },
-    async ({ detail, brandId }) => {
+    async ({ detail, status, productFit, archetype, origin, q, brandId }) => {
       const id = requireBrandId(brandId);
+      const params = new URLSearchParams();
+      if (status !== undefined) params.set("status", status);
+      if (productFit !== undefined) params.set("productFit", productFit);
+      if (archetype !== undefined) params.set("archetype", archetype);
+      if (origin !== undefined) params.set("origin", origin);
+      if (q !== undefined) params.set("q", q);
+      const qs = params.toString();
       const data = await api.get<unknown>(
-        `/api/agent/v1/brands/${id}/seo/clusters`
+        `/api/agent/v1/brands/${id}/seo/clusters${qs ? `?${qs}` : ""}`
       );
       const raw = data != null && typeof data === "object" ? (data as Record<string, unknown>) : {};
       const rawClusters = Array.isArray(raw.clusters) ? raw.clusters : [];
