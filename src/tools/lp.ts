@@ -832,9 +832,9 @@ export function registerLpTools(server: McpServer) {
       "AI-generates a side page under a parent landing page. Async — kicks off the side-page generator and returns `{ success, operationId, operationRowId, pollUrl, sidePageId }`.",
       "This is the GENERATOR (POST /side-pages/generate) — NOT a row creator. Comparison-type briefs may run synchronously and return `sidePageId` directly with no operationId.",
       "Two body modes:",
-      "  • freeform: pass `key` + `prompt` (+ optional `keywords`, `selectedSections`, `voiceProfileId`, `sidePageType`).",
+      "  • freeform: pass `key` + `prompt` (+ optional `keywords`, `selectedSections`, `voiceProfileId`, `sidePageType`). Freeform now writes real section-level content (hero/features/showcase/faq/cta), not just metadata.",
       "  • brief: pass `key` + `brief` (structured outline) + optional `briefId` and `roadmapItemId`.",
-      "Poll `get_job` until `state` is `completed` (or `failed`/`partially_failed`/`cancelled` on error).",
+      "Poll `get_job` with the returned `operationId` until `state` is `completed` (or `failed`/`partially_failed`/`cancelled` on error); the generated page's sections will be populated once complete.",
     ].join(" "),
     {
       slug: z.string().min(1).describe("Parent landing page slug"),
@@ -851,6 +851,10 @@ export function registerLpTools(server: McpServer) {
         .array(z.string())
         .optional()
         .describe("Freeform-mode: target keywords to weave into the page"),
+      selectedSections: z
+        .array(z.string())
+        .optional()
+        .describe("Freeform-mode: restrict generation to these section ids (e.g. hero, features, showcase, faq, cta, pricing). Omit to generate all default sections."),
       sidePageType: z
         .enum(["landing", "text", "comparison"])
         .optional()
@@ -866,11 +870,12 @@ export function registerLpTools(server: McpServer) {
         .describe("Persisted SeoBrief ID — required for comparison-type generation"),
       roadmapItemId: z.string().optional().describe("Roadmap item ID this side page is fulfilling"),
     },
-    async ({ slug, key, prompt, brief, keywords, sidePageType, voiceProfileId, autoAssignAssets, briefId, roadmapItemId }) => {
+    async ({ slug, key, prompt, brief, keywords, selectedSections, sidePageType, voiceProfileId, autoAssignAssets, briefId, roadmapItemId }) => {
       const body: Record<string, unknown> = { key };
       if (prompt !== undefined) body.prompt = prompt;
       if (brief !== undefined) body.brief = brief;
       if (keywords !== undefined) body.keywords = keywords;
+      if (selectedSections !== undefined) body.selectedSections = selectedSections;
       if (sidePageType !== undefined) body.sidePageType = sidePageType;
       if (voiceProfileId !== undefined) body.voiceProfileId = voiceProfileId;
       if (autoAssignAssets !== undefined) body.autoAssignAssets = autoAssignAssets;
@@ -1036,6 +1041,57 @@ export function registerLpTools(server: McpServer) {
       const data = await api.post<Record<string, unknown>>(
         `/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}/state`,
         { published }
+      );
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    }
+  );
+
+  // ─────────────────── Asset slots ────────────────────────────────────────────
+
+  // ── List asset slots ──────────────────────────────────────────────────────
+  server.tool(
+    "list_asset_slots",
+    "List the asset slots (image/video placeholders) for a landing page or side page, with each slot's current asset assignment. Use this to discover valid slotKeys before calling assign_asset_to_slot. Pass sidePageSlug to inspect a side page's slots.",
+    {
+      slug: z.string().describe("Landing page slug"),
+      sidePageSlug: z.string().optional().describe("Side page slug — inspect this side page's slots instead of the main LP's"),
+      pageKey: z.string().optional().describe("Page key within the LP (defaults to 'main'; ignored when sidePageSlug is set)"),
+    },
+    async ({ slug, sidePageSlug, pageKey }) => {
+      const qs = new URLSearchParams();
+      if (sidePageSlug !== undefined) qs.set("sidePageSlug", sidePageSlug);
+      if (pageKey !== undefined) qs.set("pageKey", pageKey);
+      const suffix = qs.toString() ? `?${qs.toString()}` : "";
+      const data = await api.get<Record<string, unknown>>(
+        `/api/agent/v1/landing-pages/${slug}/assets/slots${suffix}`
+      );
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    }
+  );
+
+  // ── Assign asset to slot ──────────────────────────────────────────────────
+  server.tool(
+    "assign_asset_to_slot",
+    "Assign, reassign, or clear the asset in a landing-page or side-page slot. slotKey is a dotted key like 'hero.backgroundVideo' or 'cta.image' (discover valid keys with list_asset_slots). For array slots pass assetIds; for single slots pass assetId. The asset must already be in the brand's library (see list_assets / upload_asset / import_asset_from_url) and match the slot's media type. Pass sidePageSlug to target a side page. Set clear:true (or assetId:null) to empty the slot. Synchronous — the change applies immediately, no polling. Main-LP changes create a new draft version.",
+    {
+      slug: z.string().describe("Landing page slug"),
+      slotKey: z.string().describe("Dotted slot key, e.g. 'hero.backgroundVideo' or 'cta.image' (from list_asset_slots)"),
+      assetId: z.string().nullable().optional().describe("Asset ID for a single (non-array) slot. Pass null to clear the slot."),
+      assetIds: z.array(z.string()).nullable().optional().describe("Asset IDs for an array slot. Pass an empty array (or null) to clear the slot."),
+      sidePageSlug: z.string().optional().describe("Side page slug — target this side page's slot instead of the main LP's"),
+      pageKey: z.string().optional().describe("Page key within the LP (defaults to 'main'; ignored when sidePageSlug is set)"),
+      clear: z.boolean().optional().describe("Set true to empty the slot"),
+    },
+    async ({ slug, slotKey, assetId, assetIds, sidePageSlug, pageKey, clear }) => {
+      const body: Record<string, unknown> = { slotKey };
+      if (assetId !== undefined) body.assetId = assetId;
+      if (assetIds !== undefined) body.assetIds = assetIds;
+      if (sidePageSlug !== undefined) body.sidePageSlug = sidePageSlug;
+      if (pageKey !== undefined) body.pageKey = pageKey;
+      if (clear !== undefined) body.clear = clear;
+      const data = await api.post<Record<string, unknown>>(
+        `/api/agent/v1/landing-pages/${slug}/assets/assign`,
+        body
       );
       return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
     }

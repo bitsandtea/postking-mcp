@@ -21,10 +21,10 @@ export function registerSeoSidePageTools(server: McpServer) {
       "Generates a side page for a brand's landing page, optionally linked to an SEO cluster (`clusterId`).",
       "When linked, the side page surfaces in cluster-context queries and inherits the cluster's keyword targeting — strengthening topical authority that feeds GEO citation patterns.",
       "Two body modes:",
-      "  • freeform: pass `key` + `prompt` (+ optional `keywords`, `selectedSections`, `voiceProfileId`, `sidePageType`).",
+      "  • freeform: pass `key` + `prompt` (+ optional `keywords`, `selectedSections`, `voiceProfileId`, `sidePageType`). Freeform now writes real section-level content (hero/features/showcase/faq/cta), not just metadata.",
       "  • brief: pass `key` + `brief` (structured outline) + optional `briefId` and `roadmapItemId`.",
       `Typically takes ${etaFor("landing_page_side_pages_generate")}.`,
-      "Async — returns `{ success, operationId, operationRowId, pollUrl, sidePageId }`. Poll `get_job` with the operationId until `state` is `completed` (or `failed`/`partially_failed`/`cancelled` on error); comparison-type briefs run synchronously and return `sidePageId` directly.",
+      "Async — returns `{ success, operationId, operationRowId, pollUrl, sidePageId }`. Poll `get_job` with the returned `operationId` until `state` is `completed` (or `failed`/`partially_failed`/`cancelled` on error); the generated page's sections will be populated once complete. Comparison-type briefs run synchronously and return `sidePageId` directly.",
       "`slug` is the PARENT landing page slug under which the side page is created.",
     ].join(" "),
     {
@@ -42,6 +42,10 @@ export function registerSeoSidePageTools(server: McpServer) {
         .array(z.string())
         .optional()
         .describe("Freeform-mode: target keywords to weave into the page"),
+      selectedSections: z
+        .array(z.string())
+        .optional()
+        .describe("Freeform-mode: restrict generation to these section ids (e.g. hero, features, showcase, faq, cta, pricing). Omit to generate all default sections."),
       sidePageType: z
         .enum(["landing", "text", "comparison"])
         .optional()
@@ -61,11 +65,12 @@ export function registerSeoSidePageTools(server: McpServer) {
         .describe("Persisted SeoBrief ID — required for comparison-type generation"),
       roadmapItemId: z.string().optional().describe("Roadmap item ID this side page is fulfilling"),
     },
-    async ({ slug, key, prompt, brief, keywords, sidePageType, voiceProfileId, autoAssignAssets, clusterId, briefId, roadmapItemId }) => {
+    async ({ slug, key, prompt, brief, keywords, selectedSections, sidePageType, voiceProfileId, autoAssignAssets, clusterId, briefId, roadmapItemId }) => {
       const body: Record<string, unknown> = { key };
       if (prompt !== undefined) body.prompt = prompt;
       if (brief !== undefined) body.brief = brief;
       if (keywords !== undefined) body.keywords = keywords;
+      if (selectedSections !== undefined) body.selectedSections = selectedSections;
       if (sidePageType !== undefined) body.sidePageType = sidePageType;
       if (voiceProfileId !== undefined) body.voiceProfileId = voiceProfileId;
       if (autoAssignAssets !== undefined) body.autoAssignAssets = autoAssignAssets;
