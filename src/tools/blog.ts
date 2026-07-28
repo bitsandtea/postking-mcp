@@ -146,6 +146,23 @@ export function registerBlogTools(server: McpServer) {
     }
   );
 
+  // ── Delete publication ────────────────────────────────────────────────────
+  server.tool(
+    "delete_publication",
+    "Permanently delete a blog publication. Only allowed when it has zero articles and no connected domain/external sync/publishing connections — otherwise the API refuses with an explanation of what's still attached (remove/disconnect those first, e.g. delete_blog_article for every article under it).",
+    {
+      publicationId: z.string().describe("Blog publication ID (from list_publications or list_blogs)"),
+      brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
+    },
+    async ({ publicationId, brandId }) => {
+      const id = requireBrandId(brandId);
+      await api.delete(`/api/agent/v1/brands/${id}/publications/${publicationId}`);
+      return {
+        content: [{ type: "text" as const, text: `Publication ${publicationId} deleted.` }],
+      };
+    }
+  );
+
   // ── Generate blog post (AI) ───────────────────────────────────────────────
   server.tool(
     "generate_blog_post",
