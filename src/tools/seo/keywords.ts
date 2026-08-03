@@ -86,7 +86,9 @@ export function registerSeoKeywordTools(server: McpServer) {
       "Step 2 of the SEO / GEO flow. Async — expands seed keywords into the full keyword universe.",
       `Typically takes ${etaFor("seo_keyword_pull")}.`,
       "Uses credits. Returns `{operationId, status}` — Poll `get_job` with the operationId until `state` is `completed` (or `failed`/`partially_failed`/`cancelled` on error).",
-      "The server picks the expansion size automatically; the only thing the agent can tweak is `autoScore` (defaults to true server-side — set false to skip volume/difficulty scoring).",
+      "By default the server auto-derives 30-40 seed concepts from the brand's own context (products, ICP, positioning) and expands those.",
+      "Pass `seeds` to steer expansion yourself instead — e.g. to target specific topics or geographies the brand context wouldn't surface on its own (\"California\", \"Texas\", \"Nashville plumbers\"). Supplying `seeds` REPLACES the automatic brand-derived seed generation for this call — it does not add to it. 3-20 short phrases, the kind of thing someone would actually type into Google (2-4 words, no jargon).",
+      "The only other thing the agent can tweak is `autoScore` (defaults to true server-side — set false to skip volume/difficulty scoring).",
       "After completion, call seo_categorize.",
     ].join(" "),
     {
@@ -94,12 +96,21 @@ export function registerSeoKeywordTools(server: McpServer) {
         .boolean()
         .optional()
         .describe("Whether to auto-score generated keywords (server default: true)"),
+      seeds: z
+        .array(z.string().min(1))
+        .min(1)
+        .max(20)
+        .optional()
+        .describe(
+          "Caller-supplied seed phrases that REPLACE automatic brand-derived seed generation for this call (not merged with it). Use this to target specific topics or geographies, e.g. [\"plumber near nashville\", \"emergency plumbing austin tx\"]. 3-20 short phrases people would actually type into Google — omit to let the server auto-derive seeds from brand context instead."
+        ),
       brandId: brandOpt,
     },
-    async ({ autoScore, brandId }) => {
+    async ({ autoScore, seeds, brandId }) => {
       const id = requireBrandId(brandId);
       const body: Record<string, unknown> = {};
       if (autoScore !== undefined) body.autoScore = autoScore;
+      if (seeds !== undefined) body.seeds = seeds;
       const data = await api.post<unknown>(
         `/api/agent/v1/brands/${id}/seo/keywords/generate`,
         body
@@ -115,7 +126,8 @@ export function registerSeoKeywordTools(server: McpServer) {
       "List generated keywords for the brand. Useful for auditing between steps.",
       "Returns short detail by default: {id, keyword, intent} per keyword.",
       "Use detail=\"medium\" for the full compact summary (priority, searchVolume, difficulty, relevance, clusterId, excludedFromClustering, userTags) or detail=\"full\" for raw keyword objects.",
-      "Supports server-side filtering: source, intent, clusterId, q (substring search), volumeMin/volumeMax, kdMin/kdMax, relevanceMin/relevanceMax, priorityMin/priorityMax, includeDeleted, excludedFromClustering.",
+      "Supports server-side filtering: source, intent, clusterId, q (substring search), hasTag, volumeMin/volumeMax, kdMin/kdMax, relevanceMin/relevanceMax, priorityMin/priorityMax, includeDeleted, excludedFromClustering.",
+      "hasTag filters on userTags (OR match) — use it to find geo-tagged keywords after seo_tag_geography, e.g. hasTag=\"geo:us-mn\" or hasTag=\"geo:us-mn,geo:us-tx\" for multiple regions.",
       "Use cursor (from a previous call's response) to page through results beyond limit.",
     ].join(" "),
     {
@@ -131,6 +143,10 @@ export function registerSeoKeywordTools(server: McpServer) {
         .optional()
         .describe("Filter by cluster ID, or \"none\" for unclustered, or \"any\" for any clustered keyword"),
       q: z.string().optional().describe("Substring search over the keyword text"),
+      hasTag: z
+        .string()
+        .optional()
+        .describe("CSV of userTags to filter by (OR match), e.g. \"geo:us-mn\" or \"geo:us-mn,geo:us-tx\""),
       volumeMin: z.number().int().min(0).optional().describe("Minimum search volume (inclusive)"),
       volumeMax: z.number().int().min(0).optional().describe("Maximum search volume (inclusive)"),
       kdMin: z.number().int().min(0).optional().describe("Minimum keyword difficulty (inclusive)"),
@@ -151,6 +167,7 @@ export function registerSeoKeywordTools(server: McpServer) {
       intent,
       clusterId,
       q,
+      hasTag,
       volumeMin,
       volumeMax,
       kdMin,
@@ -172,6 +189,7 @@ export function registerSeoKeywordTools(server: McpServer) {
       if (intent !== undefined) params.set("intent", intent);
       if (clusterId !== undefined) params.set("clusterId", clusterId);
       if (q !== undefined) params.set("q", q);
+      if (hasTag !== undefined) params.set("hasTag", hasTag);
       if (volumeMin !== undefined) params.set("volumeMin", String(volumeMin));
       if (volumeMax !== undefined) params.set("volumeMax", String(volumeMax));
       if (kdMin !== undefined) params.set("kdMin", String(kdMin));
@@ -366,9 +384,9 @@ export function registerSeoKeywordTools(server: McpServer) {
     "seo_list_keyword_ids",
     [
       "Return just the ids of every SeoScoredKeyword matching a filter — unpaginated, no keyword data attached. Housekeeping op — not part of the main flow.",
-      "Accepts the same filter set as seo_list_keywords: source, intent, clusterId, q, volumeMin/volumeMax, kdMin/kdMax, relevanceMin/relevanceMax, priorityMin/priorityMax, includeDeleted, excludedFromClustering.",
+      "Accepts the same filter set as seo_list_keywords: source, intent, clusterId, q, hasTag, volumeMin/volumeMax, kdMin/kdMax, relevanceMin/relevanceMax, priorityMin/priorityMax, includeDeleted, excludedFromClustering.",
       "Use to select \"all keywords matching filter X\" in one call, then feed the returned ids into seo_bulk_delete_keywords or seo_bulk_edit_keywords.",
-      'Example: filter relevanceMax=0.2 to find low-relevance keywords, then bulk-delete or bulk-edit them.',
+      'Example: filter relevanceMax=0.2 to find low-relevance keywords, then bulk-delete or bulk-edit them. Or hasTag="geo:us-mn" to select every Minnesota-tagged keyword after seo_tag_geography.',
     ].join(" "),
     {
       source: z.string().optional().describe("CSV of keyword sources to filter by (e.g. \"seed,expanded\")"),
@@ -381,6 +399,10 @@ export function registerSeoKeywordTools(server: McpServer) {
         .optional()
         .describe("Filter by cluster ID, or \"none\" for unclustered, or \"any\" for any clustered keyword"),
       q: z.string().optional().describe("Substring search over the keyword text"),
+      hasTag: z
+        .string()
+        .optional()
+        .describe("CSV of userTags to filter by (OR match), e.g. \"geo:us-mn\" or \"geo:us-mn,geo:us-tx\""),
       volumeMin: z.number().int().min(0).optional().describe("Minimum search volume (inclusive)"),
       volumeMax: z.number().int().min(0).optional().describe("Maximum search volume (inclusive)"),
       kdMin: z.number().int().min(0).optional().describe("Minimum keyword difficulty (inclusive)"),
@@ -398,6 +420,7 @@ export function registerSeoKeywordTools(server: McpServer) {
       intent,
       clusterId,
       q,
+      hasTag,
       volumeMin,
       volumeMax,
       kdMin,
@@ -416,6 +439,7 @@ export function registerSeoKeywordTools(server: McpServer) {
       if (intent !== undefined) params.set("intent", intent);
       if (clusterId !== undefined) params.set("clusterId", clusterId);
       if (q !== undefined) params.set("q", q);
+      if (hasTag !== undefined) params.set("hasTag", hasTag);
       if (volumeMin !== undefined) params.set("volumeMin", String(volumeMin));
       if (volumeMax !== undefined) params.set("volumeMax", String(volumeMax));
       if (kdMin !== undefined) params.set("kdMin", String(kdMin));
@@ -437,6 +461,42 @@ export function registerSeoKeywordTools(server: McpServer) {
           text: JSON.stringify({ count: ids.length, ids }),
         }],
       };
+    }
+  );
+
+  // ── Geo pivot Stage 1 — tag keyword geography ─────────────────────────────
+  server.tool(
+    "seo_tag_geography",
+    [
+      "Geo pivot Stage 1. Async — classifies every keyword's geographic intent and writes a `geo:*` tag into userTags.",
+      "Tags: `geo:<country>-<subdivision>` (e.g. \"geo:us-mn\") for a place that resolves to one region, `geo:<country>` (e.g. \"geo:us\") for country-only intent, `geo:none` for no geographic intent, `geo:ambiguous` for a place name that maps to multiple regions with no way to resolve it.",
+      `Typically takes ${etaFor("seo_keyword_geo_tag")}. Uses credits (unless dryRun is true). Returns {operationId, status} — poll get_job with the operationId until state is completed (or failed/partially_failed/cancelled on error).`,
+      "The job result includes tagCounts (tag -> count), ambiguousKeywords (needs human review), and costUsd.",
+      "Idempotent by default: keywords that already carry any geo:* tag are skipped on a re-run — pass retag:true to force re-classification of everything.",
+      "Pass dryRun:true to get the full classification breakdown WITHOUT writing any tags — use this first to review tagCounts and ambiguousKeywords before committing.",
+      "After completion, use seo_list_keywords or seo_list_keyword_ids with hasTag=\"geo:us-mn\" (etc.) to select the tagged keywords for further action.",
+    ].join(" "),
+    {
+      dryRun: z
+        .boolean()
+        .optional()
+        .describe("If true, classifies and returns the breakdown but writes nothing (default: false)"),
+      retag: z
+        .boolean()
+        .optional()
+        .describe("If true, re-classifies every keyword even if it already carries a geo:* tag (default: false — already-tagged keywords are skipped)"),
+      brandId: brandOpt,
+    },
+    async ({ dryRun, retag, brandId }) => {
+      const id = requireBrandId(brandId);
+      const body: Record<string, unknown> = {};
+      if (dryRun !== undefined) body.dryRun = dryRun;
+      if (retag !== undefined) body.retag = retag;
+      const data = await api.post<unknown>(
+        `/api/agent/v1/brands/${id}/seo/keywords/geo-tag`,
+        body
+      );
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
     }
   );
 

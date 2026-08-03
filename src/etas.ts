@@ -15,6 +15,8 @@ const ETA_BY_KIND: Record<string, string> = {
   seo_keyword_pull: "~1–3 min",
   seo_keyword_score: "~1–2 min",
   brand_keywords_generate: "~1–3 min",
+  // Geo pivot Stage 1 (keyword geographic tagging)
+  seo_keyword_geo_tag: "~1–2 min",
   // SEO clustering
   seo_cluster_generate: "~1–2 min",
   // SEO briefs (fired per approved cluster)

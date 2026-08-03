@@ -11,8 +11,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { api, ApiError } from "../client.js";
-import { requireBrandId } from "../state.js";
+import { requireBrandId, getActiveBrandId } from "../state.js";
 import { detailParam, project, projectList, pick, truncate } from "../detail.js";
+import { brandDashboardUrl } from "../links.js";
 
 const brandOpt = z.string().optional().describe("Brand ID (defaults to active brand)");
 
@@ -164,6 +165,30 @@ interface LpDraft {
   [k: string]: unknown;
 }
 
+interface RawHtmlInternalLinkAudit {
+  href?: string;
+  slug?: string;
+  existingSidePage?: boolean;
+  [k: string]: unknown;
+}
+
+interface RawHtmlImportReport {
+  externalHosts?: string[];
+  relativeAssetPaths?: string[];
+  placeholders?: string[];
+  internalLinks?: RawHtmlInternalLinkAudit[];
+  themeExtracted?: boolean;
+  truncated?: boolean;
+  extractability?: { verdict?: "ok" | "warn" | "blocked"; reasons?: string[] };
+  [k: string]: unknown;
+}
+
+interface RawHtmlImportResult {
+  landingPage?: { id?: string; slug?: string; [k: string]: unknown };
+  report?: RawHtmlImportReport;
+  [k: string]: unknown;
+}
+
 interface LpVersionItem {
   id?: string | number;
   name?: string;
@@ -195,6 +220,8 @@ interface SidePageItem {
   isPublished?: boolean;
   publishedAt?: string;
   updatedAt?: string;
+  currentVersionId?: number;
+  publishedVersionId?: number;
   overrides?: unknown;
   config?: unknown;
   slotMap?: unknown;
@@ -210,12 +237,40 @@ interface SidePageDetail {
   isPublished?: boolean;
   publishedAt?: string;
   updatedAt?: string;
+  currentVersionId?: number;
+  publishedVersionId?: number;
   overrides?: unknown;
   config?: unknown;
   slotMap?: unknown;
   siteMetadata?: unknown;
   rendered?: string;
   renderLinks?: unknown;
+  [k: string]: unknown;
+}
+
+interface SidePageVersionItem {
+  id?: string | number;
+  name?: string;
+  createdAt?: string;
+  editorId?: string;
+  description?: string;
+  source?: string;
+  [k: string]: unknown;
+}
+
+interface SidePageVersionDetail {
+  type?: string;
+  overrides?: unknown;
+  siteMetadata?: unknown;
+  slotMap?: unknown;
+  config?: unknown;
+  _meta?: {
+    versionId?: string | number;
+    isCurrent?: boolean;
+    isPublished?: boolean;
+    createdAt?: string;
+    [k: string]: unknown;
+  };
   [k: string]: unknown;
 }
 
@@ -308,6 +363,80 @@ export function registerLpTools(server: McpServer) {
         voiceProfileId,
       });
       return { content: [{ type: "text" as const, text: JSON.stringify({ slug: pageSlug, ...genData }, null, 2) }] };
+    }
+  );
+
+  // ── Import landing page from raw HTML ─────────────────────────────────────
+  server.tool(
+    "import_landing_page_html",
+    [
+      "Bring-your-own-HTML: import an existing landing page from pasted HTML or a live URL. Synchronous — no polling needed.",
+      "Pass exactly one of `html` (paste the full page source) or `url` (fetch and import from a live page).",
+      "By default creates a brand-new landing page (optionally with `name`; the slug is always auto-generated). Pass `convertExistingSlug` instead to overwrite an existing landing page's content with the imported HTML.",
+      "Set `createMissingSidePages` to true to auto-create stub side pages for internal links discovered in the HTML that don't already exist.",
+      "Returns { landingPage: {id, slug}, report } where report audits the import: externalHosts (third-party domains referenced), relativeAssetPaths (local asset paths that may need re-hosting), placeholders (unresolved template tokens found), internalLinks (each { href, slug, existingSidePage }), themeExtracted (whether a theme was inferred from the HTML), truncated (whether the source HTML was cut down to fit limits), and extractability ({ verdict: 'ok'|'warn', reasons } — 'warn' means framework hydration scripts won't load post-import but static content still renders).",
+      "If the source is a client-rendered app shell whose content depends entirely on framework scripts that can't be hosted here (e.g. a bare Next.js/React app shell), the import is refused before anything is persisted — this tool returns a non-throwing result { error: 'not_extractable', message, reasons } instead. Relay the reasons to the user and suggest pasting a static/exported HTML instead, or publishing directly from their site builder.",
+      "Example: import_landing_page_html({ url: 'https://example.com/pricing', name: 'Pricing' }).",
+    ].join(" "),
+    {
+      brandId: brandOpt,
+      html: z.string().optional().describe("Full HTML source to import (paste mode). Provide this or `url`, not both."),
+      url: z
+        .string()
+        .trim()
+        .min(1)
+        .optional()
+        .describe(
+          "Live page URL to fetch and import (URL mode). Provide this or `html`, not both. Scheme-less domains (e.g. \"example.com\") are accepted and default to https."
+        ),
+      name: z.string().optional().describe("Display name for the new landing page"),
+      convertExistingSlug: z
+        .string()
+        .optional()
+        .describe("Slug of an EXISTING landing page to overwrite with the imported HTML, instead of creating a new one"),
+      createMissingSidePages: z
+        .boolean()
+        .optional()
+        .describe("Auto-create stub side pages for internal links found in the HTML that don't already exist"),
+    },
+    async ({ brandId, html, url, name, convertExistingSlug, createMissingSidePages }) => {
+      if (!html && !url) {
+        throw new Error("Provide either `html` (paste) or `url` (fetch).");
+      }
+      const id = brandId ?? getActiveBrandId() ?? undefined;
+      const body: Record<string, unknown> = {};
+      if (id !== undefined) body.brandId = id;
+      if (html !== undefined) body.html = html;
+      if (url !== undefined) body.url = url;
+      if (name !== undefined) body.name = name;
+      if (convertExistingSlug !== undefined) body.convertExistingSlug = convertExistingSlug;
+      if (createMissingSidePages !== undefined) body.createMissingSidePages = createMissingSidePages;
+      try {
+        const data = await api.post<RawHtmlImportResult>("/api/agent/v1/landing-pages/import-html", body);
+        const result: Record<string, unknown> = { landingPage: data.landingPage, report: data.report };
+        if (id) result.dashboardUrl = brandDashboardUrl(id, "landing_pages");
+        return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 422 && err.code === "NOT_EXTRACTABLE") {
+          const reasons = Array.isArray(err.details?.reasons) ? (err.details!.reasons as string[]) : [];
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  error: "not_extractable",
+                  message:
+                    (err.message ||
+                      "This page can't be imported: it's a client-rendered app whose content depends on framework scripts that can't be hosted here.") +
+                    " Suggest to the user: paste static/exported HTML instead (e.g. a static-site export, or a pre-rendered page's \"View Source\"), or publish directly from their site builder instead of importing.",
+                  reasons,
+                }),
+              },
+            ],
+          };
+        }
+        throw err;
+      }
     }
   );
 
@@ -801,7 +930,7 @@ export function registerLpTools(server: McpServer) {
   // ── List side pages ───────────────────────────────────────────────────────
   server.tool(
     "list_side_pages",
-    "List side pages attached to a landing page. Default detail='short'. Heavy JSONB (overrides/config) only at full via view_side_page.",
+    "List side pages attached to a landing page. Default detail='short'. Heavy JSONB (overrides/config) only at full via view_side_page. medium/full include currentVersionId (the draft) and publishedVersionId (the live version) per row — compare them to spot pages with unpublished draft edits without a second call.",
     {
       slug: z.string().describe("Parent landing page slug"),
       detail: detailParam("short"),
@@ -818,7 +947,17 @@ export function registerLpTools(server: McpServer) {
       const proj = {
         short: (row: SidePageItem) => pick(row, ["id", "slug", "name", "type", "isPublished"]),
         medium: (row: SidePageItem) =>
-          pick(row, ["id", "slug", "name", "type", "isPublished", "publishedAt", "updatedAt"]),
+          pick(row, [
+            "id",
+            "slug",
+            "name",
+            "type",
+            "isPublished",
+            "publishedAt",
+            "updatedAt",
+            "currentVersionId",
+            "publishedVersionId",
+          ]),
       };
       const text = JSON.stringify({ count: pages.length, detail, sidePages: projectList(detail, pages, proj) });
       return { content: [{ type: "text" as const, text }] };
@@ -892,7 +1031,7 @@ export function registerLpTools(server: McpServer) {
   // ── View side page ────────────────────────────────────────────────────────
   server.tool(
     "view_side_page",
-    "View a side page including sections and rendered HTML. detail='full' (default) includes rendered HTML and full overrides (use this to read a section's typed shape before editing it with set_side_page_section); 'medium' gives summary + overrideSectionKeys (the section ids you can pass to set_side_page_section); 'short' gives id/slug/name/type/isPublished. Rendered HTML appears only at full.",
+    "View a side page including sections and rendered HTML. detail='full' (default) includes rendered HTML and full overrides (use this to read a section's typed shape before editing it with set_side_page_section); 'medium' gives summary + overrideSectionKeys (the section ids you can pass to set_side_page_section); 'short' gives id/slug/name/type/isPublished. Rendered HTML appears only at full. medium/full also include currentVersionId (the draft) and publishedVersionId (the live version) — a mismatch means there are unpublished draft edits.",
     {
       slug: z.string().describe("Parent landing page slug"),
       sideKey: z.string().describe("Side page key (from list_side_pages)"),
@@ -906,7 +1045,17 @@ export function registerLpTools(server: McpServer) {
       const proj = {
         short: (row: SidePageDetail) => pick(row, ["id", "slug", "name", "type", "isPublished"]),
         medium: (row: SidePageDetail) => ({
-          ...pick(row, ["id", "slug", "name", "type", "isPublished", "publishedAt", "updatedAt"]),
+          ...pick(row, [
+            "id",
+            "slug",
+            "name",
+            "type",
+            "isPublished",
+            "publishedAt",
+            "updatedAt",
+            "currentVersionId",
+            "publishedVersionId",
+          ]),
           overrideSectionKeys:
             row.overrides !== null && typeof row.overrides === "object" && !Array.isArray(row.overrides)
               ? Object.keys(row.overrides as object)
@@ -921,7 +1070,19 @@ export function registerLpTools(server: McpServer) {
   // ── Edit side page ────────────────────────────────────────────────────────
   server.tool(
     "edit_side_page",
-    "Update a side page's page-level metadata: `name` (display title, shown in auto-generated footer/nav 'Solutions' links and breadcrumbs), `newKey` (rename the URL-slug fragment; old URL 404s, no redirect; internal references are rewritten in the background), and `instructions` (stored as an annotation for future context — does NOT trigger an AI edit; for section content use set_side_page_section). Writes are in-place and irreversible (no version history/undo). When newKey triggers a reference rewrite, the response includes slugRewriteOperationId — poll it to confirm the cascade finished.",
+    "Update a side page's page-level metadata and, for type:\"text\" pages only, its content. " +
+      "Metadata (any side-page type): `name` (display title, shown in auto-generated footer/nav 'Solutions' links and breadcrumbs), " +
+      "`newKey` (rename the URL-slug fragment; old URL 404s, no redirect; internal references are rewritten in the background), " +
+      "and `instructions` (stored as an annotation for future context — does NOT trigger an AI edit). " +
+      "Content — type:\"text\" pages ONLY: `title` and/or `htmlContent`. Text side pages store a flat {title, htmlContent} " +
+      "document, not per-section overrides, so this is the direct way to write their content — landing/comparison pages have " +
+      "no `title`/`htmlContent` fields and must use set_side_page_section (or set_side_page_section with instructions-only for " +
+      "an AI rewrite of a text page's whole document) instead. Passing only one of title/htmlContent fetches and preserves the " +
+      "other automatically, so a partial write never clobbers the unset field. " +
+      "Every edit creates a new draft version (see list_side_page_versions / restore_side_page_version) — nothing here is " +
+      "destructive, any write (including a bad title/htmlContent edit) can be undone by restoring a prior version. On a " +
+      "published page, edits stay draft-only until set_side_page_state({published:true}) publishes them. When newKey triggers " +
+      "a reference rewrite, the response includes slugRewriteOperationId — poll it to confirm the cascade finished.",
     {
       slug: z.string().describe("Parent landing page slug"),
       sideKey: z.string().describe("Side page key"),
@@ -944,14 +1105,48 @@ export function registerLpTools(server: McpServer) {
         .describe(
           "When renaming via newKey, rewrite existing internal references (blog backlinks, internalLinks) to point at the new slug. Defaults to true; set false to skip the cascade."
         ),
+      title: z
+        .string()
+        .optional()
+        .describe(
+          "type:\"text\" pages only: new page title (part of the flat {title, htmlContent} content document — different from `name`, which is the nav/footer display label). If `htmlContent` isn't also passed, the current htmlContent is fetched and preserved. Ignored for landing/comparison pages — use set_side_page_section there."
+        ),
+      htmlContent: z
+        .string()
+        .optional()
+        .describe(
+          "type:\"text\" pages only: new HTML body (part of the flat {title, htmlContent} content document). If `title` isn't also passed, the current title is fetched and preserved. Ignored for landing/comparison pages — use set_side_page_section there."
+        ),
     },
-    async ({ slug, sideKey, instructions, name, newKey, updateReferences }) => {
+    async ({ slug, sideKey, instructions, name, newKey, updateReferences, title, htmlContent }) => {
       const body: Record<string, unknown> = {};
       if (instructions !== undefined) body.instructions = instructions;
       if (name !== undefined) body.name = name;
       if (newKey !== undefined) {
         body.slug = newKey;
         body.updateReferences = updateReferences !== undefined ? updateReferences : true;
+      }
+      if (title !== undefined || htmlContent !== undefined) {
+        // The underlying PATCH replaces `overrides` WHOLESALE (it does not
+        // deep-merge) and text pages require both `title` and `htmlContent`
+        // together (SidePageContentTextSchema) — so a caller passing only
+        // one field needs the other fetched first, or the write 400s / wipes
+        // the unset field.
+        let currentTitle: string | undefined;
+        let currentHtmlContent: string | undefined;
+        if (title === undefined || htmlContent === undefined) {
+          const current = await api.get<Record<string, unknown>>(
+            `/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}`
+          );
+          const currentOverrides = (current["overrides"] ?? {}) as Record<string, unknown>;
+          currentTitle = typeof currentOverrides["title"] === "string" ? (currentOverrides["title"] as string) : undefined;
+          currentHtmlContent =
+            typeof currentOverrides["htmlContent"] === "string" ? (currentOverrides["htmlContent"] as string) : undefined;
+        }
+        body.overrides = {
+          title: title !== undefined ? title : currentTitle,
+          htmlContent: htmlContent !== undefined ? htmlContent : currentHtmlContent,
+        };
       }
       const data = await api.patch<Record<string, unknown>>(
         `/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}`,
@@ -989,7 +1184,8 @@ export function registerLpTools(server: McpServer) {
       "comparison sections (matrix, verdict, scorecard, decisionTree, priceCalculator, competitorClaims, ...) use their comparison-schema shape. " +
       "Use view_side_page(detail:'full') first to see the current section shape, then send the same shape back with your edits. " +
       "Pass EITHER `fields` (a partial section object merged onto the current section) OR `field` (a dot-path) + `value` for a single nested change, OR `instructions` alone for a natural-language edit (the server runs an AI pass scoped to this section). " +
-      "Writes in-place and irreversibly: there is no version history or undo (unlike landing-page section edits, which create a new draft version each call).",
+      "type:\"text\" pages: there is no per-section nesting — the whole page is one flat {title, htmlContent} document. `sectionId` is accepted for symmetry (e.g. \"content\"/\"htmlContent\"/\"title\") but every edit applies to the whole document: pass fields:{title,htmlContent}, field:\"title\"|\"htmlContent\"+value, or instructions alone for an AI rewrite of the whole page. edit_side_page's title/htmlContent params are a simpler direct-write shortcut for the same document. " +
+      "Every edit creates a new draft version (like landing-page section edits) — see list_side_page_versions / restore_side_page_version; on a published page, edits stay draft-only until set_side_page_state({published:true}) publishes them.",
     {
       slug: z.string().describe("Parent landing page slug"),
       sideKey: z.string().describe("Side page key"),
@@ -1031,7 +1227,7 @@ export function registerLpTools(server: McpServer) {
   // ── Set side page state ───────────────────────────────────────────────────
   server.tool(
     "set_side_page_state",
-    "Publish or unpublish a side page. Set published=true to make it live, false to pull it back to draft. This writes in-place immediately — there is no version history or undo.",
+    "Publish or unpublish a side page. published:true publishes the CURRENT DRAFT — it sets the published pointer to the latest draft version, which is how you make draft edits (from edit_side_page / set_side_page_section) live. published:false hides the page publicly but keeps the last-published version marker, so re-publishing with no further edits restores it instantly. The response includes `publishedVersionId` — the version now live (unchanged from before on unpublish) — so you know exactly which version is public without a follow-up view_side_page call.",
     {
       slug: z.string().describe("Parent landing page slug"),
       sideKey: z.string().describe("Side page key"),
@@ -1043,6 +1239,113 @@ export function registerLpTools(server: McpServer) {
         { published }
       );
       return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    }
+  );
+
+  // ── List side page versions ───────────────────────────────────────────────
+  server.tool(
+    "list_side_page_versions",
+    "List all saved versions of a side page. Default detail='short'. Always includes top-level currentVersionId (the draft) and publishedVersionId (the live version) so an agent can tell draft vs. live without a second call. Use view_side_page_version to see section content.",
+    {
+      slug: z.string().describe("Parent landing page slug"),
+      sideKey: z.string().describe("Side page key"),
+      detail: detailParam("short"),
+    },
+    async ({ slug, sideKey, detail }) => {
+      const raw = await api.get<Record<string, unknown>>(
+        `/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}/versions`
+      );
+      const versions: SidePageVersionItem[] = Array.isArray(raw["versions"])
+        ? (raw["versions"] as SidePageVersionItem[])
+        : Array.isArray(raw)
+        ? (raw as unknown as SidePageVersionItem[])
+        : [];
+      const sidePageId = raw["sidePageId"];
+      const currentVersionId = raw["currentVersionId"];
+      const publishedVersionId = raw["publishedVersionId"];
+      const proj = {
+        short: (row: SidePageVersionItem) => pick(row, ["id", "name", "createdAt", "source"]),
+        medium: (row: SidePageVersionItem) =>
+          pick(row, ["id", "name", "createdAt", "source", "editorId", "description"]),
+      };
+      const text = JSON.stringify({
+        count: versions.length,
+        detail,
+        sidePageId,
+        currentVersionId,
+        publishedVersionId,
+        versions: projectList(detail, versions, proj),
+      });
+      return { content: [{ type: "text" as const, text }] };
+    }
+  );
+
+  // ── View side page version ────────────────────────────────────────────────
+  server.tool(
+    "view_side_page_version",
+    "View a specific side-page version snapshot. detail='full' (default) returns the complete snapshot { type, overrides, siteMetadata, slotMap, config } plus _meta { versionId, isCurrent, isPublished, createdAt }; 'medium' gives type + _meta + overrideSectionKeys (section ids only, no content); 'short' gives just _meta.",
+    {
+      slug: z.string().describe("Parent landing page slug"),
+      sideKey: z.string().describe("Side page key"),
+      versionId: z.number().int().describe("Numeric version ID from list_side_page_versions"),
+      detail: detailParam("full"),
+    },
+    async ({ slug, sideKey, versionId, detail }) => {
+      const raw = await api.get<Record<string, unknown>>(
+        `/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}/versions/${versionId}`
+      );
+      const p = raw as SidePageVersionDetail;
+      const proj = {
+        short: (row: SidePageVersionDetail) => ({ _meta: row._meta }),
+        medium: (row: SidePageVersionDetail) => ({
+          type: row.type,
+          _meta: row._meta,
+          overrideSectionKeys:
+            row.overrides !== null && typeof row.overrides === "object" && !Array.isArray(row.overrides)
+              ? Object.keys(row.overrides as object)
+              : [],
+        }),
+      };
+      const text = JSON.stringify(project(detail, p, proj));
+      return { content: [{ type: "text" as const, text }] };
+    }
+  );
+
+  // ── Restore side page version ─────────────────────────────────────────────
+  server.tool(
+    "restore_side_page_version",
+    "Restore a side page's draft to a prior version. Find valid version IDs via list_side_page_versions. This only changes the DRAFT — it moves currentVersionId forward to a new version copied from the target (forward history is never deleted). The live/public page is unaffected until you publish again via set_side_page_state({ published: true }).",
+    {
+      slug: z.string().describe("Parent landing page slug"),
+      sideKey: z.string().describe("Side page key"),
+      versionId: z.number().int().describe("Numeric version ID from list_side_page_versions to restore as the draft"),
+    },
+    async ({ slug, sideKey, versionId }) => {
+      const data = await api.put<Record<string, unknown>>(
+        `/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}/versions/${versionId}`,
+        { action: "restore" }
+      );
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    }
+  );
+
+  // ── Delete side page version ──────────────────────────────────────────────
+  server.tool(
+    "delete_side_page_version",
+    "Permanently delete a historical side-page version. Deleting the current (draft) version is allowed and repoints the draft to the newest remaining version. Cannot delete the published (live) version or the only remaining version — the server will reject those and the rejection reason is returned as-is. Pass confirm: true to proceed.",
+    {
+      slug: z.string().describe("Parent landing page slug"),
+      sideKey: z.string().describe("Side page key"),
+      versionId: z.number().int().describe("Numeric version ID from list_side_page_versions"),
+      confirm: z.literal(true).describe("Must be true to confirm deletion"),
+    },
+    async ({ slug, sideKey, versionId }) => {
+      await api.delete(`/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}/versions/${versionId}`);
+      return {
+        content: [
+          { type: "text" as const, text: `Version ${versionId} deleted from side page "${sideKey}" on "${slug}".` },
+        ],
+      };
     }
   );
 

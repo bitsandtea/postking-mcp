@@ -91,11 +91,16 @@ export function registerDomainTools(server: McpServer) {
   // ── Connect blog to publication ───────────────────────────────────────────
   server.tool(
     "connect_domain_to_publication",
-    "Connect a verified domain to a blog publication so articles are served from that domain.",
+    "Connect a verified domain to a blog publication so articles are served from that domain. Supports three routingType modes: 'path' ({domain}/blog), 'root' (bare {domain}), and 'subdomain' (blog.{domain} — provisions a separate Domain row that needs its own DNS verification before it resolves).",
     {
       publicationId: z.string().describe("Blog publication ID (from list_blogs)"),
-      domainId: z.string().describe("Domain ID (from list_domains)"),
-      routingType: z.enum(["subdomain", "path"]).optional().describe("How the blog is routed on the domain"),
+      domainId: z.string().describe("Domain ID (from list_domains) — must belong to the same brand; for 'subdomain' mode, pass the APEX domain's ID (e.g. the row for 'acme.com'), not a blog.* row."),
+      routingType: z.enum(["path", "root", "subdomain"]).optional().describe(
+        "How the blog is routed on the domain: " +
+          "'path' serves it at {domain}/blog (or a custom pathPrefix); " +
+          "'root' serves it at the bare domain root (the domain must not already have a landing page connected — 409 if it does); " +
+          "'subdomain' serves it at blog.{domain} — this creates (or reuses) a separate 'blog.<domain>' Domain row that needs its OWN DNS verification (a CNAME/A record for the 'blog' host) before it resolves; call add_domain/verify_domain again for that new row after connecting."
+      ),
       pathPrefix: z.string().optional().describe("Path prefix if routingType is 'path', e.g. '/blog'"),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
