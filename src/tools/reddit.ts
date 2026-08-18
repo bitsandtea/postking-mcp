@@ -4,7 +4,7 @@ import { api } from "../client.js";
 import { config } from "../config.js";
 import { etaFor } from "../etas.js";
 import { requireBrandId } from "../state.js";
-import { detailParam, projectList, type Projector } from "../detail.js";
+import { detailParam, projectList, truncate, type Projector } from "../detail.js";
 
 const brandOpt = z.string().optional().describe("Brand ID (defaults to active brand)");
 
@@ -38,6 +38,23 @@ const suggestionProj: Projector<Record<string, unknown>> = {
       angles,
     };
   },
+};
+
+const discoveryProj: Projector<Record<string, unknown>> = {
+  short: (r) => ({
+    display_name: r.display_name,
+    subscribers: r.subscribers,
+    already_in_pool: r.already_in_pool,
+  }),
+  medium: (r) => ({
+    display_name: r.display_name,
+    title: r.title,
+    public_description: truncate(r.public_description, 200),
+    subscribers: r.subscribers,
+    found_via: r.found_via,
+    already_cached: r.already_cached,
+    already_in_pool: r.already_in_pool,
+  }),
 };
 
 export function registerRedditTools(server: McpServer) {
@@ -189,14 +206,16 @@ export function registerRedditTools(server: McpServer) {
   server.tool(
     "reddit_rewrite",
     [
-      "Async. Rewrite a blog article (or raw content) into a Reddit-native post for a specific subreddit.",
+      "Async. Rewrite a blog article (or raw content) into a Reddit-native post for one subreddit (`subreddit`) or several at once (`subreddits`) — multiple subreddits fan out to N drafts, one per subreddit.",
       "Typically takes ~30–90 sec per variation.",
+      "Every subreddit in the batch is auto-added to the brand's pool at rewrite time — before any draft is reviewed — so use reddit_remove_from_pool to prune subs the user decides against. Billing stays 10 credits per draft: N subreddits = N×10 credits.",
       "Returns quickly — if generation finishes within a short grace window, the finished Reddit post is returned inline; otherwise it returns a postId and a 'still in progress' status. Poll get_post with that postId until operationStatus is COMPLETED. Do NOT call reddit_rewrite again for the same request while it's pending.",
       "The subreddit does NOT need to be in the brand's pool — if it isn't, the rewrite still proceeds using general Reddit best-practices, and the result includes a `subredditNotice` string flagging that this subreddit hasn't been onboarded yet.",
       "Flow step 3 of 4: pool → suggest → REWRITE → list_posts.",
     ].join(" "),
     {
-      subreddit: z.string().describe("Target subreddit name (from reddit_suggest results, e.g. 'entrepreneur')"),
+      subreddit: z.string().optional().describe("Single target subreddit name (legacy one-element alias; e.g. 'entrepreneur'). Pass this OR `subreddits`."),
+      subreddits: z.array(z.string().min(1)).min(1).optional().describe("Target subreddit names — fans out to one draft per subreddit (e.g. from reddit_discover_subreddits picks). Pass this OR `subreddit`."),
       voiceId: z.string().optional().describe("Voice profile ID (use list_voices to get IDs; pass 'none' for no voice)"),
       sourcePostId: z.string().optional().describe("BlogArticle ID to rewrite (use this OR sourceContent)"),
       sourceContent: z.string().optional().describe("Raw content body to rewrite (use this OR sourcePostId)"),
@@ -206,9 +225,14 @@ export function registerRedditTools(server: McpServer) {
       variations: z.number().int().min(1).max(3).optional().describe("Number of variations to generate (default 1, max 3)"),
       brandId: brandOpt,
     },
-    async ({ subreddit, voiceId, sourcePostId, sourceContent, sourceTitle, angle, length, variations, brandId }) => {
+    async ({ subreddit, subreddits, voiceId, sourcePostId, sourceContent, sourceTitle, angle, length, variations, brandId }) => {
       const id = requireBrandId(brandId);
-      const body: Record<string, unknown> = { subreddit };
+      if (subreddit === undefined && subreddits === undefined) {
+        throw new Error("Provide either `subreddit` (single) or `subreddits` (fan-out to one draft per subreddit).");
+      }
+      const body: Record<string, unknown> = {};
+      if (subreddit !== undefined) body.subreddit = subreddit;
+      if (subreddits !== undefined) body.subreddits = subreddits;
       if (voiceId !== undefined) body.voiceId = voiceId;
       if (sourcePostId !== undefined) body.sourcePostId = sourcePostId;
       if (sourceContent !== undefined) body.sourceContent = sourceContent;
@@ -289,6 +313,115 @@ export function registerRedditTools(server: McpServer) {
       if (limit !== undefined) qs.set("limit", String(limit));
       const suffix = qs.toString() ? `?${qs.toString()}` : "";
       const data = await api.get<unknown>(`/api/agent/v1/brands/${id}/reddit/posts${suffix}`);
+      return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
+    }
+  );
+
+  // ── Discover subreddits by user-directed search (sync, 15 credits) ────────
+  server.tool(
+    "reddit_discover_subreddits",
+    [
+      "Search Reddit for subreddits in any direction the user chooses — this is how you find communities BEYOND the brand-signal pool (reddit_generate_pool only uses brand signals; this takes explicit queries).",
+      "Pass 1-8 search queries. Returns a ranked list sorted by subscribers desc, each row flagged already_in_pool (already in THIS brand's pool) and already_cached (already known to the platform), with found_via listing which queries surfaced it. NSFW and non-public subreddits are always excluded.",
+      "A good `context` string is what disambiguates ambiguous queries — e.g. 'hermes' the AI-agent framework vs the fashion brand vs parcel delivery. Describe what the brand actually wants and what to exclude. `minSubs` (minimum subscriber count) defaults to 0 — no floor — so tiny high-intent niche communities are kept; raise it only if the user wants bigger communities.",
+      "Costs 15 credits per call, flat, regardless of cache state (the relevance filter always runs fresh against your context).",
+      "short {display_name,subscribers,already_in_pool}; medium adds title, truncated public_description, found_via, already_cached; full = raw.",
+      "Flow: DISCOVER → user picks → either reddit_add_to_pool with the chosen names, or go straight to reddit_rewrite for the chosen subreddit(s) — rewriting for a subreddit auto-adds it to the pool. Prune any time with reddit_remove_from_pool.",
+    ].join(" "),
+    {
+      queries: z
+        .array(z.string().min(1))
+        .min(1)
+        .max(8)
+        .describe("1-8 search queries, e.g. ['ai agents', 'mcp', 'llm tools']. Each is searched against Reddit's subreddit index."),
+      context: z
+        .string()
+        .optional()
+        .describe("Free-text disambiguation: what the brand wants and what to exclude (e.g. 'Hermes the AI agent framework — NOT the fashion brand, NOT parcel delivery'). Strongly recommended for ambiguous queries."),
+      minSubs: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .describe("Minimum subscriber count. Default 0 (no floor) — keeps small niche communities."),
+      detail: detailParam("medium"),
+      brandId: brandOpt,
+    },
+    async ({ queries, context, minSubs, detail, brandId }) => {
+      const id = requireBrandId(brandId);
+      const body: Record<string, unknown> = { queries };
+      if (context !== undefined) body.context = context;
+      if (minSubs !== undefined) body.minSubs = minSubs;
+      const data = await api.post<unknown>(`/api/agent/v1/brands/${id}/reddit/discover`, body);
+      const raw = data != null && typeof data === "object" ? (data as Record<string, unknown>) : {};
+      const list = Array.isArray(raw.subreddits)
+        ? raw.subreddits
+        : Array.isArray(raw.results)
+          ? raw.results
+          : Array.isArray(data)
+            ? (data as unknown[])
+            : [];
+      const rows = (list as unknown[]).filter(
+        (r): r is Record<string, unknown> => r != null && typeof r === "object"
+      );
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({
+            count: rows.length,
+            creditsCharged: raw.creditsCharged,
+            detail,
+            subreddits: projectList(detail, rows, discoveryProj),
+          }),
+        }],
+      };
+    }
+  );
+
+  // ── Add subreddits to the brand pool (sync, 0 credits) ────────────────────
+  server.tool(
+    "reddit_add_to_pool",
+    [
+      "Add subreddits to the brand's pool by name (1-25 per call). Free — 0 credits.",
+      "Each name is resolved live from Reddit (about + rules) and merged into the brand's pool; already-present names are updated in place.",
+      "PARTIAL SUCCESS IS NORMAL: names that can't resolve (private/banned/nonexistent) come back in failed: [{ name, reason }] while the rest still commit. A non-empty failed list is NOT an error — report which names were added and which failed, and why.",
+      "Typical source: names the user picked from reddit_discover_subreddits results. Not required before reddit_rewrite — rewriting for an off-pool subreddit auto-adds it to the pool.",
+    ].join(" "),
+    {
+      names: z
+        .array(z.string().min(1))
+        .min(1)
+        .max(25)
+        .describe("Subreddit display names to add, e.g. ['hermesagent', 'AI_Agents'] (no 'r/' prefix needed; case-insensitive)"),
+      brandId: brandOpt,
+    },
+    async ({ names, brandId }) => {
+      const id = requireBrandId(brandId);
+      const data = await api.post<unknown>(`/api/agent/v1/brands/${id}/reddit/pool/add`, { names });
+      return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
+    }
+  );
+
+  // ── Remove subreddits from the brand pool (sync, 0 credits) ───────────────
+  server.tool(
+    "reddit_remove_from_pool",
+    [
+      "Remove subreddits from the brand's pool by name (1-50 per call, case-insensitive). Free — 0 credits.",
+      "Brand-scoped un-subscribe ONLY — it never touches the platform's global subreddit cache, so re-adding later is cheap.",
+      "Names not present in the pool come back in notFound: string[] — that is still success, not an error; the rest are removed.",
+      "Use it to prune after a reddit_rewrite fan-out auto-added subreddits the user no longer wants, or any time the pool needs curating.",
+    ].join(" "),
+    {
+      names: z
+        .array(z.string().min(1))
+        .min(1)
+        .max(50)
+        .describe("Subreddit display names to remove, e.g. ['hermesagent'] (no 'r/' prefix needed; case-insensitive)"),
+      brandId: brandOpt,
+    },
+    async ({ names, brandId }) => {
+      const id = requireBrandId(brandId);
+      const data = await api.post<unknown>(`/api/agent/v1/brands/${id}/reddit/pool/remove`, { names });
       return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
     }
   );

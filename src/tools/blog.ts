@@ -3,6 +3,7 @@ import { z } from "zod";
 import { api } from "../client.js";
 import { requireBrandId } from "../state.js";
 import { detailParam, project, projectList, truncate, type Projector } from "../detail.js";
+import { languageParam } from "../languages.js";
 
 // LIST tools must never carry article bodies — full bodies overflow small MCP clients.
 const HEAVY_ARTICLE_KEYS = ["postText", "postContent", "postContentHtml", "postContentHTML", "postContentMarkdown", "content", "body", "postBody", "bodyHtml"];
@@ -185,9 +186,10 @@ export function registerBlogTools(server: McpServer) {
       attachVisualAsset: z.boolean().optional().describe("Use a brand visual asset (with branding) for the header image"),
       selectedAssetId: z.string().optional().describe("ID of the brand asset to use for the header image"),
       skipBrandContext: z.boolean().optional().describe("Omit brand context from the generation prompt when true"),
+      language: languageParam("Applies to this article only; the brand's standing language is set with set_brand_content_language."),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ publicationId, topic, voiceProfileId, targetLength, primaryKeywords, secondaryKeywords, readabilityTarget, generateAiImage, imageVariationCount, attachVisualAsset, selectedAssetId, skipBrandContext, brandId }) => {
+    async ({ publicationId, topic, voiceProfileId, targetLength, primaryKeywords, secondaryKeywords, readabilityTarget, generateAiImage, imageVariationCount, attachVisualAsset, selectedAssetId, skipBrandContext, language, brandId }) => {
       const id = requireBrandId(brandId);
       const data = await api.post<any>(`/api/agent/v1/brands/${id}/blogs/generate`, {
         blogId: publicationId,
@@ -202,6 +204,9 @@ export function registerBlogTools(server: McpServer) {
         attachVisualAsset,
         selectedAssetId,
         skipBrandContext,
+        // Dropped from the JSON body when undefined, so "no override" stays
+        // distinguishable from an explicit "en" server-side.
+        language,
         assignAsset: false,
       });
       const article = data?.blog ?? data?.article ?? null;

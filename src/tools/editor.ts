@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { api } from "../client.js";
 import { requireBrandId } from "../state.js";
+import { languageParam } from "../languages.js";
 
 export function registerEditorTools(server: McpServer) {
   server.tool(
@@ -14,15 +15,17 @@ export function registerEditorTools(server: McpServer) {
         .string()
         .optional()
         .describe("Platform context: x | linkedin | instagram | threads | facebook"),
+      language: languageParam("Rewrites into this language; omit to keep the brand's configured content language."),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ text, voice, platform, brandId }) => {
+    async ({ text, voice, platform, language, brandId }) => {
       const id = requireBrandId(brandId);
       const data = await api.post(`/api/agent/v1/tools/rewrite`, {
         brandId: id,
         text,
         voiceProfileId: voice,
         platform,
+        language,
       });
       return {
         content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
@@ -39,11 +42,12 @@ export function registerEditorTools(server: McpServer) {
         .string()
         .optional()
         .describe("Platform context: x | linkedin | instagram | threads | facebook"),
+      language: languageParam("Which language the text is treated as (and rewritten in); omit to use the brand's configured content language."),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ text, platform, brandId }) => {
+    async ({ text, platform, language, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.post(`/api/agent/v1/tools/humanize`, { brandId: id, text, platform });
+      const data = await api.post(`/api/agent/v1/tools/humanize`, { brandId: id, text, platform, language });
       return {
         content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
       };

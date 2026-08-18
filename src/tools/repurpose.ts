@@ -3,6 +3,7 @@ import { z } from "zod";
 import { api } from "../client.js";
 import { requireBrandId } from "../state.js";
 import { detailParam, project, truncate, type Projector } from "../detail.js";
+import { languageParam } from "../languages.js";
 
 const socialProjector: Projector<Record<string, unknown>> = {
   short: (data) => {
@@ -75,6 +76,7 @@ export function registerRepurposeTools(server: McpServer) {
         .array(z.string())
         .optional()
         .describe("Voice profile IDs. Single ID applies to all platforms: ['clxvoice1']. Per-platform: ['x:clxvoice1','linkedin:clxvoice2']. Get IDs from list_voices."),
+      language: languageParam("The repurposed output is written in this language regardless of the source language."),
       detail: detailParam("medium"),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
@@ -92,6 +94,7 @@ export function registerRepurposeTools(server: McpServer) {
       includeLink,
       textLength,
       voiceProfileIds,
+      language,
       detail,
       brandId,
     }) => {
@@ -131,6 +134,8 @@ export function registerRepurposeTools(server: McpServer) {
         includeLink,
         textLength,
         voiceProfileIds: voiceMap,
+        // Omitted (not defaulted) when unset, so the brand default still wins.
+        language,
       });
 
       const data = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;

@@ -5,6 +5,7 @@ import { requireBrandId } from "../state.js";
 import { config } from "../config.js";
 import { detailParam, project, projectList, type Projector } from "../detail.js";
 import { generateSessionUrl, postDetailUrl, visualEditorUrl } from "../links.js";
+import { languageParam } from "../languages.js";
 
 const PLATFORMS = ["x", "linkedin", "instagram", "threads", "facebook"] as const;
 
@@ -133,9 +134,10 @@ export function registerPostTools(server: McpServer) {
       theme: z.string().optional().describe("Free-text topic/brief describing what the post should be about — include any angle, emphasis, key facts, or tone (e.g. \"Launch announcement for our new MCP; emphasize NVIDIA + Stripe + Amotron; B2B authoritative tone\"). ALWAYS pass this when the user wants the post to be about something specific. If omitted, a RANDOM brand theme is used and the topic will NOT match the user's request."),
       themeId: z.string().optional().describe("Optional ID of a saved brand theme (from list_themes). Most callers should pass the free-text `theme` instead. If both are given, the free-text `theme` wins."),
       voice: z.string().optional().describe("Voice profile ID to apply"),
+      language: languageParam("Set the brand's standing language with set_brand_content_language instead when every future generation should use it."),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ platform, variations, theme, themeId, voice, brandId }) => {
+    async ({ platform, variations, theme, themeId, voice, language, brandId }) => {
       const id = requireBrandId(brandId);
       const customTheme = typeof theme === "string" && theme.trim().length > 0 ? theme.trim() : undefined;
 
@@ -148,6 +150,9 @@ export function registerPostTools(server: McpServer) {
           customTheme,
           randomTheme: !customTheme && !themeId,
           voiceProfileId: voice,
+          // Omitted when the caller said nothing, so the server can tell
+          // "no override" from an explicit "en" (JSON.stringify drops undefined).
+          language,
           assignAsset: false,
         }
       );

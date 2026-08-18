@@ -32,6 +32,7 @@ import { registerVisualsPostTools } from "./tools/visuals-post.js";
 import { registerImageSuggestionTools } from "./tools/image-suggestions.js";
 import { registerPerplexitySearchTools } from "./tools/perplexity-search.js";
 import { registerLpTools } from "./tools/lp.js";
+import { registerBlockTools } from "./tools/blocks.js";
 import { registerLinkTools } from "./tools/links.js";
 import { registerRedditTools } from "./tools/reddit.js";
 import { registerStorylineTools } from "./tools/storylines.js";
@@ -141,6 +142,7 @@ This server also exposes guided prompts for common end-to-end flows — \`gettin
   registerImageSuggestionTools(server);
   registerPerplexitySearchTools(server);
   registerLpTools(server);
+  registerBlockTools(server);
   registerLinkTools(server);
   registerRedditTools(server);
   registerStorylineTools(server);

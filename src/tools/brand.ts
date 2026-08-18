@@ -4,6 +4,12 @@ import { api } from "../client.js";
 import { pollUntilDone } from "../poll.js";
 import { requireBrandId, setActiveBrandId, getActiveBrandId } from "../state.js";
 import { detailParam, projectList, truncate, type Projector } from "../detail.js";
+import {
+  LANGUAGE_CODE_LIST_TEXT,
+  LANGUAGE_LIST_TEXT,
+  SUPPORTED_LANGUAGES,
+  SUPPORTED_LANGUAGE_CODES,
+} from "../languages.js";
 
 function slimBrand(b: any) {
   return { id: b.id, name: b.name, website: b.website, description: b.description };
@@ -243,6 +249,86 @@ export function registerBrandTools(server: McpServer) {
         : [];
       return {
         content: [{ type: "text" as const, text: JSON.stringify({ brandId: id, selectedMediums }) }],
+      };
+    }
+  );
+
+  // ── Get brand content language (feature 104) ──────────────────────────────
+  server.tool(
+    "get_brand_content_language",
+    [
+      "Read the language a brand's AI-generated content is written in (posts, blogs, SEO articles, landing pages, side pages).",
+      "Always returns a concrete BCP-47 code; a brand that has never set one reports 'en'.",
+      `Also returns 'supported' — the codes this account can switch to (${LANGUAGE_CODE_LIST_TEXT}), read from the server so it stays right even if this MCP build is older than the platform.`,
+      "This is separate from the dashboard's interface language — the two are independent settings.",
+    ].join(" "),
+    {
+      brandId: z.string().optional().describe("Brand ID (defaults to active brand)"),
+    },
+    async ({ brandId }) => {
+      const id = requireBrandId(brandId);
+      const data = await api.get<{
+        language?: string;
+        supported?: { code?: string; endonym?: string; english?: string }[];
+      }>(`/api/agent/v1/brands/${id}/content-language`);
+      // The server is the authority on the supported set; fall back to this
+      // build's vocabulary only when an older server omits it.
+      const supported = Array.isArray(data?.supported) && data.supported.length > 0
+        ? data.supported
+            .filter((l) => typeof l?.code === "string")
+            .map((l) => ({ code: l.code, english: l.english, endonym: l.endonym }))
+        : SUPPORTED_LANGUAGES.map((l) => ({
+            code: l.code,
+            english: l.english,
+            endonym: l.endonym,
+          }));
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({ brandId: id, language: data?.language ?? "en", supported }),
+          },
+        ],
+      };
+    }
+  );
+
+  // ── Set brand content language (feature 104) ───────────────────────────────
+  server.tool(
+    "set_brand_content_language",
+    [
+      "Set the language a brand's AI-generated content is written in.",
+      `Supported: ${LANGUAGE_LIST_TEXT}.`,
+      "Applies to NEW generations only — nothing already generated is translated, and existing posts, articles, and pages are left exactly as they are.",
+      "Slugs and URLs for new pages follow this language too.",
+      "Does NOT change the dashboard's interface language, which is a separate per-user setting.",
+    ].join(" "),
+    {
+      brandId: z.string().optional().describe("Brand ID (defaults to active brand)"),
+      language: z
+        .enum(SUPPORTED_LANGUAGE_CODES)
+        .describe(
+          `BCP-47 language code for all future generation on this brand. One of: ${LANGUAGE_CODE_LIST_TEXT}.`
+        ),
+    },
+    async ({ brandId, language }) => {
+      const id = requireBrandId(brandId);
+      const data = await api.put<{ language?: string; changed?: boolean }>(
+        `/api/agent/v1/brands/${id}/content-language`,
+        { language }
+      );
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({
+              brandId: id,
+              language: data?.language ?? language,
+              changed: data?.changed ?? false,
+              note: "Applies to new generations only. Nothing already generated was translated.",
+            }),
+          },
+        ],
       };
     }
   );

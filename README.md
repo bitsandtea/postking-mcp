@@ -8,9 +8,9 @@ The official [Model Context Protocol](https://modelcontextprotocol.io) server fo
 
 Connect Claude (Desktop, Cursor, or any MCP client) to your PostKing account and manage your entire content operation through conversation — generate posts, schedule them, repurpose URLs into social content, write and publish blog articles, generate landing pages and side pages, run SEO / GEO research and drafting, manage your asset library and weekly posting schedule, handle domains and API keys, and more.
 
-The server exposes **207 tools across 26 modules** — full parity with the `postking-cli`.
+The server exposes **210 tools across 26 modules** — full parity with the `postking-cli`.
 
-> **Transport note:** On the remote HTTP transport (`mcp.postking.app`), 203 tools are available. The 4 authentication tools (`login_start`, `login_complete`, `logout`, `whoami`) are omitted on that transport because it uses OAuth bearer tokens rather than device-code login. All other 203 tools are identical across both transports.
+> **Transport note:** On the remote HTTP transport (`mcp.postking.app`), 206 tools are available. The 4 authentication tools (`login_start`, `login_complete`, `logout`, `whoami`) are omitted on that transport because it uses OAuth bearer tokens rather than device-code login. All other 206 tools are identical across both transports.
 
 ---
 
@@ -100,6 +100,8 @@ _Available on stdio/local transport only. Remote HTTP transport authenticates vi
 | `onboard_brand` | Crawl a website and auto-generate a brand profile + 10 themes (step 1 of website onboarding) |
 | `set_brand_mediums` | Save the list of platforms the brand publishes on (step 2 of onboarding) |
 | `get_brand_mediums` | Read which publishing platforms a brand posts to |
+| `get_brand_content_language` | Read the language a brand's AI-generated content is written in, plus the supported set |
+| `set_brand_content_language` | Set the generation language for all future content — `en`, `es`, `pt-BR`, `de`, `fr`, `cs` |
 | `get_onboarding_status` | Poll background audience analysis + theme generation (step 3 of onboarding) |
 
 ### Content themes
@@ -151,6 +153,9 @@ _Reddit is a repurpose-to-Reddit workflow, not a scheduled publishing medium. Fl
 | `reddit_get_pool` | View the brand's saved pool of relevant subreddits, sorted by relevance score |
 | `reddit_generate_pool` | Async: discover and score relevant subreddits for the brand by crawling Reddit |
 | `reddit_global_pool` | Return stats on the global subreddit dataset (informational only) |
+| `reddit_discover_subreddits` | Sync: search Reddit for subreddits by user-directed queries (with free-text disambiguation context), ranked by subscribers and flagged against the brand pool — 15 credits per call |
+| `reddit_add_to_pool` | Add subreddits to the brand's pool by name (resolves live from Reddit; partial success reported per name) — free |
+| `reddit_remove_from_pool` | Remove subreddits from the brand's pool by name (brand-scoped only; never touches the global cache) — free |
 | `reddit_suggest` | Sync: suggest up to 8 best-fit subreddits for a specific piece of content, each with 2-3 posting angles, promotion mode, and buyer intent |
 | `reddit_rewrite` | Async: rewrite a blog article or raw content as a native Reddit post for a target subreddit |
 | `reddit_list_posts` | List saved Reddit posts (outputs of `reddit_rewrite`), cursor-paginated |

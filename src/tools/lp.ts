@@ -14,6 +14,7 @@ import { api, ApiError } from "../client.js";
 import { requireBrandId, getActiveBrandId } from "../state.js";
 import { detailParam, project, projectList, pick, truncate } from "../detail.js";
 import { brandDashboardUrl } from "../links.js";
+import { languageParam } from "../languages.js";
 
 const brandOpt = z.string().optional().describe("Brand ID (defaults to active brand)");
 
@@ -352,15 +353,18 @@ export function registerLpTools(server: McpServer) {
       topic: z.string().describe("Topic or product this landing page should be about"),
       slug: z.string().optional().describe("URL slug (auto-derived from topic if omitted)"),
       voiceProfileId: z.string().optional().describe("Voice profile ID for writing style"),
+      language: languageParam("Also drives the slug/URL wording for the generated page."),
       brandId: brandOpt,
     },
-    async ({ topic, slug, voiceProfileId, brandId }) => {
+    async ({ topic, slug, voiceProfileId, language, brandId }) => {
       const id = requireBrandId(brandId);
       const pageSlug = slug ?? topic.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60);
       await api.post<Record<string, unknown>>(`/api/agent/v1/brands/${id}/landing-pages`, { slug: pageSlug, brandId: id, name: topic });
       const genData = await api.post<Record<string, unknown>>(`/api/agent/v1/landing-pages/${pageSlug}/generate`, {
         instructions: topic,
         voiceProfileId,
+        // Left off the body entirely when unset so the brand default applies.
+        language,
       });
       return { content: [{ type: "text" as const, text: JSON.stringify({ slug: pageSlug, ...genData }, null, 2) }] };
     }
@@ -501,12 +505,14 @@ export function registerLpTools(server: McpServer) {
         .array(z.string())
         .optional()
         .describe("Specific section keys to regenerate (omit to regenerate all)"),
+      language: languageParam("Regenerates the page in this language; omit to keep the page on the brand's configured content language."),
     },
-    async ({ slug, voiceProfileId, instructions, sections }) => {
+    async ({ slug, voiceProfileId, instructions, sections, language }) => {
       const body: Record<string, unknown> = {};
       if (voiceProfileId) body.voiceProfileId = voiceProfileId;
       if (instructions) body.instructions = instructions;
       if (sections?.length) body.sections = sections;
+      if (language) body.language = language;
       const data = await api.post<Record<string, unknown>>(`/api/agent/v1/landing-pages/${slug}/generate`, body);
       return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
     }
@@ -995,9 +1001,11 @@ export function registerLpTools(server: McpServer) {
         .optional()
         .describe("Freeform-mode: restrict generation to these section ids (e.g. hero, features, showcase, faq, cta, pricing). Omit to generate all default sections."),
       sidePageType: z
-        .enum(["landing", "text", "comparison"])
+        .enum(["landing", "text", "comparison", "custom"])
         .optional()
-        .describe("Defaults to 'landing'. Use 'comparison' only with a persisted comparison briefId."),
+        .describe(
+          "Defaults to 'landing'. Use 'comparison' only with a persisted comparison briefId. Use 'custom' for the block-model page type (an ordered blocks[] array — see list_block_types/add_block/edit_block/delete_block/reorder_blocks) when the page needs a shape the fixed section list can't express."
+        ),
       voiceProfileId: z.string().optional().describe("Voice profile to write in"),
       autoAssignAssets: z
         .boolean()

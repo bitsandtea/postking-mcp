@@ -47,9 +47,11 @@ export function registerSeoSidePageTools(server: McpServer) {
         .optional()
         .describe("Freeform-mode: restrict generation to these section ids (e.g. hero, features, showcase, faq, cta, pricing). Omit to generate all default sections."),
       sidePageType: z
-        .enum(["landing", "text", "comparison"])
+        .enum(["landing", "text", "comparison", "custom"])
         .optional()
-        .describe("Defaults to 'landing'. Use 'comparison' only with a persisted comparison briefId."),
+        .describe(
+          "Defaults to 'landing'. Use 'comparison' only with a persisted comparison briefId. Use 'custom' for the block-model page type (an ordered blocks[] array — see list_block_types/add_block/edit_block/delete_block/reorder_blocks) when the page needs a shape the fixed section list can't express."
+        ),
       voiceProfileId: z.string().optional().describe("Voice profile to write in"),
       autoAssignAssets: z
         .boolean()

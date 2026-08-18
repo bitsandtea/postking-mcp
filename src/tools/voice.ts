@@ -3,6 +3,7 @@ import { z } from "zod";
 import { api } from "../client.js";
 import { requireBrandId } from "../state.js";
 import { detailParam, projectList, type Projector } from "../detail.js";
+import { languageParam } from "../languages.js";
 
 export function registerVoiceTools(server: McpServer) {
   server.tool(
@@ -36,15 +37,17 @@ export function registerVoiceTools(server: McpServer) {
         .string()
         .optional()
         .describe("Platform context: x | linkedin | instagram | threads | facebook"),
+      language: languageParam("Rewrites into this language; omit to keep the brand's configured content language."),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ profileId, text, platform, brandId }) => {
+    async ({ profileId, text, platform, language, brandId }) => {
       const id = requireBrandId(brandId);
       const data = await api.post(`/api/agent/v1/tools/rewrite`, {
         brandId: id,
         voiceProfileId: profileId,
         text,
         platform,
+        language,
       });
       return {
         content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],

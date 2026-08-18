@@ -5,6 +5,7 @@ import { config } from "../config.js";
 import { requireBrandId } from "../state.js";
 import { detailParam, project, truncate, type Projector } from "../detail.js";
 import { derivedJobFields } from "./jobs.js";
+import { languageParam } from "../languages.js";
 
 const textProjector: Projector<Record<string, unknown>> = {
   short: (result) => ({ status: "completed", wordCount: result.wordCount }),
@@ -49,10 +50,11 @@ export function registerTextTools(server: McpServer) {
         .optional()
         .describe("Target length: short | medium | long, or a specific target word count (20-5000)."),
       voiceProfileId: z.string().optional().describe("Voice profile ID to apply. Get IDs from list_voices."),
+      language: languageParam(),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
       detail: detailParam("full"),
     },
-    async ({ mode, prompt, sourceText, purpose, length, voiceProfileId, brandId, detail }) => {
+    async ({ mode, prompt, sourceText, purpose, length, voiceProfileId, language, brandId, detail }) => {
       const id = requireBrandId(brandId);
 
       if (mode === "generate" && !prompt) {
@@ -71,6 +73,9 @@ export function registerTextTools(server: McpServer) {
           purpose,
           length,
           voiceProfileId,
+          // Undefined is dropped by JSON.stringify, so omitting the param
+          // leaves the brand default in charge rather than forcing English.
+          language,
         }
       );
       const operationId = created.operationId;
