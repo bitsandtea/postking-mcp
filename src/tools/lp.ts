@@ -55,20 +55,43 @@ function coerceJsonValue(value: unknown): unknown {
   }
 }
 
-/** The 11 valid landing-page section-order keys. */
+/**
+ * The 12 built-in landing-page section-order keys. Mirrors PostKing's
+ * `SECTION_ORDER_KEYS` (`types/landing-page-shared.types.ts`) — it had drifted
+ * and was missing `videos`, which made any `sectionOrder` sent from here
+ * silently push the videos section to the bottom (the server appends canonical
+ * keys the caller omitted).
+ */
 const SECTION_ORDER_KEYS = [
   "hero",
-  "features",
-  "pricing",
-  "cta",
-  "faq",
-  "howItWorks",
   "showcase",
+  "videos",
+  "howItWorks",
+  "features",
   "categoryExplorer",
   "replacesStack",
   "comparisonMatrix",
+  "cta",
+  "faq",
+  "pricing",
   "roiCalculator",
 ] as const;
+
+/**
+ * A landing page may also carry freeform HTML sections (feature 117), keyed
+ * under `content.customHtml` and ordered as `customHtml:<id>`.
+ */
+const CUSTOM_HTML_KEY_REGEX = /^customHtml:[a-z0-9][a-z0-9-]{0,39}$/;
+
+const sectionOrderKeySchema = z.union([
+  z.enum(SECTION_ORDER_KEYS),
+  z
+    .string()
+    .regex(
+      CUSTOM_HTML_KEY_REGEX,
+      "freeform section keys look like customHtml:<id> (lowercase letters, digits, hyphens)"
+    ),
+]);
 
 /** Truncate string values to `n` chars; pass non-strings through unchanged. */
 function truncateVal(v: unknown, n: number): unknown {
@@ -227,6 +250,8 @@ interface SidePageItem {
   config?: unknown;
   slotMap?: unknown;
   siteMetadata?: unknown;
+  previewUrl?: string;
+  liveUrl?: string;
   [k: string]: unknown;
 }
 
@@ -246,6 +271,8 @@ interface SidePageDetail {
   siteMetadata?: unknown;
   rendered?: string;
   renderLinks?: unknown;
+  previewUrl?: string;
+  liveUrl?: string;
   [k: string]: unknown;
 }
 
@@ -699,6 +726,7 @@ export function registerLpTools(server: McpServer) {
       "Pass the bare content-section key (e.g. 'hero', 'features', 'pricing') — the server maps it into the page's content tree. Top-level roots like slotMap, config, navigation, siteMetadata are also accepted as-is.",
       "Each call creates a new draft version — for many related changes across a page, prefer vibe_edit_landing_page instead.",
       "Example: section='hero', field='title', value='New headline'.",
+      "Freeform HTML sections live at section='customHtml' as a map of id -> { name?, html }. Set one with field='<id>' and value={ name, html }, or replace the whole map with replaceSection=true. The html is sanitized server-side and REJECTED (not stripped) if it breaks the rules: only blk-* classes, no script/style/iframe/on* handlers, style may set only --blk-* custom properties, and every <img>/<video> src must be an https:// URL on try.postking.app or cdn.postking.app. Place each one in the page order with set_lp_section_layout using the key 'customHtml:<id>'.",
     ].join(" "),
     {
       slug: z.string().describe("Landing page slug"),
@@ -738,7 +766,8 @@ export function registerLpTools(server: McpServer) {
     "set_lp_section_layout",
     [
       "Reorder and/or toggle visibility of a landing page's sections. Pass at least one of sectionOrder/sectionVisibility.",
-      `Valid section-order keys (all 11): ${SECTION_ORDER_KEYS.join(", ")}.`,
+      `Valid section-order keys (all 12 built-ins): ${SECTION_ORDER_KEYS.join(", ")}.`,
+      "A page's freeform HTML sections are ordered too: pass 'customHtml:<id>' for each id in content.customHtml. Omitting one appends it at the end.",
       "sectionVisibility keys are the toggleable subset of the above.",
       "When both are given, order is attempted first, then visibility — each is applied independently, so one can succeed while the other fails.",
       "The result always reports both outcomes: { order: <result>|{error}, visibility: <result>|{error}, partialFailure: true } if only one part failed.",
@@ -747,9 +776,11 @@ export function registerLpTools(server: McpServer) {
     {
       slug: z.string().describe("Landing page slug"),
       sectionOrder: z
-        .array(z.enum(SECTION_ORDER_KEYS))
+        .array(sectionOrderKeySchema)
         .optional()
-        .describe("Full ordered list of section keys"),
+        .describe(
+          "Full ordered list of section keys — the 12 built-ins plus any 'customHtml:<id>' freeform sections"
+        ),
       sectionVisibility: z
         .record(z.boolean())
         .optional()
@@ -959,7 +990,7 @@ export function registerLpTools(server: McpServer) {
   // ── List side pages ───────────────────────────────────────────────────────
   server.tool(
     "list_side_pages",
-    "List side pages attached to a landing page. Default detail='short'. Heavy JSONB (overrides/config) only at full via view_side_page. medium/full include currentVersionId (the draft) and publishedVersionId (the live version) per row — compare them to spot pages with unpublished draft edits without a second call.",
+    "List side pages attached to a landing page. Default detail='short'. Heavy JSONB (overrides/config) only at full via view_side_page. Every detail level includes previewUrl (a browser-openable draft-preview link, always available) and liveUrl (a browser-openable public link, present only when a custom domain is connected). medium/full also include currentVersionId (the draft) and publishedVersionId (the live version) per row — compare them to spot pages with unpublished draft edits without a second call.",
     {
       slug: z.string().describe("Parent landing page slug"),
       detail: detailParam("short"),
@@ -974,7 +1005,7 @@ export function registerLpTools(server: McpServer) {
         ? (raw as unknown as SidePageItem[])
         : [];
       const proj = {
-        short: (row: SidePageItem) => pick(row, ["id", "slug", "name", "type", "isPublished"]),
+        short: (row: SidePageItem) => pick(row, ["id", "slug", "name", "type", "isPublished", "previewUrl", "liveUrl"]),
         medium: (row: SidePageItem) =>
           pick(row, [
             "id",
@@ -986,6 +1017,8 @@ export function registerLpTools(server: McpServer) {
             "updatedAt",
             "currentVersionId",
             "publishedVersionId",
+            "previewUrl",
+            "liveUrl",
           ]),
       };
       const text = JSON.stringify({ count: pages.length, detail, sidePages: projectList(detail, pages, proj) });
@@ -1002,7 +1035,7 @@ export function registerLpTools(server: McpServer) {
       "Two body modes:",
       "  • freeform: pass `key` + `prompt` (+ optional `keywords`, `selectedSections`, `voiceProfileId`, `sidePageType`). Freeform now writes real section-level content (hero/features/showcase/faq/cta), not just metadata.",
       "  • brief: pass `key` + `brief` (structured outline) + optional `briefId` and `roadmapItemId`.",
-      "Poll `get_job` with the returned `operationId` until `state` is `completed` (or `failed`/`partially_failed`/`cancelled` on error); the generated page's sections will be populated once complete.",
+      "Poll `get_job` with the returned `operationId` until `state` is `completed` (or `failed`/`partially_failed`/`cancelled` on error); the generated page's sections will be populated once complete. The completed job's result includes previewUrl (browser-openable draft-preview link, always present) and liveUrl (browser-openable public link, present only when a custom domain is connected).",
     ].join(" "),
     {
       slug: z.string().min(1).describe("Parent landing page slug"),
@@ -1059,10 +1092,75 @@ export function registerLpTools(server: McpServer) {
     }
   );
 
+  // ── Import side page from raw HTML ────────────────────────────────────────
+  server.tool(
+    "import_side_page_html",
+    [
+      "Bring-your-own-HTML: import a side page under a parent landing page directly from a live URL or pasted HTML. Pass exactly one of `url` or `html`.",
+      "When using `url`, PostKing fetches the page server-side — you do NOT need to download or paste the HTML yourself; just pass the URL.",
+      "`sidePageSlug` (maps to the request body's `slug`) sets the URL-slug fragment for the new side page under the parent LP. With `url` it's optional — derived from the URL's path when omitted. With `html` it's REQUIRED, since there's no URL to derive a slug from.",
+      "The outcome depends on the PARENT landing page's type — two possible modes:",
+      "  • Parent is a raw-HTML page: import runs SYNCHRONOUSLY. Returns 201 with { sidePage: { id, slug }, mode: 'import', previewUrl?, liveUrl? } — nothing further to do.",
+      "  • Parent is a sectioned page: the source page's text is extracted and seeds an ASYNC side-page generation. Returns 202 with { mode: 'generate', operationId, key } — poll get_job(operationId) exactly like generate_side_page, until state is 'completed' (or 'failed'/'partially_failed'/'cancelled'). Do NOT fabricate the page's content yourself while it's running; the completed job's result carries previewUrl/liveUrl once done.",
+      "previewUrl is a browser-openable draft-preview link (always available once the page exists); liveUrl is a browser-openable public link, present only when a custom domain is connected.",
+      "409 means a side page with that slug already exists under this parent — pick a different sidePageSlug or edit the existing page (edit_side_page / set_side_page_section) instead. 400 covers invalid URLs or URLs blocked for security reasons (e.g. SSRF-blocked internal/private-network addresses).",
+    ].join(" "),
+    {
+      slug: z.string().min(1).describe("Parent landing page slug"),
+      url: z
+        .string()
+        .trim()
+        .min(1)
+        .optional()
+        .describe(
+          "Live page URL to fetch and import (URL mode). Provide this or `html`, not both. PostKing fetches it server-side."
+        ),
+      html: z.string().optional().describe("Full HTML source to import (paste mode). Provide this or `url`, not both."),
+      sidePageSlug: z
+        .string()
+        .optional()
+        .describe(
+          "Desired URL-slug fragment for the new side page under the parent LP (maps to the request body's `slug`). Optional with `url` (derived from the URL's path when omitted); REQUIRED with `html`."
+        ),
+      voiceProfileId: z.string().optional().describe("Voice profile to write in (used when the parent is a sectioned page and generation runs)"),
+      autoAssignAssets: z
+        .boolean()
+        .optional()
+        .describe("Auto-assign brand assets to image slots after generation (used when the parent is a sectioned page and generation runs)"),
+    },
+    async ({ slug, url, html, sidePageSlug, voiceProfileId, autoAssignAssets }) => {
+      if (!url && !html) {
+        throw new Error("Provide either `url` (fetch) or `html` (paste).");
+      }
+      if (url && html) {
+        throw new Error("Provide only one of `url` or `html`, not both.");
+      }
+      if (html && !sidePageSlug) {
+        throw new Error("`sidePageSlug` is required when importing from raw `html` — there's no URL to derive it from.");
+      }
+      const body: Record<string, unknown> = {};
+      if (url !== undefined) body.url = url;
+      if (html !== undefined) body.html = html;
+      if (sidePageSlug !== undefined) body.slug = sidePageSlug;
+      if (voiceProfileId !== undefined) body.voiceProfileId = voiceProfileId;
+      if (autoAssignAssets !== undefined) body.autoAssignAssets = autoAssignAssets;
+      const data = await api.post<Record<string, unknown>>(
+        `/api/agent/v1/landing-pages/${slug}/side-pages/import-html`,
+        body
+      );
+      const out: Record<string, unknown> = { ...data };
+      if (data.mode === "generate") {
+        out.instruction =
+          "Parent is a sectioned page — the imported page's text seeded an async side-page generation. Poll get_job with the returned operationId until state is 'completed' (or 'failed'/'partially_failed'/'cancelled'); the generated side page's sections and previewUrl/liveUrl will be populated once complete. Do NOT fabricate the page's content yourself while this is running.";
+      }
+      return { content: [{ type: "text" as const, text: JSON.stringify(out, null, 2) }] };
+    }
+  );
+
   // ── View side page ────────────────────────────────────────────────────────
   server.tool(
     "view_side_page",
-    "View a side page including sections and rendered HTML. detail='full' (default) includes rendered HTML and full overrides (use this to read a section's typed shape before editing it with set_side_page_section); 'medium' gives summary + overrideSectionKeys (the section ids you can pass to set_side_page_section); 'short' gives id/slug/name/type/isPublished. Rendered HTML appears only at full. medium/full also include currentVersionId (the draft) and publishedVersionId (the live version) — a mismatch means there are unpublished draft edits.",
+    "View a side page including sections and rendered HTML. detail='full' (default) includes rendered HTML and full overrides (use this to read a section's typed shape before editing it with set_side_page_section); 'medium' gives summary + overrideSectionKeys (the section ids you can pass to set_side_page_section); 'short' gives id/slug/name/type/isPublished. Rendered HTML appears only at full. Every detail level includes previewUrl (browser-openable draft-preview link, always available) and liveUrl (browser-openable public link, present only when a custom domain is connected). medium/full also include currentVersionId (the draft) and publishedVersionId (the live version) — a mismatch means there are unpublished draft edits.",
     {
       slug: z.string().describe("Parent landing page slug"),
       sideKey: z.string().describe("Side page key (from list_side_pages)"),
@@ -1074,7 +1172,7 @@ export function registerLpTools(server: McpServer) {
       );
       const p = (raw["sidePage"] !== undefined ? raw["sidePage"] : raw) as SidePageDetail;
       const proj = {
-        short: (row: SidePageDetail) => pick(row, ["id", "slug", "name", "type", "isPublished"]),
+        short: (row: SidePageDetail) => pick(row, ["id", "slug", "name", "type", "isPublished", "previewUrl", "liveUrl"]),
         medium: (row: SidePageDetail) => ({
           ...pick(row, [
             "id",
@@ -1086,6 +1184,8 @@ export function registerLpTools(server: McpServer) {
             "updatedAt",
             "currentVersionId",
             "publishedVersionId",
+            "previewUrl",
+            "liveUrl",
           ]),
           overrideSectionKeys:
             row.overrides !== null && typeof row.overrides === "object" && !Array.isArray(row.overrides)

@@ -55,6 +55,8 @@ const jobProjector: Projector<Record<string, unknown>> = {
       if ("articleId" in r) ref.articleId = r.articleId;
       if ("sidePageId" in r) ref.sidePageId = r.sidePageId;
       if ("operationId" in r) ref.operationId = r.operationId;
+      if ("previewUrl" in r) ref.previewUrl = r.previewUrl;
+      if ("liveUrl" in r) ref.liveUrl = r.liveUrl;
       resultRef = Object.keys(ref).length > 0 ? ref : null;
     }
     return {
