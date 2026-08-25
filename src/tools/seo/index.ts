@@ -5,6 +5,7 @@ import { registerSeoRoadmapTools } from "./roadmap.js";
 import { registerSeoBriefTools } from "./briefs.js";
 import { registerSeoResultsTools } from "./results.js";
 import { registerSeoSidePageTools } from "./side-pages.js";
+import { registerSeoMarketSettingsTools } from "./market-settings.js";
 
 /**
  * SEO end-to-end agentic flow.
@@ -32,6 +33,10 @@ import { registerSeoSidePageTools } from "./side-pages.js";
  *
  * Steps 5 and 7 are explicit human-in-the-loop approval gates.
  *
+ * Multilingual market config (feature 96/104/110) — prerequisite for a
+ * language-scoped step 2: seo_get_market_settings / seo_set_market_settings
+ * (market-settings.ts).
+ *
  * This module was split out of a single 1510-line seo.ts (over the repo's 800-line
  * file-size limit) into one file per tool group, each exporting a single
  * `register*Tools(server)` entry point. Behavior of every pre-existing tool is
@@ -44,4 +49,5 @@ export function registerSeoTools(server: McpServer) {
   registerSeoBriefTools(server);
   registerSeoResultsTools(server);
   registerSeoSidePageTools(server);
+  registerSeoMarketSettingsTools(server);
 }

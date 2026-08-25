@@ -3,7 +3,7 @@ import { z } from "zod";
 import { api } from "../client.js";
 import { requireBrandId } from "../state.js";
 import { detailParam, project, projectList, truncate, type Projector } from "../detail.js";
-import { languageParam } from "../languages.js";
+import { languageParam, SUPPORTED_LANGUAGE_CODES, LANGUAGE_CODE_LIST_TEXT } from "../languages.js";
 
 // LIST tools must never carry article bodies — full bodies overflow small MCP clients.
 const HEAVY_ARTICLE_KEYS = ["postText", "postContent", "postContentHtml", "postContentHTML", "postContentMarkdown", "content", "body", "postBody", "bodyHtml"];
@@ -11,6 +11,44 @@ function stripHeavy(a: Record<string, unknown>): Record<string, unknown> {
   const c = { ...a };
   for (const k of HEAVY_ARTICLE_KEYS) delete c[k];
   return c;
+}
+
+/**
+ * Projects an article's CTA state for read-back. `ctas[]` is the column the
+ * dashboard editor and the renderer actually read; `sidePageInfo` is the
+ * legacy single-CTA mirror the server keeps in sync with it. Both are
+ * surfaced so a caller can verify what a `cta`/`sidePageInfo` write landed
+ * on instead of having to trust a bare 200.
+ */
+function projectCtas(a: any) {
+  const ctas = Array.isArray(a?.ctas) ? a.ctas : [];
+  const spi = a?.sidePageInfo && typeof a.sidePageInfo === "object" ? a.sidePageInfo : null;
+  return {
+    ctas: ctas.map((c: any) => ({
+      id: c?.id,
+      anchor: c?.anchor,
+      url: c?.ctaHref ?? null,
+      label: c?.ctaButtonText ?? null,
+      headline: c?.header ?? null,
+      body: c?.ctaText ?? null,
+      sidePageId: c?.sidePageId ?? null,
+      slug: c?.slug ?? null,
+      source: c?.ctaSource ?? null,
+      style: c?.style ?? "strong",
+    })),
+    ctaCount: ctas.length,
+    sidePageInfo: spi
+      ? {
+          id: spi.id ?? null,
+          slug: spi.slug ?? null,
+          headline: spi.header ?? null,
+          body: spi.ctaText ?? null,
+          label: spi.ctaButtonText ?? null,
+          url: spi.ctaHref ?? null,
+          source: spi.ctaSource ?? null,
+        }
+      : null,
+  };
 }
 
 function slimArticle(a: any) {
@@ -28,11 +66,18 @@ function slimArticle(a: any) {
   };
 }
 
+/** slimArticle + the article's CTA state — the write-echo shape, so a caller
+ * can confirm what a `cta`/`sidePageInfo` write actually persisted. Kept out
+ * of slimArticle itself since that also backs list_blogs' per-row projection. */
+function slimArticleWithCtas(a: any) {
+  return { ...slimArticle(a), ...projectCtas(a) };
+}
+
 export function registerBlogTools(server: McpServer) {
   // ── List publications & articles ──────────────────────────────────────────
   server.tool(
     "list_blogs",
-    "LIST tool. Even detail='full' OMITS article bodies (kept bounded) — to read an article's content, call get_blog_article. The number of rows is controlled by `limit` (default 50, max 200), NOT by `detail`; for a 'full list' of titles, raise `limit` and keep detail='short'.",
+    "LIST tool. Even detail='full' OMITS article bodies (kept bounded) — to read an article's content, call get_blog_article. The number of rows is controlled by `limit` (default 50, max 200), NOT by `detail`; for a 'full list' of titles, raise `limit` and keep detail='short'. On a brand publishing in more than one language (see get_brand_languages), publications and articles both carry `languageCode` — check it before generating into a publication, since two publications with the same brand can differ only by language.",
     {
       status: z.enum(["draft", "published"]).optional().describe("Filter articles by status"),
       detail: detailParam("short"),
@@ -60,19 +105,33 @@ export function registerBlogTools(server: McpServer) {
       const truncated = total > count;
 
       const pubProj: Projector<Record<string, unknown>> = {
-        short: (p) => ({ id: p.id, name: p.title }),
+        short: (p) => ({ id: p.id, name: p.title, languageCode: p.languageCode ?? null }),
         medium: (p) => ({
           id: p.id,
           title: p.title,
           description: p.description,
+          languageCode: p.languageCode ?? null,
+          pathPrefix: p.pathPrefix ?? null,
           domain: (p.domain as string | null) ?? null,
           layout: p.layout,
           articleCount: (p._count as Record<string, unknown>)?.blogArticles ?? null,
         }),
       };
+      // BlogArticle has no language column of its own — it inherits its
+      // language from its parent publication (blogId, exposed here as
+      // publicationId). Resolve that locally from the publications array
+      // this same response already carries, rather than fabricating or
+      // adding a round-trip.
+      const pubLangById = new Map<unknown, unknown>(rawPubs.map((p) => [p.id, p.languageCode ?? null]));
       const artProj: Projector<Record<string, unknown>> = {
-        short: (a) => ({ id: a.id, title: a.postTitle ?? a.title, slug: a.postSlug ?? a.slug, status: a.status }),
-        medium: (a) => slimArticle(a),
+        short: (a) => ({
+          id: a.id,
+          title: a.postTitle ?? a.title,
+          slug: a.postSlug ?? a.slug,
+          status: a.status,
+          languageCode: pubLangById.get(a.blogId) ?? null,
+        }),
+        medium: (a) => ({ ...slimArticle(a), languageCode: pubLangById.get(a.blogId) ?? null }),
       };
       const result: Record<string, unknown> = {
         count,
@@ -95,18 +154,34 @@ export function registerBlogTools(server: McpServer) {
   // ── Create publication ────────────────────────────────────────────────────
   server.tool(
     "create_publication",
-    "Create a new blog publication (the container that articles live under). Returns a publicationId needed for generate_blog_post.",
+    [
+      "Create a new blog publication (the container that articles live under). Returns a publicationId needed for generate_blog_post.",
+      `Optional languageCode sets this publication's language, as a BCP-47 code — one of: ${LANGUAGE_CODE_LIST_TEXT}. Omit to default to the brand's configured content language. If supplied, it must already be enabled on the brand's language roster (check with get_brand_languages, enable with add_brand_language first) — an un-enabled code is rejected with a 403.`,
+    ].join(" "),
     {
       title: z.string().describe("Publication name, e.g. 'My Blog'"),
       description: z.string().optional(),
       layout: z.string().optional(),
+      languageCode: z
+        .enum(SUPPORTED_LANGUAGE_CODES)
+        .optional()
+        .describe(
+          `Language for this new publication, as a BCP-47 code. One of: ${LANGUAGE_CODE_LIST_TEXT}. Omit to default to the brand's configured content language. Must already be enabled on the brand's language roster (get_brand_languages / add_brand_language) — an un-enabled code returns 403.`
+        ),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ title, description, layout, brandId }) => {
+    async ({ title, description, layout, languageCode, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.post<any>(`/api/agent/v1/brands/${id}/blogs`, { title, description, layout });
+      const data = await api.post<any>(`/api/agent/v1/brands/${id}/blogs`, {
+        title,
+        description,
+        layout,
+        // Omitted when the caller said nothing, so the server can tell
+        // "no override" from an explicit language code (JSON.stringify drops undefined).
+        languageCode,
+      });
       return {
-        content: [{ type: "text" as const, text: JSON.stringify({ id: data.id, title: data.title }, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify({ id: data.id, title: data.title, languageCode: data.languageCode ?? null }, null, 2) }],
       };
     }
   );
@@ -230,7 +305,7 @@ export function registerBlogTools(server: McpServer) {
   // ── Get blog article ──────────────────────────────────────────────────────
   server.tool(
     "get_blog_article",
-    "Fetch a blog article by ID. detail='short' returns id/title/slug/status; detail='medium' adds excerpt+wordCount+previewUrl+editUrl; detail='full' (default) returns the COMPLETE content plus previewUrl (GUI preview link) and editUrl (dashboard editor link). Pass maxContentChars only if you need to bound the body size; omit it to get the whole article.",
+    "Fetch a blog article by ID. detail='short' returns id/title/slug/status/languageCode; detail='medium' adds excerpt+wordCount+CTA state+previewUrl+editUrl; detail='full' (default) returns the COMPLETE content plus CTA state, previewUrl (GUI preview link) and editUrl (dashboard editor link). CTA state is `ctas[]` (the ordered list the dashboard editor and the public renderer read) plus `sidePageInfo` (the legacy single-CTA mirror) — use it to verify what an update_blog_article `cta` write persisted. languageCode is inherited from the article's parent publication (BlogArticle has no language column of its own) and may be null on a publication created before multi-language support was added. Pass maxContentChars only if you need to bound the body size; omit it to get the whole article.",
     {
       articleId: z.string().describe("Blog article ID"),
       detail: detailParam("full"),
@@ -261,6 +336,7 @@ export function registerBlogTools(server: McpServer) {
           title: a.postTitle,
           status: a.status,
           slug: a.postUrl ?? a.postSlug ?? a.slug,
+          languageCode: a.languageCode ?? null,
           excerpt: a.postExcerpt,
           content,
           contentLength: fullText !== null ? fullText.length : null,
@@ -277,20 +353,23 @@ export function registerBlogTools(server: McpServer) {
             ? `${(a.author as Record<string, unknown>).authorFirstName} ${(a.author as Record<string, unknown>).authorLastName}`.trim()
             : null,
           publicationId: a.blogId,
+          ...projectCtas(a),
           previewUrl,
           editUrl,
         };
       };
 
       const proj: Projector<Record<string, unknown>> = {
-        short: (a) => ({ id: a.id, title: a.postTitle, slug: a.postUrl ?? a.postSlug ?? a.slug, status: a.status }),
+        short: (a) => ({ id: a.id, title: a.postTitle, slug: a.postUrl ?? a.postSlug ?? a.slug, status: a.status, languageCode: a.languageCode ?? null }),
         medium: (a) => ({
           id: a.id,
           title: a.postTitle,
           slug: a.postUrl ?? a.postSlug ?? a.slug,
           status: a.status,
+          languageCode: a.languageCode ?? null,
           excerpt: truncate(a.postText, 300),
           wordCount: typeof a.postText === "string" ? a.postText.split(/\s+/).length : null,
+          ...projectCtas(a),
           previewUrl,
           editUrl,
         }),
@@ -310,6 +389,7 @@ export function registerBlogTools(server: McpServer) {
       "CTA (call-to-action) is structured data, NOT part of the article body — never write CTA markup into `content`.",
       "Use `cta: { url, label, headline, body }` to set it (url is required when enabling), or `cta: { enabled: false }` to remove it.",
       "`cta` and `sidePageInfo` are mutually exclusive — pass `sidePageInfo` only if you need to link to an existing side page by id/slug (from list_side_pages) instead of a raw url; either way, malformed CTA shapes are now rejected by the server rather than silently persisted, so pass exactly the documented fields.",
+      "`cta` is a PARTIAL patch: fields you omit keep their current values. The response echoes back the article's resulting `ctas[]` (the list the dashboard editor renders) plus the legacy `sidePageInfo` mirror — read those to confirm what was saved instead of relying on the 200 alone. An article may hold several CTAs; `cta`/`sidePageInfo` edit the end-anchored one (or the last one), leaving the rest untouched.",
     ].join(" "),
     {
       articleId: z.string().describe("Blog article ID"),
@@ -321,7 +401,7 @@ export function registerBlogTools(server: McpServer) {
       metaDescription: z.string().optional(),
       authorId: z.string().optional().describe("Author ID (from list_blog_authors)"),
       categoryId: z.string().optional().describe("Category ID (from list_blog_categories)"),
-      featuredImageUrl: z.string().optional().describe("The header/featured image — pass an image URL, a brand-asset path (the `fileUrl` from list_assets), an uploaded asset path, or a data: URI; external URLs are auto-downloaded when the article is published; pass an empty string to remove the current image."),
+      featuredImageUrl: z.string().optional().describe("The header/featured image — pass an image URL, a brand-asset URL (the `fileUrl` from list_assets — an absolute CDN URL, e.g. https://cdn.postking.app/assets/<brandId>/...), or a data: URI; bare legacy /assets/... paths are still accepted as input; external URLs are auto-downloaded when the article is published; pass an empty string to remove the current image."),
       featuredImageAlt: z.string().optional().describe("Alt text for the featured/header image"),
       featuredImageDescription: z.string().optional().describe("Description/caption for the featured/header image"),
       cta: z
@@ -370,7 +450,7 @@ export function registerBlogTools(server: McpServer) {
         sidePageInfo,
       });
       return {
-        content: [{ type: "text" as const, text: JSON.stringify(slimArticle(data?.blog ?? data?.article ?? data), null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify(slimArticleWithCtas(data?.blog ?? data?.article ?? data), null, 2) }],
       };
     }
   );
@@ -605,7 +685,7 @@ export function registerBlogTools(server: McpServer) {
   // ── List publications ─────────────────────────────────────────────────────
   server.tool(
     "list_publications",
-    "List all blog publications (the containers that blog articles live under). detail='short' returns id+name; detail='full' returns raw rows. Distinct from list_publishing_connections which lists external platforms like WordPress.",
+    "List all blog publications (the containers that blog articles live under). detail='short' returns id+name+languageCode; detail='medium' adds pathPrefix; detail='full' returns raw rows. On a brand publishing in more than one language (see get_brand_languages), languageCode is how you tell same-brand publications apart. Distinct from list_publishing_connections which lists external platforms like WordPress.",
     {
       detail: detailParam("short"),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
@@ -615,11 +695,13 @@ export function registerBlogTools(server: McpServer) {
       const data = await api.get<Record<string, unknown>>(`/api/agent/v1/brands/${id}/blogs`);
       const rawPubs = (Array.isArray((data as any)?.publications) ? (data as any).publications : []) as Record<string, unknown>[];
       const proj: Projector<Record<string, unknown>> = {
-        short: (p) => ({ id: p.id, name: p.title }),
+        short: (p) => ({ id: p.id, name: p.title, languageCode: p.languageCode ?? null }),
         medium: (p) => ({
           id: p.id,
           title: p.title,
           description: p.description,
+          languageCode: p.languageCode ?? null,
+          pathPrefix: p.pathPrefix ?? null,
           domain: (p.domain as string | null) ?? null,
           layout: p.layout,
           articleCount: (p._count as Record<string, unknown>)?.blogArticles ?? null,

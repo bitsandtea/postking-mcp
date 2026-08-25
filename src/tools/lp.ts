@@ -14,7 +14,7 @@ import { api, ApiError } from "../client.js";
 import { requireBrandId, getActiveBrandId } from "../state.js";
 import { detailParam, project, projectList, pick, truncate } from "../detail.js";
 import { brandDashboardUrl } from "../links.js";
-import { languageParam } from "../languages.js";
+import { languageParam, SUPPORTED_LANGUAGE_CODES, LANGUAGE_CODE_LIST_TEXT } from "../languages.js";
 
 const brandOpt = z.string().optional().describe("Brand ID (defaults to active brand)");
 
@@ -283,9 +283,14 @@ interface VibeEditChange {
   [k: string]: unknown;
 }
 
+interface VibeEditProgressDetail {
+  at?: string;
+  [k: string]: unknown;
+}
+
 interface VibeEditStatus {
   status?: string;
-  progress?: number | string;
+  progress?: number | string | VibeEditProgressDetail;
   stale?: boolean;
   baseVersionId?: string | number;
   currentVersionId?: string | number;
@@ -294,6 +299,9 @@ interface VibeEditStatus {
   changes?: VibeEditChange[];
   editedData?: unknown;
   error?: string;
+  createdAt?: string;
+  elapsedSeconds?: number;
+  stalled?: boolean;
   result?: {
     changes?: VibeEditChange[];
     credits?: unknown;
@@ -315,7 +323,7 @@ export function registerLpTools(server: McpServer) {
   // ── List landing pages ────────────────────────────────────────────────────
   server.tool(
     "list_landing_pages",
-    "Lists landing pages. Default detail='short' (id/slug/name/status). Use view_landing_page for full content.",
+    "Lists landing pages. Default detail='short' (id/slug/name/status/languageCode) — languageCode matters on a brand publishing in more than one language (see get_brand_languages), since pages in different languages are otherwise indistinguishable. Use view_landing_page for full content.",
     { brandId: brandOpt, detail: detailParam("short") },
     async ({ brandId, detail }) => {
       const id = requireBrandId(brandId);
@@ -330,9 +338,9 @@ export function registerLpTools(server: McpServer) {
         ? (raw as unknown as LpListItem[])
         : [];
       const proj = {
-        short: (row: LpListItem) => pick(row, ["id", "slug", "name", "status"]),
+        short: (row: LpListItem) => pick(row, ["id", "slug", "name", "status", "languageCode"]),
         medium: (row: LpListItem) =>
-          pick(row, ["id", "slug", "name", "status", "updatedAt", "currentVersionId", "publishedVersionId", "webUrl"]),
+          pick(row, ["id", "slug", "name", "status", "languageCode", "updatedAt", "currentVersionId", "publishedVersionId", "webUrl"]),
       };
       const text = JSON.stringify({ count: pages.length, detail, landingPages: projectList(detail, pages, proj) });
       return { content: [{ type: "text" as const, text }] };
@@ -529,6 +537,7 @@ export function registerLpTools(server: McpServer) {
       "4) Call apply_vibe_edit with all=true (accept everything) or a subset via indices/paths.",
       "5) Call publish_landing_page to make the applied changes live.",
       "scope='full' edits the whole page; scope='section' restricts the edit to one section — sectionId is REQUIRED when scope='section'. Example section keys: hero, features, pricing, cta, faq, howItWorks, showcase, categoryExplorer, replacesStack, comparisonMatrix, roiCalculator.",
+      "Vibe edits typically complete in 60-120 seconds but can take up to 15 minutes. The 'Calling AI service' step covers most of the runtime — seeing it repeatedly does NOT mean the operation is stuck. Keep polling get_vibe_edit_status for up to 15 minutes before treating the operation as failed; the status response includes elapsedSeconds and a progress heartbeat, and the server itself reports status 'failed' (with stalled: true) if the worker actually dies.",
     ].join(" "),
     {
       slug: z.string().describe("Landing page slug"),
@@ -545,14 +554,16 @@ export function registerLpTools(server: McpServer) {
         .describe(
           "REQUIRED when scope='section'. E.g. hero, features, pricing, cta, faq, howItWorks, showcase, categoryExplorer, replacesStack, comparisonMatrix, roiCalculator."
         ),
+      language: languageParam("Regenerates the edited content in this language; omit to keep the page on the brand's configured content language."),
     },
-    async ({ slug, instructions, scope, sectionId }) => {
+    async ({ slug, instructions, scope, sectionId, language }) => {
       if (scope === "section" && !sectionId) {
         throw new Error("sectionId is required when scope='section'");
       }
       const body: Record<string, unknown> = { instructions };
       if (scope) body.scope = scope;
       if (sectionId) body.sectionId = sectionId;
+      if (language) body.language = language;
       const data = await api.post<Record<string, unknown>>(`/api/agent/v1/landing-pages/${slug}/ai-edit`, body);
       return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
     }
@@ -562,10 +573,11 @@ export function registerLpTools(server: McpServer) {
   server.tool(
     "get_vibe_edit_status",
     [
-      "Poll vibe (AI) edit session status. detail='medium' (default) is the REVIEW view: { status, progress, stale, baseVersionId, currentVersionId, changesCount, credits, changes, error }",
+      "Poll vibe (AI) edit session status. detail='medium' (default) is the REVIEW view: { status, progress, stale, baseVersionId, currentVersionId, changesCount, credits, changes, error, elapsedSeconds, createdAt, stalled }",
       "where each `changes` entry is { index, path, before, after } (before/after truncated to 200 chars) — use these `index`/`path` values to select a subset in apply_vibe_edit.",
-      "'short' returns just { status, progress, error }. 'full' returns the raw payload including the untruncated editedData.",
+      "'short' returns just { status, progress, error, elapsedSeconds, stalled }. 'full' returns the raw payload including the untruncated editedData.",
       "`error` is populated when status is 'failed' and carries the failure reason — surface it to the user instead of just reporting 'failed'.",
+      "Vibe edits typically complete in 60-120 seconds but can take up to 15 minutes — do NOT treat repeated 'processing'/'Calling AI service' progress as stuck. `createdAt` is when the operation started, `elapsedSeconds` is seconds since then, and `progress.at` is a heartbeat timestamp refreshed every ≤30s by a healthy worker. Only treat the edit as dead when status is 'failed' (server-detected, including `stalled: true` when the worker died) OR elapsedSeconds exceeds 900 — keep polling otherwise.",
       "When status is 'completed', call apply_vibe_edit next (this tool never applies anything).",
     ].join(" "),
     {
@@ -579,9 +591,20 @@ export function registerLpTools(server: McpServer) {
       );
       const p = raw as VibeEditStatus;
       const proj = {
-        short: (row: VibeEditStatus) => pick(row, ["status", "progress", "error"]),
+        short: (row: VibeEditStatus) => pick(row, ["status", "progress", "error", "elapsedSeconds", "stalled"]),
         medium: (row: VibeEditStatus) => ({
-          ...pick(row, ["status", "progress", "stale", "baseVersionId", "currentVersionId", "changesCount", "error"]),
+          ...pick(row, [
+            "status",
+            "progress",
+            "stale",
+            "baseVersionId",
+            "currentVersionId",
+            "changesCount",
+            "error",
+            "elapsedSeconds",
+            "createdAt",
+            "stalled",
+          ]),
           credits: row.result?.credits,
           changes: Array.isArray(row.result?.changes)
             ? row.result.changes.map((c, i) => ({
@@ -1217,13 +1240,17 @@ export function registerLpTools(server: McpServer) {
         .describe(
           "Natural-language edit instructions. When provided alone (no fields/field), triggers an AI pass that rewrites this section's content according to the instructions. When combined with fields/field, stored only as an annotation for future context — no AI pass runs."
         ),
+      language: languageParam(
+        "Only consulted when `instructions` triggers an AI edit pass — ignored for structured fields/field writes, which never translate anything."
+      ),
     },
-    async ({ slug, sideKey, sectionId, fields, field, value, instructions }) => {
+    async ({ slug, sideKey, sectionId, fields, field, value, instructions, language }) => {
       const body: Record<string, unknown> = { sectionId };
       if (fields !== undefined) body.fields = coerceJsonValue(fields);
       if (field !== undefined) body.field = field;
       if (value !== undefined) body.value = coerceJsonValue(value);
       if (instructions !== undefined) body.instructions = instructions;
+      if (language) body.language = language;
       const data = await api.patch<Record<string, unknown>>(
         `/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}/section`,
         body
@@ -1404,6 +1431,47 @@ export function registerLpTools(server: McpServer) {
         `/api/agent/v1/landing-pages/${slug}/assets/assign`,
         body
       );
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    }
+  );
+
+  // ─────────────────── Translations (110-multilingual-brand) ─────────────────
+
+  // ── Read a page's translation group ───────────────────────────────────────
+  server.tool(
+    "get_landing_page_translations",
+    [
+      "Read the translation group a landing page belongs to — the set of language variants of the same page, linked by a shared group id.",
+      "Returns { slug, languageCode, pathPrefix, translationGroupId, isTranslationSource, variants: [...] }. `variants` lists the OTHER language variants in the group (empty if this page has no translations yet). `pathPrefix` is null for the brand's default language (served at the domain root) and /{languageCode} for every other language.",
+      "Use before create_landing_page_translation to check whether a variant in the target language already exists.",
+    ].join(" "),
+    {
+      slug: z.string().describe("Landing page slug"),
+    },
+    async ({ slug }) => {
+      const data = await api.get<unknown>(`/api/agent/v1/landing-pages/${slug}/translations`);
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    }
+  );
+
+  // ── Create a new language variant ─────────────────────────────────────────
+  server.tool(
+    "create_landing_page_translation",
+    [
+      "Create a new language variant of a landing page, linked into a shared translation group with the source page.",
+      "This only creates an empty DRAFT page row (correct slug suffix and /{languageCode} path prefix) — it does NOT translate any content. Use the `pullFromSourceUrl` in the response as the next step: an AI-edit call with `pullFromSource: true` that reads the source page's current content, translates it, and applies it as a normal vibe edit (see the landing-page ai-edit tools).",
+      "Fails with 400 if `:slug` is already a translation (not the group's source) — a variant must always be created from the group's actual source page. Fails with 409 if a variant in this language already exists in the group (check get_landing_page_translations first).",
+    ].join(" "),
+    {
+      slug: z.string().describe("Source landing page slug — the page to create a language variant of"),
+      language: z
+        .enum(SUPPORTED_LANGUAGE_CODES)
+        .describe(
+          `Language of the new variant, as a BCP-47 code. One of: ${LANGUAGE_CODE_LIST_TEXT}. Must differ from the source page's own language.`
+        ),
+    },
+    async ({ slug, language }) => {
+      const data = await api.post<unknown>(`/api/agent/v1/landing-pages/${slug}/translations`, { language });
       return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
     }
   );

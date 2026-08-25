@@ -4,6 +4,7 @@ import { api } from "../../client.js";
 import { requireBrandId } from "../../state.js";
 import { detailParam, projectList, type Projector } from "../../detail.js";
 import { etaFor } from "../../etas.js";
+import { SUPPORTED_LANGUAGE_CODES, LANGUAGE_CODE_LIST_TEXT } from "../../languages.js";
 
 /**
  * SEO / GEO flow — seed keywords, expansion, categorization.
@@ -89,6 +90,7 @@ export function registerSeoKeywordTools(server: McpServer) {
       "By default the server auto-derives 30-40 seed concepts from the brand's own context (products, ICP, positioning) and expands those.",
       "Pass `seeds` to steer expansion yourself instead — e.g. to target specific topics or geographies the brand context wouldn't surface on its own (\"California\", \"Texas\", \"Nashville plumbers\"). Supplying `seeds` REPLACES the automatic brand-derived seed generation for this call — it does not add to it. 3-20 short phrases, the kind of thing someone would actually type into Google (2-4 words, no jargon).",
       "The only other thing the agent can tweak is `autoScore` (defaults to true server-side — set false to skip volume/difficulty scoring).",
+      `Multilingual brands: pass \`language\` to scope this run to ONE of the brand's languages (${LANGUAGE_CODE_LIST_TEXT}) instead of every configured market. This is never automatic — call seo_estimate_research_cost first to see the price, then call this explicitly. Omit \`language\` for the pre-multilingual behavior (every configured market).`,
       "After completion, call seo_categorize.",
     ].join(" "),
     {
@@ -104,16 +106,46 @@ export function registerSeoKeywordTools(server: McpServer) {
         .describe(
           "Caller-supplied seed phrases that REPLACE automatic brand-derived seed generation for this call (not merged with it). Use this to target specific topics or geographies, e.g. [\"plumber near nashville\", \"emergency plumbing austin tx\"]. 3-20 short phrases people would actually type into Google — omit to let the server auto-derive seeds from brand context instead."
         ),
+      language: z
+        .enum(SUPPORTED_LANGUAGE_CODES)
+        .optional()
+        .describe(
+          `Explicitly scope this research run to one of the brand's languages (${LANGUAGE_CODE_LIST_TEXT}). Omit to research every configured market. Check the cost first with seo_estimate_research_cost — this is never auto-triggered.`
+        ),
       brandId: brandOpt,
     },
-    async ({ autoScore, seeds, brandId }) => {
+    async ({ autoScore, seeds, language, brandId }) => {
       const id = requireBrandId(brandId);
       const body: Record<string, unknown> = {};
       if (autoScore !== undefined) body.autoScore = autoScore;
       if (seeds !== undefined) body.seeds = seeds;
+      if (language !== undefined) body.language = language;
       const data = await api.post<unknown>(
         `/api/agent/v1/brands/${id}/seo/keywords/generate`,
         body
+      );
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    }
+  );
+
+  // ── Estimate per-language research cost (110-multilingual-brand) ─────────
+  server.tool(
+    "seo_estimate_research_cost",
+    [
+      "Read-only — no spend, no operation started. Estimates the USD cost of running seo_generate_keywords scoped to one language for this brand.",
+      "110-multilingual-brand decision 7: keyword research for a specific language is never automatic — always check this first and confirm with the user before calling seo_generate_keywords with that same `language`.",
+      "Returns pairCount (how many of the brand's configured (location, language) SEO markets share this language) and estimatedCostUsd. pairCount 0 means no market is configured for this language yet — the brand needs one added via SEO market settings before researching it.",
+    ].join(" "),
+    {
+      language: z
+        .enum(SUPPORTED_LANGUAGE_CODES)
+        .describe(`Language to estimate the cost of researching. One of: ${LANGUAGE_CODE_LIST_TEXT}.`),
+      brandId: brandOpt,
+    },
+    async ({ language, brandId }) => {
+      const id = requireBrandId(brandId);
+      const data = await api.get<unknown>(
+        `/api/agent/v1/brands/${id}/seo/keywords/research-estimate?language=${encodeURIComponent(language)}`
       );
       return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
     }

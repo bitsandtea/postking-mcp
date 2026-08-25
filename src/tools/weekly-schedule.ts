@@ -4,6 +4,7 @@ import { api } from "../client.js";
 import { requireBrandId } from "../state.js";
 import { detailParam, project, type Projector } from "../detail.js";
 import { brandDashboardUrl } from "../links.js";
+import { languageParam } from "../languages.js";
 
 const brandOpt = z.string().optional().describe("Brand ID (defaults to active brand)");
 
@@ -155,14 +156,20 @@ export function registerWeeklyScheduleTools(server: McpServer) {
     ].join(" "),
     {
       date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Use YYYY-MM-DD format").describe("Date to run, e.g. '2026-05-01'"),
+      language: languageParam("Set the brand's standing language with set_brand_content_language instead when every future generation should use it."),
       brandId: brandOpt,
     },
-    async ({ date, brandId }) => {
+    async ({ date, language, brandId }) => {
       const id = requireBrandId(brandId);
       const targetDate = new Date(date).toISOString();
       const data = await api.post<any>(
         `/api/agent/v1/brands/${id}/posts/smart-week`,
-        { targetDate }
+        {
+          targetDate,
+          // Omitted when the caller said nothing, so the server can tell
+          // "no override" from an explicit "en" (JSON.stringify drops undefined).
+          language,
+        }
       );
       const viewInBrowser = brandDashboardUrl(id, "weekly_schedule");
       return { content: [{ type: "text" as const, text: JSON.stringify({ ...data, viewInBrowser }, null, 2) }] };

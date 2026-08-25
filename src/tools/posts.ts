@@ -256,9 +256,10 @@ export function registerPostTools(server: McpServer) {
         .default("09:00")
         .describe("Comma-separated posting times, e.g. '09:00,14:00'"),
       voice: z.string().optional().describe("Voice profile ID"),
+      language: languageParam("Set the brand's standing language with set_brand_content_language instead when every future generation should use it."),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ platform, days, frequency, postsPerDay, times, voice, brandId }) => {
+    async ({ platform, days, frequency, postsPerDay, times, voice, language, brandId }) => {
       const id = requireBrandId(brandId);
       const data = await api.post<Record<string, unknown>>(`/api/agent/v1/brands/${id}/posts/generate-batch`, {
         platform,
@@ -267,6 +268,9 @@ export function registerPostTools(server: McpServer) {
         postsPerDay,
         times: times?.split(",").map((t) => t.trim()),
         voiceProfileId: voice,
+        // Omitted when the caller said nothing, so the server can tell
+        // "no override" from an explicit "en" (JSON.stringify drops undefined).
+        language,
       });
       const d = data && typeof data === "object" ? data as Record<string, unknown> : {};
       const slim: Record<string, unknown> = {};

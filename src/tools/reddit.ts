@@ -384,7 +384,8 @@ export function registerRedditTools(server: McpServer) {
     [
       "Add subreddits to the brand's pool by name (1-25 per call). Free — 0 credits.",
       "Each name is resolved live from Reddit (about + rules) and merged into the brand's pool; already-present names are updated in place.",
-      "PARTIAL SUCCESS IS NORMAL: names that can't resolve (private/banned/nonexistent) come back in failed: [{ name, reason }] while the rest still commit. A non-empty failed list is NOT an error — report which names were added and which failed, and why.",
+      "PARTIAL SUCCESS IS NORMAL: names that can't resolve come back in failed: [{ name, reason, retryable }] while the rest still commit. A non-empty failed list is NOT an error — report which names were added and which failed, and quote the reason.",
+      "`retryable: true` means the LOOKUP failed (Reddit throttled us, proxy hiccup) — the subreddit is probably fine, so retry the call rather than telling the user it doesn't exist. `retryable: false` means the subreddit itself can't be added (nonexistent/banned/private).",
       "Typical source: names the user picked from reddit_discover_subreddits results. Not required before reddit_rewrite — rewriting for an off-pool subreddit auto-adds it to the pool.",
     ].join(" "),
     {
