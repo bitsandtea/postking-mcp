@@ -25,7 +25,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createServer } from "../server.js";
-import { runWithToken, runWithSession, oauthConfig } from "../config.js";
+import { runWithToken, runWithSession, runWithUserId, oauthConfig } from "../config.js";
 import { introspectToken } from "../oauth/introspect.js";
 import { deleteSessionState } from "../state.js";
 
@@ -105,6 +105,27 @@ function sendUnauthorized(res: http.ServerResponse): void {
     "www-authenticate": `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource"`,
   });
   res.end(JSON.stringify({ error: "unauthorized", error_description: "Bearer token required" }));
+}
+
+/**
+ * Per the MCP Streamable HTTP spec, a request that carries an `mcp-session-id`
+ * the server no longer recognizes (e.g. after a redeploy wiped the in-memory
+ * session map) must get a 404. The client is then required to transparently
+ * start a new session (send InitializeRequest again) rather than surface a
+ * broken-connector error to the user.
+ */
+function sendSessionNotFound(res: http.ServerResponse): void {
+  res.writeHead(404, {
+    "content-type": "application/json",
+    "access-control-allow-origin": "*",
+  });
+  res.end(
+    JSON.stringify({
+      jsonrpc: "2.0",
+      error: { code: -32001, message: "Session not found" },
+      id: null,
+    })
+  );
 }
 
 function sendResourceMetadata(res: http.ServerResponse): void {
@@ -215,8 +236,10 @@ export async function runHttp(opts: HttpTransportOptions): Promise<http.Server> 
       }
 
       // Validate the token via introspection (cached 45 s).
+      let userId: string | null = null;
       try {
-        await introspectToken(token);
+        const introspection = await introspectToken(token);
+        userId = introspection.sub || null;
       } catch (err) {
         const e = err as Error & { status?: number };
         if (!e.status || e.status === 401) {
@@ -238,6 +261,16 @@ export async function runHttp(opts: HttpTransportOptions): Promise<http.Server> 
       let entry: SessionEntry | undefined = incomingSessionId
         ? sessions.get(incomingSessionId)
         : undefined;
+
+      // A session ID that isn't in our in-memory map (e.g. the server was
+      // redeployed and lost all sessions) is a spec-defined 404, not a fresh
+      // session — the client is expected to transparently re-initialize.
+      // Only take this path when a session id was actually presented; no
+      // header at all means "start a new session," handled below.
+      if (incomingSessionId && !entry) {
+        sendSessionNotFound(res);
+        return;
+      }
 
       if (!entry) {
         const newSessionId = randomUUID();
@@ -266,7 +299,7 @@ export async function runHttp(opts: HttpTransportOptions): Promise<http.Server> 
       const currentEntry = entry;
       await runWithToken(currentEntry.token, () =>
         runWithSession(currentEntry.sessionId, () =>
-          currentEntry.transport.handleRequest(req, res, body)
+          runWithUserId(userId, () => currentEntry.transport.handleRequest(req, res, body))
         )
       );
     } catch (err) {

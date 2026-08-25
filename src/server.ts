@@ -60,8 +60,8 @@ export function createServer(token?: string): McpServer {
 
 ## Start every session here
 1. Call \`list_brands\` to see which brands this account can access.
-2. Call \`set_active_brand(brandId)\` before any brand-scoped tool call. Brand selection is per-session — it does NOT persist across reconnects, so re-apply it at the start of every new session.
-3. If a tool returns "no brand selected" or similar, you skipped step 2 — call \`set_active_brand\` and retry, don't treat it as a hard failure.
+2. Call \`set_active_brand(brandId)\` before any brand-scoped tool call. On the hosted HTTP transport this persists for your logged-in account across reconnects and server restarts, so you usually only need to set it once. On stdio, or the very first time, it isn't set yet.
+3. If a tool returns "no brand selected" or similar, call \`set_active_brand\` and retry — don't treat it as a hard failure.
 
 ## Authentication — read this before touching auth tools
 Call \`health\` any time — it needs no valid token and reports local auth state (\`transport\`, \`loggedIn\`, \`tokenSource\`, and a \`nextStep\` telling you exactly what to do).

@@ -73,6 +73,14 @@ const tokenStore = new AsyncLocalStorage<string | null>();
  */
 const sessionStore = new AsyncLocalStorage<string | null>();
 
+/**
+ * Per-request authenticated user ID storage (the introspected token's `sub`).
+ * Bound by the HTTP transport alongside token/session so tools can key
+ * per-user state (e.g. active brand) that survives session re-init after a
+ * redeploy. Unset on stdio — there's no introspection there.
+ */
+const userIdStore = new AsyncLocalStorage<string | null>();
+
 /** Per-session default token, bound at `createServer(token)` time. */
 const serverTokens = new WeakMap<McpServer, string | null>();
 
@@ -94,6 +102,14 @@ export function runWithSession<T>(sessionId: string | null, fn: () => Promise<T>
 
 export function getSessionId(): string | null {
   return sessionStore.getStore() ?? null;
+}
+
+export function runWithUserId<T>(userId: string | null, fn: () => Promise<T> | T): Promise<T> | T {
+  return userIdStore.run(userId, fn);
+}
+
+export function getUserId(): string | null {
+  return userIdStore.getStore() ?? null;
 }
 
 /**
