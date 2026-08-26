@@ -1035,6 +1035,7 @@ export function registerLpTools(server: McpServer) {
       "Two body modes:",
       "  • freeform: pass `key` + `prompt` (+ optional `keywords`, `selectedSections`, `voiceProfileId`, `sidePageType`). Freeform now writes real section-level content (hero/features/showcase/faq/cta), not just metadata.",
       "  • brief: pass `key` + `brief` (structured outline) + optional `briefId` and `roadmapItemId`.",
+      "  • spotlight (feature/service page): pass `key` + `prompt` + `sidePageType: \"spotlight\"` (+ optional `name`, `keywords`). Fixed schema — hero, a 3-6 step feature tour, 3-6 benefits, a stat/quote proof band and a CTA footer — with no testimonial carousel, pricing or showcase. Use it whenever the page is about ONE feature or service; `brief` and `selectedSections` are ignored for this type.",
       "Poll `get_job` with the returned `operationId` until `state` is `completed` (or `failed`/`partially_failed`/`cancelled` on error); the generated page's sections will be populated once complete. The completed job's result includes previewUrl (browser-openable draft-preview link, always present) and liveUrl (browser-openable public link, present only when a custom domain is connected).",
     ].join(" "),
     {
@@ -1053,14 +1054,28 @@ export function registerLpTools(server: McpServer) {
         .optional()
         .describe("Freeform-mode: target keywords to weave into the page"),
       selectedSections: z
-        .array(z.string())
-        .optional()
-        .describe("Freeform-mode: restrict generation to these section ids (e.g. hero, features, showcase, faq, cta, pricing). Omit to generate all default sections."),
-      sidePageType: z
-        .enum(["landing", "text", "comparison", "custom"])
+        .union([z.array(z.string()), z.record(z.string(), z.boolean())])
         .optional()
         .describe(
-          "Defaults to 'landing'. Use 'comparison' only with a persisted comparison briefId. Use 'custom' for the block-model page type (an ordered blocks[] array — see list_block_types/add_block/edit_block/delete_block/reorder_blocks) when the page needs a shape the fixed section list can't express."
+          "Freeform-mode: restrict generation to these sections. Pass either an array of ids (e.g. [\"hero\", \"features\"]) or a map of id -> boolean (e.g. { hero: true, faq: false }). Valid ids: hero, showcase, features, cta, faq, pricing, howItWorks. Omit (or pass an empty array/map) to generate all default sections."
+        ),
+      sidePageType: z
+        .enum(["landing", "text", "comparison", "custom", "spotlight"])
+        .optional()
+        .describe(
+          "Defaults to 'landing' (the full sectioned marketing page: hero, showcase, features, testimonials, pricing, faq, cta). " +
+            "'text' = flat {title, htmlContent} document. " +
+            "'comparison' only with a persisted comparison briefId. " +
+            "'custom' = the block-model page type (an ordered blocks[] array — see list_block_types/add_block/edit_block/delete_block/reorder_blocks) when the page needs a shape the fixed section list can't express. " +
+            "'spotlight' = the FEATURE / SERVICE SPOTLIGHT page — a fixed-schema single-topic page: hero (kicker/h1/sub/CTA + optional hero image), a 3-6 step click-through feature tour, 3-6 benefits, a stat + customer-quote proof band, and a CTA footer. " +
+            "Pick 'spotlight' when the page explains ONE feature or service: it has no testimonial carousel, pricing table or showcase section, so it stays feature-focused instead of pulling in the full marketing template. " +
+            "Spotlight is freeform-only (`key` + `prompt` required; `name` sets the display title, `keywords` are honoured) and IGNORES `selectedSections`/`brief` — its section set is fixed. Edit it afterwards with set_side_page_section (one flat document, see that tool)."
+        ),
+      name: z
+        .string()
+        .optional()
+        .describe(
+          "Display title for the new side page (used in footer/nav links and breadcrumbs). Honoured by sidePageType:'spotlight'; other types derive the name from the generated content."
         ),
       voiceProfileId: z.string().optional().describe("Voice profile to write in"),
       autoAssignAssets: z
@@ -1073,13 +1088,14 @@ export function registerLpTools(server: McpServer) {
         .describe("Persisted SeoBrief ID — required for comparison-type generation"),
       roadmapItemId: z.string().optional().describe("Roadmap item ID this side page is fulfilling"),
     },
-    async ({ slug, key, prompt, brief, keywords, selectedSections, sidePageType, voiceProfileId, autoAssignAssets, briefId, roadmapItemId }) => {
+    async ({ slug, key, prompt, brief, keywords, selectedSections, sidePageType, name, voiceProfileId, autoAssignAssets, briefId, roadmapItemId }) => {
       const body: Record<string, unknown> = { key };
       if (prompt !== undefined) body.prompt = prompt;
       if (brief !== undefined) body.brief = brief;
       if (keywords !== undefined) body.keywords = keywords;
       if (selectedSections !== undefined) body.selectedSections = selectedSections;
       if (sidePageType !== undefined) body.sidePageType = sidePageType;
+      if (name !== undefined) body.name = name;
       if (voiceProfileId !== undefined) body.voiceProfileId = voiceProfileId;
       if (autoAssignAssets !== undefined) body.autoAssignAssets = autoAssignAssets;
       if (briefId !== undefined) body.briefId = briefId;
@@ -1208,7 +1224,9 @@ export function registerLpTools(server: McpServer) {
       "Content — type:\"text\" pages ONLY: `title` and/or `htmlContent`. Text side pages store a flat {title, htmlContent} " +
       "document, not per-section overrides, so this is the direct way to write their content — landing/comparison pages have " +
       "no `title`/`htmlContent` fields and must use set_side_page_section (or set_side_page_section with instructions-only for " +
-      "an AI rewrite of a text page's whole document) instead. Passing only one of title/htmlContent fetches and preserves the " +
+      "an AI rewrite of a text page's whole document) instead. For SEO metadata (title/description/keywords/openGraph/twitter) " +
+      "on ANY side-page type, this tool does NOT write it — use set_side_page_section({sectionId:\"siteMetadata\", fields:{...}}). " +
+      "Passing only one of title/htmlContent fetches and preserves the " +
       "other automatically, so a partial write never clobbers the unset field. " +
       "Every edit creates a new draft version (see list_side_page_versions / restore_side_page_version) — nothing here is " +
       "destructive, any write (including a bad title/htmlContent edit) can be undone by restoring a prior version. On a " +
@@ -1315,12 +1333,18 @@ export function registerLpTools(server: McpServer) {
       "comparison sections (matrix, verdict, scorecard, decisionTree, priceCalculator, competitorClaims, ...) use their comparison-schema shape. " +
       "Use view_side_page(detail:'full') first to see the current section shape, then send the same shape back with your edits. " +
       "Pass EITHER `fields` (a partial section object merged onto the current section) OR `field` (a dot-path) + `value` for a single nested change, OR `instructions` alone for a natural-language edit (the server runs an AI pass scoped to this section). " +
+      "type:\"spotlight\" pages (feature/service spotlight): like text, ONE flat fixed-schema document — no per-section nesting. `sectionId` is accepted for symmetry (e.g. \"hero\"/\"steps\"/\"benefits\") but every edit applies to the whole document. Top-level keys: kicker, h1, sub, ctaPrimary, ctaSecondary?, ctaPrimaryHref?, ctaSecondaryHref?, heroImg?, mechKicker, mechTitle, steps[3-6] ({ id, title, body, img? }), benKicker, benTitle, benefits[3-6] ({ title, body }), statValue, statLabel, quote, quoteAuthor, quoteRole, ctaFootTitle, ctaFootBody. The root schema is strict — an unknown key is a 400, not a silent drop. Images are slot references ({ slotKey: \"spotlight.hero\" } / { slotKey: \"spotlight.step.{stepId}.img\" }), never URLs; attach the actual asset with assign_asset_to_slot. Each step carries a stable id (\"stp_\" + 8 hex chars): when you rewrite steps[], copy every surviving step's `id` and `img` across UNCHANGED — including when reordering, the image follows the id — and omit both on a step you are adding. " +
       "type:\"text\" pages: there is no per-section nesting — the whole page is one flat {title, htmlContent} document. `sectionId` is accepted for symmetry (e.g. \"content\"/\"htmlContent\"/\"title\") but every edit applies to the whole document: pass fields:{title,htmlContent}, field:\"title\"|\"htmlContent\"+value, or instructions alone for an AI rewrite of the whole page. edit_side_page's title/htmlContent params are a simpler direct-write shortcut for the same document. " +
+      "sectionId=\"siteMetadata\" is also accepted as a top-level root, exactly like set_landing_page_section's slotMap/config/navigation/siteMetadata roots — it's SidePage.siteMetadata (SEO metadata), its own field independent of overrides, and works identically on EVERY side-page type (landing/comparison/text/spotlight/custom). Writable keys: title, description, keywords, favicon, canonicalUrl, schemaTypes[], openGraph.{title,description,siteName,image}, twitter.{title,description,card,image}. Use fields for a partial shallow merge (e.g. fields:{description:\"...\"}) or field:\"openGraph.description\"+value for one nested key. instructions ALONE is NOT supported for this root — there is no AI edit pass for siteMetadata, and the call is rejected rather than silently no-op'ing. Read the current values first with view_side_page(detail:'full'). " +
       "Every edit creates a new draft version (like landing-page section edits) — see list_side_page_versions / restore_side_page_version; on a published page, edits stay draft-only until set_side_page_state({published:true}) publishes them.",
     {
       slug: z.string().describe("Parent landing page slug"),
       sideKey: z.string().describe("Side page key"),
-      sectionId: z.string().describe("Section ID from view_side_page (e.g. hero, features, matrix, verdict)"),
+      sectionId: z
+        .string()
+        .describe(
+          "Section ID from view_side_page (e.g. hero, features, matrix, verdict). \"siteMetadata\" is also accepted as a top-level root (SEO metadata: title, description, keywords, favicon, canonicalUrl, schemaTypes[], openGraph.*, twitter.*) — works on every side-page type; requires fields or field+value, not instructions alone."
+        ),
       fields: z
         .record(z.string(), jsonValueSchema)
         .optional()

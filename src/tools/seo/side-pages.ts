@@ -23,6 +23,7 @@ export function registerSeoSidePageTools(server: McpServer) {
       "Two body modes:",
       "  • freeform: pass `key` + `prompt` (+ optional `keywords`, `selectedSections`, `voiceProfileId`, `sidePageType`). Freeform now writes real section-level content (hero/features/showcase/faq/cta), not just metadata.",
       "  • brief: pass `key` + `brief` (structured outline) + optional `briefId` and `roadmapItemId`.",
+      "  • spotlight (feature/service page): pass `key` + `prompt` + `sidePageType: \"spotlight\"` (+ optional `name`, `keywords`). Fixed schema — hero, a 3-6 step feature tour, 3-6 benefits, a stat/quote proof band and a CTA footer — with no testimonial carousel, pricing or showcase. Use it whenever the page is about ONE feature or service; `brief` and `selectedSections` are ignored for this type.",
       `Typically takes ${etaFor("landing_page_side_pages_generate")}.`,
       "Async — returns `{ success, operationId, operationRowId, pollUrl, sidePageId }`. Poll `get_job` with the returned `operationId` until `state` is `completed` (or `failed`/`partially_failed`/`cancelled` on error); the generated page's sections will be populated once complete. Comparison-type briefs run synchronously and return `sidePageId` directly.",
       "`slug` is the PARENT landing page slug under which the side page is created.",
@@ -43,14 +44,28 @@ export function registerSeoSidePageTools(server: McpServer) {
         .optional()
         .describe("Freeform-mode: target keywords to weave into the page"),
       selectedSections: z
-        .array(z.string())
-        .optional()
-        .describe("Freeform-mode: restrict generation to these section ids (e.g. hero, features, showcase, faq, cta, pricing). Omit to generate all default sections."),
-      sidePageType: z
-        .enum(["landing", "text", "comparison", "custom"])
+        .union([z.array(z.string()), z.record(z.string(), z.boolean())])
         .optional()
         .describe(
-          "Defaults to 'landing'. Use 'comparison' only with a persisted comparison briefId. Use 'custom' for the block-model page type (an ordered blocks[] array — see list_block_types/add_block/edit_block/delete_block/reorder_blocks) when the page needs a shape the fixed section list can't express."
+          "Freeform-mode: restrict generation to these sections. Pass either an array of ids (e.g. [\"hero\", \"features\"]) or a map of id -> boolean (e.g. { hero: true, faq: false }). Valid ids: hero, showcase, features, cta, faq, pricing, howItWorks. Omit (or pass an empty array/map) to generate all default sections."
+        ),
+      sidePageType: z
+        .enum(["landing", "text", "comparison", "custom", "spotlight"])
+        .optional()
+        .describe(
+          "Defaults to 'landing' (the full sectioned marketing page: hero, showcase, features, testimonials, pricing, faq, cta). " +
+            "'text' = flat {title, htmlContent} document. " +
+            "'comparison' only with a persisted comparison briefId. " +
+            "'custom' = the block-model page type (an ordered blocks[] array — see list_block_types/add_block/edit_block/delete_block/reorder_blocks) when the page needs a shape the fixed section list can't express. " +
+            "'spotlight' = the FEATURE / SERVICE SPOTLIGHT page — a fixed-schema single-topic page: hero (kicker/h1/sub/CTA + optional hero image), a 3-6 step click-through feature tour, 3-6 benefits, a stat + customer-quote proof band, and a CTA footer. " +
+            "Pick 'spotlight' when the page explains ONE feature or service: it has no testimonial carousel, pricing table or showcase section, so it stays feature-focused instead of pulling in the full marketing template. " +
+            "Spotlight is freeform-only (`key` + `prompt` required; `name` sets the display title, `keywords` are honoured) and IGNORES `selectedSections`/`brief` — its section set is fixed. Edit it afterwards with set_side_page_section (one flat document, see that tool)."
+        ),
+      name: z
+        .string()
+        .optional()
+        .describe(
+          "Display title for the new side page (used in footer/nav links and breadcrumbs). Honoured by sidePageType:'spotlight'; other types derive the name from the generated content."
         ),
       voiceProfileId: z.string().optional().describe("Voice profile to write in"),
       autoAssignAssets: z
@@ -67,13 +82,14 @@ export function registerSeoSidePageTools(server: McpServer) {
         .describe("Persisted SeoBrief ID — required for comparison-type generation"),
       roadmapItemId: z.string().optional().describe("Roadmap item ID this side page is fulfilling"),
     },
-    async ({ slug, key, prompt, brief, keywords, selectedSections, sidePageType, voiceProfileId, autoAssignAssets, clusterId, briefId, roadmapItemId }) => {
+    async ({ slug, key, prompt, brief, keywords, selectedSections, sidePageType, name, voiceProfileId, autoAssignAssets, clusterId, briefId, roadmapItemId }) => {
       const body: Record<string, unknown> = { key };
       if (prompt !== undefined) body.prompt = prompt;
       if (brief !== undefined) body.brief = brief;
       if (keywords !== undefined) body.keywords = keywords;
       if (selectedSections !== undefined) body.selectedSections = selectedSections;
       if (sidePageType !== undefined) body.sidePageType = sidePageType;
+      if (name !== undefined) body.name = name;
       if (voiceProfileId !== undefined) body.voiceProfileId = voiceProfileId;
       if (autoAssignAssets !== undefined) body.autoAssignAssets = autoAssignAssets;
       if (clusterId !== undefined) body.clusterId = clusterId;
