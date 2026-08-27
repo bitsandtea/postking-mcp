@@ -35,7 +35,7 @@ export function registerEditorTools(server: McpServer) {
 
   server.tool(
     "humanize_text",
-    "Apply LLM rewrite and BERT replacements to reduce AI detection signals in text.",
+    "De-slop pass: replaces stock LLM phrasing — filler, hedges, canned transitions — with plainer, more specific prose, optionally tuned to a platform. A writing-quality tool: it does not change the fact that the text was AI-generated and must not be used to conceal AI authorship where disclosure is required.",
     {
       text: z.string().describe("Text to humanize"),
       platform: z
@@ -56,7 +56,7 @@ export function registerEditorTools(server: McpServer) {
 
   server.tool(
     "check_ai_content",
-    "Check whether text is likely AI-generated. Returns a score and analysis.",
+    "Diagnostic: scores how generic/templated a piece of text reads and returns an analysis of which passages feel machine-written. Use it to find weak writing for a human to revise — not as a target to optimise against by re-running humanize_text until the score drops.",
     {
       text: z.string().describe("Text to check"),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),

@@ -244,6 +244,7 @@ export function registerBlogTools(server: McpServer) {
     "generate_blog_post",
     [
       "Generate a full AI blog article. Requires a publicationId (from list_blogs or create_publication).",
+      "The publication you choose determines the article's LANGUAGE and its public URL (path/domain) — on a brand with more than one publication (check list_publications / get_brand_languages), don't pick one blindly. If the article ends up filed under the wrong publication, update_blog_article can move it after the fact via its publicationId param.",
       "Pass a voiceProfileId to write in a specific person's style (IDs from list_voices).",
       "Returns an articleId + operationId; generation is async — poll get_blog_status until completed, then get_blog_article. Use update_blog_article to edit, or publish_blog_article to push to external platforms.",
       "To make it live on your PostKing blog, call update_blog_article with status: 'published'.",
@@ -305,7 +306,7 @@ export function registerBlogTools(server: McpServer) {
   // ── Get blog article ──────────────────────────────────────────────────────
   server.tool(
     "get_blog_article",
-    "Fetch a blog article by ID. detail='short' returns id/title/slug/status/languageCode; detail='medium' adds excerpt+wordCount+CTA state+previewUrl+editUrl; detail='full' (default) returns the COMPLETE content plus CTA state, previewUrl (GUI preview link) and editUrl (dashboard editor link). CTA state is `ctas[]` (the ordered list the dashboard editor and the public renderer read) plus `sidePageInfo` (the legacy single-CTA mirror) — use it to verify what an update_blog_article `cta` write persisted. languageCode is inherited from the article's parent publication (BlogArticle has no language column of its own) and may be null on a publication created before multi-language support was added. Pass maxContentChars only if you need to bound the body size; omit it to get the whole article.",
+    "Fetch a blog article by ID. detail='short' returns id/title/slug/status/languageCode/publicationId; detail='medium' adds excerpt+wordCount+CTA state+previewUrl+editUrl; detail='full' (default) returns the COMPLETE content plus CTA state, previewUrl (GUI preview link) and editUrl (dashboard editor link). CTA state is `ctas[]` (the ordered list the dashboard editor and the public renderer read) plus `sidePageInfo` (the legacy single-CTA mirror) — use it to verify what an update_blog_article `cta` write persisted. `slug` and `publicationId` are surfaced at every detail level so you can confirm a prior update_blog_article move/rename actually landed. languageCode is inherited from the article's parent publication (BlogArticle has no language column of its own) and may be null on a publication created before multi-language support was added. Pass maxContentChars only if you need to bound the body size; omit it to get the whole article.",
     {
       articleId: z.string().describe("Blog article ID"),
       detail: detailParam("full"),
@@ -360,13 +361,14 @@ export function registerBlogTools(server: McpServer) {
       };
 
       const proj: Projector<Record<string, unknown>> = {
-        short: (a) => ({ id: a.id, title: a.postTitle, slug: a.postUrl ?? a.postSlug ?? a.slug, status: a.status, languageCode: a.languageCode ?? null }),
+        short: (a) => ({ id: a.id, title: a.postTitle, slug: a.postUrl ?? a.postSlug ?? a.slug, status: a.status, languageCode: a.languageCode ?? null, publicationId: a.blogId }),
         medium: (a) => ({
           id: a.id,
           title: a.postTitle,
           slug: a.postUrl ?? a.postSlug ?? a.slug,
           status: a.status,
           languageCode: a.languageCode ?? null,
+          publicationId: a.blogId,
           excerpt: truncate(a.postText, 300),
           wordCount: typeof a.postText === "string" ? a.postText.split(/\s+/).length : null,
           ...projectCtas(a),
@@ -385,11 +387,15 @@ export function registerBlogTools(server: McpServer) {
   server.tool(
     "update_blog_article",
     [
-      "Edit a blog article — title, content, excerpt, SEO fields, status, author, category, featured/header image, or CTA. Set status='published' to make it live on your PostKing blog.",
+      "Edit a blog article — title, content, excerpt, SEO fields, status, author, category, featured/header image, CTA, URL slug, or which publication it lives under. Set status='published' to make it live on your PostKing blog.",
       "CTA (call-to-action) is structured data, NOT part of the article body — never write CTA markup into `content`.",
       "Use `cta: { url, label, headline, body }` to set it (url is required when enabling), or `cta: { enabled: false }` to remove it.",
       "`cta` and `sidePageInfo` are mutually exclusive — pass `sidePageInfo` only if you need to link to an existing side page by id/slug (from list_side_pages) instead of a raw url; either way, malformed CTA shapes are now rejected by the server rather than silently persisted, so pass exactly the documented fields.",
       "`cta` is a PARTIAL patch: fields you omit keep their current values. The response echoes back the article's resulting `ctas[]` (the list the dashboard editor renders) plus the legacy `sidePageInfo` mirror — read those to confirm what was saved instead of relying on the 200 alone. An article may hold several CTAs; `cta`/`sidePageInfo` edit the end-anchored one (or the last one), leaving the rest untouched.",
+      "Use `publicationId` to MOVE this article to a different blog publication of the same brand — get candidate ids from list_publications. A publication determines the article's language and its public URL (path/domain), so moving one changes both; an id that isn't one of this brand's publications is rejected with a 404 (call list_publications and retry), and moving into a publication that already has a published article on the same slug is rejected with a 409.",
+      "Use `slug` to change the article's URL path segment; the server re-normalizes whatever you pass and rejects a collision with another published article in the target publication with a 409.",
+      "Pass `updateReferences: true` alongside a `slug` and/or `publicationId` change on an ALREADY-PUBLISHED article so the server enqueues a background job to rewrite internal links elsewhere in the brand's content that pointed at the old URL — otherwise those links go stale. Only has an effect when the article is published and its public URL actually changes.",
+      "The response echoes back the article's resulting `slug` and `publicationId` — read those to confirm a move or rename actually landed rather than trusting a bare 200.",
     ].join(" "),
     {
       articleId: z.string().describe("Blog article ID"),
@@ -430,9 +436,27 @@ export function registerBlogTools(server: McpServer) {
         .nullable()
         .optional()
         .describe("Full CTA object (advanced). Must include at least one of id/slug/ctaHref. Pass null to clear the CTA. Mutually exclusive with cta."),
+      slug: z
+        .string()
+        .optional()
+        .describe(
+          "New URL slug for the article. The server re-normalizes it (never trusted verbatim) and rejects with 409 if another published article in the target publication already uses it. Pair with updateReferences: true if the article is already published."
+        ),
+      publicationId: z
+        .string()
+        .optional()
+        .describe(
+          "Move the article to a different blog publication of the same brand (ids from list_publications). A publication determines the article's language and public URL, so moving changes both. A publicationId that isn't one of this brand's publications returns 404 — call list_publications and retry. Moving into a publication that already has a published article on the same slug returns 409."
+        ),
+      updateReferences: z
+        .boolean()
+        .optional()
+        .describe(
+          "When true AND the article is published AND its public URL actually changes (via slug and/or publicationId), enqueues a background job that rewrites internal links elsewhere in the brand's content that pointed at the old URL. Set this whenever you change the slug or publication of an already-published article."
+        ),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ articleId, title, content, excerpt, status, metaTitle, metaDescription, authorId, categoryId, featuredImageUrl, featuredImageAlt, featuredImageDescription, cta, sidePageInfo, brandId }) => {
+    async ({ articleId, title, content, excerpt, status, metaTitle, metaDescription, authorId, categoryId, featuredImageUrl, featuredImageAlt, featuredImageDescription, cta, sidePageInfo, slug, publicationId, updateReferences, brandId }) => {
       const id = requireBrandId(brandId);
       const data = await api.patch<any>(`/api/agent/v1/brands/${id}/blogs/${articleId}`, {
         postTitle: title,
@@ -448,6 +472,9 @@ export function registerBlogTools(server: McpServer) {
         postImageDesc: featuredImageDescription,
         cta,
         sidePageInfo,
+        postUrl: slug,
+        publicationId,
+        updateReferences,
       });
       return {
         content: [{ type: "text" as const, text: JSON.stringify(slimArticleWithCtas(data?.blog ?? data?.article ?? data), null, 2) }],

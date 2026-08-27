@@ -245,6 +245,7 @@ If you don't have one: \`create_publication\` with a title. Returns a publicatio
 \`get_blog_article\` — shows the full content (first 2000 chars).
 \`update_blog_article\` — edit title, content, excerpt, or SEO fields.
 - To edit the article's CTA (call-to-action block), use the \`cta\` field — e.g. \`{ url, label, headline, body }\` — or \`cta: { enabled: false }\` to remove it. Never put a CTA inline in \`content\`; it lives in structured data and is rejected/dropped there.
+- Ended up in the wrong publication, or want a cleaner URL? \`update_blog_article\` also takes \`publicationId\` (moves the article to another publication of this brand — get ids from \`list_publications\`) and \`slug\` (changes the URL path). If the article is already published, pass \`updateReferences: true\` alongside either so internal links elsewhere don't go stale.
 
 **Step 4 — Publish**
 Two options:
@@ -434,7 +435,7 @@ How many posts per day and which platforms?`,
 \`generate_blog_post\` with publicationId, topic, optional voiceProfileId, targetLength, primaryKeywords.
 
 **Step 3 — Review**
-\`get_blog_article\` returns the first 3000 chars for inline review. Iterate with \`update_blog_article\` — edit title, content, SEO fields.
+\`get_blog_article\` returns the first 3000 chars for inline review. Iterate with \`update_blog_article\` — edit title, content, SEO fields, or (via \`publicationId\`/\`slug\`) move the article to a different publication or change its URL. Pass \`updateReferences: true\` alongside a slug/publication change on an already-published article to keep internal links intact.
 
 **Step 4 — Choose a publish target**
 - **PostKing hosted blog**: \`update_blog_article\` with \`status: "published"\`. Free-tier choke point.

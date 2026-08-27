@@ -44,6 +44,7 @@ export function registerRepurposeTools(server: McpServer) {
       "IMPORTANT: When the source is a URL, pass it directly to this tool via sourceUrl — do NOT fetch or crawl the URL yourself first. PostKing handles all crawling internally.",
       "Source types: url | text | blog | social_post.",
       "Target types: social (LinkedIn, X, etc.) | blog | text.",
+      "When targetType is 'blog', pass publicationId to choose which blog publication the generated article is filed under (ids from list_publications) — omit to fall back to the brand's default publication for the content's language.",
       "Supports detail param: short=ids only, medium=key fields (default), full=raw response.",
     ].join(" "),
     {
@@ -60,6 +61,12 @@ export function registerRepurposeTools(server: McpServer) {
       targetType: z
         .enum(["social", "blog", "text"])
         .describe("What to generate"),
+      publicationId: z
+        .string()
+        .optional()
+        .describe(
+          "Which blog publication the generated article is filed under. Only used when targetType is 'blog' — ignored otherwise. Omit to use the brand's default publication for the content's language. Ids come from list_publications."
+        ),
       targetPlatforms: z
         .array(z.string())
         .optional()
@@ -95,6 +102,7 @@ export function registerRepurposeTools(server: McpServer) {
       textLength,
       voiceProfileIds,
       language,
+      publicationId,
       detail,
       brandId,
     }) => {
@@ -136,6 +144,8 @@ export function registerRepurposeTools(server: McpServer) {
         voiceProfileIds: voiceMap,
         // Omitted (not defaulted) when unset, so the brand default still wins.
         language,
+        // Only meaningful when targetType is "blog"; harmless no-op otherwise.
+        publicationId,
       });
 
       const data = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
