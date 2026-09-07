@@ -159,6 +159,8 @@ export function registerSeoKeywordTools(server: McpServer) {
       "Returns short detail by default: {id, keyword, intent} per keyword.",
       "Use detail=\"medium\" for the full compact summary (priority, searchVolume, difficulty, relevance, clusterId, excludedFromClustering, userTags) or detail=\"full\" for raw keyword objects.",
       "Supports server-side filtering: source, intent, clusterId, q (substring search), hasTag, volumeMin/volumeMax, kdMin/kdMax, relevanceMin/relevanceMax, priorityMin/priorityMax, includeDeleted, excludedFromClustering.",
+      "IMPORTANT — results are language-scoped. With languageCode omitted, this returns ONLY keywords in the brand's first configured SEO market language; keywords researched in another language are silently excluded, not deleted.",
+      "If total is 0, check the response's languageCode and otherLanguages fields before concluding data is missing — pass languageCode=\"all\" to see every language.",
       "hasTag filters on userTags (OR match) — use it to find geo-tagged keywords after seo_tag_geography, e.g. hasTag=\"geo:us-mn\" or hasTag=\"geo:us-mn,geo:us-tx\" for multiple regions.",
       "Use cursor (from a previous call's response) to page through results beyond limit.",
     ].join(" "),
@@ -188,6 +190,12 @@ export function registerSeoKeywordTools(server: McpServer) {
       priorityMin: z.number().min(0).max(1).optional().describe("Minimum priority score in [0,1] (inclusive)"),
       priorityMax: z.number().min(0).max(1).optional().describe("Maximum priority score in [0,1] (inclusive)"),
       includeDeleted: z.boolean().optional().describe("Include soft-deleted keywords (default: excluded)"),
+      languageCode: z
+        .string()
+        .optional()
+        .describe(
+          "SeoScoredKeyword language filter (DataForSEO codes: en, cs, de, fr, es, pt). Omit to use the brand's first configured SEO market language; pass \"all\" to list every language's keywords."
+        ),
       excludedFromClustering: z.boolean().optional().describe("Filter to keywords with this excludedFromClustering value"),
       detail: detailParam("short"),
       brandId: brandOpt,
@@ -209,6 +217,7 @@ export function registerSeoKeywordTools(server: McpServer) {
       priorityMin,
       priorityMax,
       includeDeleted,
+      languageCode,
       excludedFromClustering,
       detail,
       brandId,
@@ -231,6 +240,7 @@ export function registerSeoKeywordTools(server: McpServer) {
       if (priorityMin !== undefined) params.set("priorityMin", String(priorityMin));
       if (priorityMax !== undefined) params.set("priorityMax", String(priorityMax));
       if (includeDeleted !== undefined) params.set("includeDeleted", String(includeDeleted));
+      if (languageCode !== undefined) params.set("languageCode", languageCode);
       if (excludedFromClustering !== undefined) params.set("excludedFromClustering", String(excludedFromClustering));
       const data = await api.get<unknown>(
         `/api/agent/v1/brands/${id}/seo/keywords?${params.toString()}`
@@ -241,10 +251,20 @@ export function registerSeoKeywordTools(server: McpServer) {
       const keywords = projectList(detail, rows, keywordProj);
       const nextCursor = typeof raw.nextCursor === "string" ? raw.nextCursor : null;
       const total = typeof raw.total === "number" ? raw.total : rows.length;
+      const responseLanguageCode = typeof raw.languageCode === "string" ? raw.languageCode : undefined;
+      const otherLanguages = Array.isArray(raw.otherLanguages) ? raw.otherLanguages : undefined;
       return {
         content: [{
           type: "text" as const,
-          text: JSON.stringify({ count: rows.length, total, nextCursor, detail, keywords }),
+          text: JSON.stringify({
+            count: rows.length,
+            total,
+            nextCursor,
+            detail,
+            languageCode: responseLanguageCode,
+            ...(otherLanguages ? { otherLanguages } : {}),
+            keywords,
+          }),
         }],
       };
     }
@@ -419,6 +439,7 @@ export function registerSeoKeywordTools(server: McpServer) {
       "Accepts the same filter set as seo_list_keywords: source, intent, clusterId, q, hasTag, volumeMin/volumeMax, kdMin/kdMax, relevanceMin/relevanceMax, priorityMin/priorityMax, includeDeleted, excludedFromClustering.",
       "Use to select \"all keywords matching filter X\" in one call, then feed the returned ids into seo_bulk_delete_keywords or seo_bulk_edit_keywords.",
       'Example: filter relevanceMax=0.2 to find low-relevance keywords, then bulk-delete or bulk-edit them. Or hasTag="geo:us-mn" to select every Minnesota-tagged keyword after seo_tag_geography.',
+      "Language-scoped exactly like seo_list_keywords: omitting languageCode selects only the brand's first SEO market language. This matters here — the returned ids feed seo_bulk_delete_keywords / seo_bulk_edit_keywords, and the scoping is what stops a bulk op crossing into another language's rows. Pass languageCode=\"all\" only when you deliberately want every language.",
     ].join(" "),
     {
       source: z.string().optional().describe("CSV of keyword sources to filter by (e.g. \"seed,expanded\")"),
@@ -444,6 +465,12 @@ export function registerSeoKeywordTools(server: McpServer) {
       priorityMin: z.number().min(0).max(1).optional().describe("Minimum priority score in [0,1] (inclusive)"),
       priorityMax: z.number().min(0).max(1).optional().describe("Maximum priority score in [0,1] (inclusive)"),
       includeDeleted: z.boolean().optional().describe("Include soft-deleted keywords (default: excluded)"),
+      languageCode: z
+        .string()
+        .optional()
+        .describe(
+          "SeoScoredKeyword language filter (DataForSEO codes: en, cs, de, fr, es, pt). Omit to use the brand's first configured SEO market language; pass \"all\" to list every language's keywords."
+        ),
       excludedFromClustering: z.boolean().optional().describe("Filter to keywords with this excludedFromClustering value"),
       brandId: brandOpt,
     },
@@ -462,6 +489,7 @@ export function registerSeoKeywordTools(server: McpServer) {
       priorityMin,
       priorityMax,
       includeDeleted,
+      languageCode,
       excludedFromClustering,
       brandId,
     }) => {
@@ -481,16 +509,18 @@ export function registerSeoKeywordTools(server: McpServer) {
       if (priorityMin !== undefined) params.set("priorityMin", String(priorityMin));
       if (priorityMax !== undefined) params.set("priorityMax", String(priorityMax));
       if (includeDeleted !== undefined) params.set("includeDeleted", String(includeDeleted));
+      if (languageCode !== undefined) params.set("languageCode", languageCode);
       if (excludedFromClustering !== undefined) params.set("excludedFromClustering", String(excludedFromClustering));
       const data = await api.get<unknown>(
         `/api/agent/v1/brands/${id}/seo/keywords/ids?${params.toString()}`
       );
       const raw = data != null && typeof data === "object" ? (data as Record<string, unknown>) : {};
       const ids = Array.isArray(raw.ids) ? raw.ids : [];
+      const responseLanguageCode = typeof raw.languageCode === "string" ? raw.languageCode : undefined;
       return {
         content: [{
           type: "text" as const,
-          text: JSON.stringify({ count: ids.length, ids }),
+          text: JSON.stringify({ count: ids.length, ids, languageCode: responseLanguageCode }),
         }],
       };
     }

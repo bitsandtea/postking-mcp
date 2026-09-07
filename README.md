@@ -275,8 +275,8 @@ _Canonical flow: `seo_add_seeds` → `seo_generate_keywords` → `seo_categorize
 | Tool | Description |
 |------|-------------|
 | `generate_post_visual_options` | Fetch available visual options for a post (card templates, library matches, stock photos) |
-| `regenerate_post_visual` | Regenerate the visual option set for a post |
-| `pick_post_visual` | Select a visual for a post on a given platform |
+| `regenerate_post_visual` | Refresh stock photos and quote/card templates for a post (does not re-match library assets) |
+| `pick_post_visual` | Select a template/stock visual, or attach one or more of your own library assets, for a post on a given platform |
 | `clear_post_visual` | Remove the selected visual from a post |
 | `list_post_cards` | List the carousel cards attached to a post |
 | `edit_post_card` | Edit a single carousel card by 1-based index |

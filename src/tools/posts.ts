@@ -102,7 +102,7 @@ function summarizeVisuals(catalog: Record<string, unknown>): {
   return {
     ...(bestPick ? { bestPick } : {}),
     ...(options.length ? { options } : {}),
-    note: "Visual options (quote templates, card templates, brand images, stock photos) were prepared but NOT attached to the post. Nothing is added until the user picks one. To attach a chosen option, call pick_post_visual with its pickArgs verbatim (kind + style + variant for templates, or assetId/slot for library/smart/photo assets). The user can preview all options visually at viewInBrowser.",
+    note: "Visual options (quote templates, card templates, stock photos) were prepared but NOT attached to the post — brand-library assets are not prepared as options here. Nothing is added until the user picks one. To attach a chosen option, call pick_post_visual with its pickArgs verbatim (kind + style + variant for templates, or assetId/slot for smart/photo assets). To attach your own uploaded photos instead, call list_assets then pick_post_visual with assetId or assetIds. The user can preview all options visually at viewInBrowser.",
   };
 }
 
@@ -123,7 +123,8 @@ export function registerPostTools(server: McpServer) {
       "After generating, use create_post to save a chosen variation, then approve_post to schedule it.",
       "To repurpose: call repurpose_content first, then create_post with the result, then approve_post.",
       "Generation can take 1-5 minutes (longer with multiple variations or voice rewrite). This tool only waits a short grace period so fast generations can return inline content; if it returns status 'generating', the job is still running server-side — poll get_post with the returned postId until operationStatus is 'completed', then use that content. Do NOT call generate_post again for the same request while it's pending — retrying creates a duplicate draft and wastes credits.",
-      "After generation, brand visual options (quote/card templates, brand images, stock photos) are prepared but NOT attached — share viewInBrowser for the visual picker, or call pick_post_visual to attach one. Do not attach a visual unless the user chooses it.",
+      "After generation, visual options (quote/card templates, stock photos) are prepared but NOT attached — brand-library assets are NOT prepared as options on this path. Share viewInBrowser for the visual picker, or call pick_post_visual to attach one. Do not attach a visual unless the user chooses it.",
+      "To attach the user's own uploaded photos, call list_assets to find the asset ID(s), then pick_post_visual with assetId (or assetIds for several).",
       "The response includes editInVisualEditor: a direct URL to edit the post in the visual editor (once completed).",
     ].join(" "),
     {

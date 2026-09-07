@@ -132,7 +132,12 @@ export function registerVisualsPostTools(server: McpServer) {
   // ── Regenerate visual options ─────────────────────────────────────────────
   server.tool(
     "regenerate_post_visual",
-    "Regenerate the visual option set for a post — refreshes stock photo results and re-scores library assets. Returns slim option list with pickArgs by default (medium). Use detail='short' for counts only, 'full' for raw catalog. Includes editInVisualEditor: a direct URL to edit the post in the visual editor (when active brand is set).",
+    [
+      "Refresh the auto-generated visual option set for a post: reloads stock photo results and regenerates quote/card templates.",
+      "It does NOT match or re-score brand library assets — AI brand-asset matching is deliberately disabled here for cost.",
+      "To attach one of your own uploaded photos, call list_assets to find the asset ID, then pick_post_visual with assetId (or assetIds for several) — no need to call this tool first.",
+      "Returns slim option list with pickArgs by default (medium). Use detail='short' for counts only, 'full' for raw catalog. Includes editInVisualEditor: a direct URL to edit the post in the visual editor (when active brand is set).",
+    ].join(" "),
     {
       postId: z.string().describe("Post ID"),
       loadExternal: z.boolean().optional().default(false).describe("Also reload external stock sources"),
@@ -160,11 +165,15 @@ export function registerVisualsPostTools(server: McpServer) {
   server.tool(
     "pick_post_visual",
     [
-      "Select a visual for a post on a given platform.",
-      "Use the chosen option's `pickArgs` from generate_post_visual_options VERBATIM —",
+      "Select or attach the visual(s) for a post on a given platform.",
+      "Two ways to use this tool:",
+      "(1) Template/stock pick from generate_post_visual_options: use the chosen option's `pickArgs` VERBATIM —",
       "for card/quote templates that means passing kind + style + variant together;",
-      "for a library/smart asset or a stock photo, pass the assetId or slot from its pickArgs.",
-      "Do not invent style names. variant is a 1-based template variant index.",
+      "for a stock/smart photo, pass the assetId or slot from its pickArgs. Do not invent style names.",
+      "variant is a 1-based template variant index. Template picks (kind 'quote'/'card') are single-image and cannot be combined with assetIds or append.",
+      "(2) Attach your own brand-library photo(s) directly: any asset ID from list_assets can be passed as `assetId` (single) or `assetIds` (ordered list, for a multi-image post) —",
+      "it does NOT need to appear in generate_post_visual_options first. Pass `append: true` to add to the post's existing attached assets instead of replacing them (e.g. to build up a multi-image post over several calls).",
+      "Per-platform image-count caps (e.g. Threads, LinkedIn, Instagram, X, Facebook) are enforced server-side — if a cap is exceeded the API call will reject with an error naming the limit.",
       "Includes editInVisualEditor: a direct URL to edit the post in the visual editor (when active brand is set).",
     ].join(" "),
     {
@@ -178,13 +187,30 @@ export function registerVisualsPostTools(server: McpServer) {
         ),
       style: z.string().optional().describe("Template style name from generate_post_visual_options"),
       variant: z.number().int().optional().describe("Template variant index"),
-      assetId: z.string().optional().describe("Library asset ID from list_assets"),
+      assetId: z
+        .string()
+        .optional()
+        .describe(
+          "A single asset ID — from generate_post_visual_options' pickArgs (library/smart match or stock photo), OR any brand-library asset ID from list_assets. Library assets do not need to have appeared in generate_post_visual_options first."
+        ),
+      assetIds: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "Ordered list of brand-library asset IDs (from list_assets) to attach as a multi-image post. Not for template picks (kind 'quote'/'card'). Combine with append:true to add to existing attachments instead of replacing them."
+        ),
+      append: z
+        .boolean()
+        .optional()
+        .describe(
+          "When true, add assetId/assetIds to the post's existing attached assets instead of replacing them. Only meaningful with assetId/assetIds, not with template picks."
+        ),
       slot: z.string().optional().describe("Internal template slot key (advanced)"),
     },
-    async ({ postId, platform, kind, style, variant, assetId, slot }) => {
-      if (!style && !assetId && !slot) {
+    async ({ postId, platform, kind, style, variant, assetId, assetIds, append, slot }) => {
+      if (!style && !assetId && !assetIds?.length && !slot) {
         return {
-          content: [{ type: "text" as const, text: "Provide one of: style, assetId, or slot." }],
+          content: [{ type: "text" as const, text: "Provide one of: style, assetId, assetIds, or slot." }],
         };
       }
       const pick: Record<string, unknown> = {};
@@ -192,6 +218,8 @@ export function registerVisualsPostTools(server: McpServer) {
       if (style) pick.style = style;
       if (variant !== undefined) pick.variant = variant;
       if (assetId) pick.assetId = assetId;
+      if (assetIds?.length) pick.assetIds = assetIds;
+      if (append !== undefined) pick.append = append;
       if (slot) pick.slot = slot;
       const data = await api.patch<any>(`/api/agent/v1/posts/${postId}/visuals`, {
         platform,
