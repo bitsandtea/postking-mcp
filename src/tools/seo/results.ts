@@ -4,6 +4,7 @@ import { api } from "../../client.js";
 import { requireBrandId } from "../../state.js";
 import { detailParam, projectList, type Projector } from "../../detail.js";
 import { brandDashboardUrl } from "../../links.js";
+import { SUPPORTED_LANGUAGE_CODES, LANGUAGE_CODE_LIST_TEXT } from "../../languages.js";
 
 /**
  * SEO / GEO flow — generated results listing, gap/competitor audits, and
@@ -51,22 +52,32 @@ export function registerSeoResultsTools(server: McpServer) {
   // ── 6e2. List SEO results ─────────────────────────────────────────────────
   server.tool(
     "seo_list_results",
-    "List the 'Generated Results' (blog articles + side pages + comparisons) the SEO/GEO pipeline has produced — mirrors the dashboard Results tab. Includes BOTH draft and published items. Use kind to filter. This is the canonical 'what content has been generated' list — prefer it over reconstructing results from briefs.",
+    [
+      "List the 'Generated Results' (blog articles + side pages + comparisons) the SEO/GEO pipeline has produced — mirrors the dashboard Results tab. Includes BOTH draft and published items. Use kind to filter. This is the canonical 'what content has been generated' list — prefer it over reconstructing results from briefs.",
+      `Multilingual brands: pass \`language\` (${LANGUAGE_CODE_LIST_TEXT}) to filter to one language's results; omit to see every configured language's results mixed together.`,
+    ].join(" "),
     {
       kind: z.enum(["all", "blog", "side_page", "comparison"]).optional().default("all").describe("Kind of result to filter by"),
       status: z.string().optional().describe("CSV of statuses to filter by"),
       limit: z.number().int().min(1).max(200).optional().default(50).describe("Page size (default 50, max 200)"),
       cursor: z.string().optional().describe("Pagination cursor from a previous page"),
+      language: z
+        .enum(SUPPORTED_LANGUAGE_CODES)
+        .optional()
+        .describe(
+          `Filter to results in this content language (${LANGUAGE_CODE_LIST_TEXT}). Omit to see every configured language's results mixed together.`
+        ),
       detail: detailParam("short"),
       brandId: brandOpt,
     },
-    async ({ kind, status, limit, cursor, detail, brandId }) => {
+    async ({ kind, status, limit, cursor, language, detail, brandId }) => {
       const id = requireBrandId(brandId);
       const qs = new URLSearchParams();
       if (kind && kind !== "all") qs.set("kind", kind);
       if (status) qs.set("status", status);
       if (limit !== undefined) qs.set("limit", String(limit));
       if (cursor) qs.set("cursor", cursor);
+      if (language !== undefined) qs.set("language", language);
       const suffix = qs.toString() ? `?${qs.toString()}` : "";
       const data = await api.get<unknown>(
         `/api/agent/v1/brands/${id}/seo/results${suffix}`

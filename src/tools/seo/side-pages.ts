@@ -5,6 +5,7 @@ import { requireBrandId } from "../../state.js";
 import { etaFor } from "../../etas.js";
 import { config } from "../../config.js";
 import { derivedJobFields } from "../jobs.js";
+import { languageParam } from "../../languages.js";
 
 /**
  * SEO / GEO flow — side-page generation linked to a cluster/brief, and
@@ -81,8 +82,11 @@ export function registerSeoSidePageTools(server: McpServer) {
         .optional()
         .describe("Persisted SeoBrief ID — required for comparison-type generation"),
       roadmapItemId: z.string().optional().describe("Roadmap item ID this side page is fulfilling"),
+      language: languageParam(
+        "Applies to every generation mode (freeform, brief, spotlight, custom)."
+      ),
     },
-    async ({ slug, key, prompt, brief, keywords, selectedSections, sidePageType, name, voiceProfileId, autoAssignAssets, clusterId, briefId, roadmapItemId }) => {
+    async ({ slug, key, prompt, brief, keywords, selectedSections, sidePageType, name, voiceProfileId, autoAssignAssets, clusterId, briefId, roadmapItemId, language }) => {
       const body: Record<string, unknown> = { key };
       if (prompt !== undefined) body.prompt = prompt;
       if (brief !== undefined) body.brief = brief;
@@ -95,6 +99,7 @@ export function registerSeoSidePageTools(server: McpServer) {
       if (clusterId !== undefined) body.clusterId = clusterId;
       if (briefId !== undefined) body.briefId = briefId;
       if (roadmapItemId !== undefined) body.roadmapItemId = roadmapItemId;
+      if (language) body.language = language;
       const data = await api.post<unknown>(
         `/api/agent/v1/landing-pages/${slug}/side-pages/generate`,
         body

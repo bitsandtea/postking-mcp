@@ -360,19 +360,22 @@ export function registerVisualsPostTools(server: McpServer) {
     [
       "Generate a carousel PDF for a LinkedIn (or other) post from the post's cards.",
       "Returns an asset ID and download URL for the PDF.",
-      "Requires cards to be set first via set_post_cards or edit_post_card.",
+      "Requires cards to be set first via set_post_cards or edit_post_card — the carousel's actual page content always comes from those rendered card assets, never from postContent.",
+      "postContent does NOT change what appears in the carousel. It's only a fallback used to build a readable output filename when title is omitted: the first ~5 words become a slugified filename (e.g. \"my-launch-post-is-here.pdf\"). Pass title when you want control over the filename; postContent is a same-value convenience (e.g. the post's own content) for callers that don't have a title handy.",
     ].join(" "),
     {
       postId: z.string().describe("Post ID"),
       style: z.string().optional().describe("Card template style name"),
       variant: z.number().int().optional().describe("Template variant index"),
-      title: z.string().optional().describe("Carousel title override"),
+      title: z.string().optional().describe("Carousel title override — used to build the output filename. Takes priority over postContent."),
+      postContent: z.string().optional().describe("Fallback source for the output filename when title is omitted (e.g. pass the post's content). Purely cosmetic — has no effect on the carousel's pages, which always come from the post's rendered cards."),
     },
-    async ({ postId, style, variant, title }) => {
+    async ({ postId, style, variant, title, postContent }) => {
       const body: Record<string, unknown> = {};
       if (style) body.style = style;
       if (variant !== undefined) body.variant = variant;
       if (title) body.title = title;
+      if (postContent) body.postContent = postContent;
       const data = await api.post<any>(`/api/agent/v1/posts/${postId}/carousel`, body);
       const asset = data?.asset ?? data;
       return { content: [{ type: "text" as const, text: JSON.stringify(asset, null, 2) }] };

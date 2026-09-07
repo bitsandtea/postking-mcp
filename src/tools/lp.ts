@@ -726,6 +726,7 @@ export function registerLpTools(server: McpServer) {
       "Pass the bare content-section key (e.g. 'hero', 'features', 'pricing') — the server maps it into the page's content tree. Top-level roots like slotMap, config, navigation, siteMetadata are also accepted as-is.",
       "Each call creates a new draft version — for many related changes across a page, prefer vibe_edit_landing_page instead.",
       "Example: section='hero', field='title', value='New headline'.",
+      "Pass `baseVersionId` (the page's `currentVersionId`, from view_landing_page/view_lp_draft) to opt into a staleness check: if the live version has moved on since you read it, the server rejects with a 409 instead of silently layering your change onto whatever is live now. Omit it to keep the default last-write-wins behavior. On a 409, re-fetch the page to see what changed and re-apply your edit against the new draft.",
       "Freeform HTML sections live at section='customHtml' as a map of id -> { name?, html }. Set one with field='<id>' and value={ name, html }, or replace the whole map with replaceSection=true. The html is sanitized server-side and REJECTED (not stripped) if it breaks the rules: only blk-* classes, no script/style/iframe/on* handlers, style may set only --blk-* custom properties, and every <img>/<video> src must be an https:// URL on try.postking.app or cdn.postking.app. Place each one in the page order with set_lp_section_layout using the key 'customHtml:<id>'.",
     ].join(" "),
     {
@@ -745,8 +746,21 @@ export function registerLpTools(server: McpServer) {
       replaceSection: z.boolean().optional().describe("Replace the entire section with `value` instead of setting one field"),
       name: z.string().optional().describe("Name for the new version"),
       description: z.string().optional().describe("Description for the new version"),
+      baseVersionId: z
+        .number()
+        .int()
+        .optional()
+        .describe(
+          "Optimistic-concurrency opt-in. Pass the page's `currentVersionId` (from view_landing_page/view_lp_draft) to have the server reject with a 409 if the live version moved on since you read it, instead of silently layering this change onto whatever is live now. Omit to keep the default last-write-wins behavior."
+        ),
+      humanize: z
+        .boolean()
+        .optional()
+        .describe(
+          "Run the anti-slop humanization pass (dash normalization, banned-phrase replacement, and the de-slop critic) over the supplied content before saving."
+        ),
     },
-    async ({ slug, section, field, value, replaceSection, name, description }) => {
+    async ({ slug, section, field, value, replaceSection, name, description, baseVersionId, humanize }) => {
       if (!replaceSection && field === undefined) {
         throw new Error("field is required unless replaceSection=true");
       }
@@ -756,8 +770,37 @@ export function registerLpTools(server: McpServer) {
         : { section, field, value: resolvedValue, nested: true };
       if (name !== undefined) body.name = name;
       if (description !== undefined) body.description = description;
-      const data = await api.post<Record<string, unknown>>(`/api/agent/v1/landing-pages/${slug}/update`, body);
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      if (baseVersionId !== undefined) body.baseVersionId = baseVersionId;
+      if (humanize !== undefined) body.humanize = humanize;
+      try {
+        const data = await api.post<Record<string, unknown>>(`/api/agent/v1/landing-pages/${slug}/update`, body);
+        return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      } catch (err) {
+        // The inner route replies to a stale baseVersionId with a 409 whose body is
+        // `{ error: "<message>", code: "STALE_VERSION", details: {...} }` — `error` is a
+        // bare STRING here, not the nested `{code,message,details}` envelope object the
+        // client's error parser looks for (see `request()` in client.ts), so `err.code`
+        // and `err.details` never populate for this specific route; only `err.message`
+        // (the human-readable string) survives. Detect the conflict by status alone and
+        // relay that message rather than pretending to read a `code`/`details` that
+        // won't be there.
+        if (err instanceof ApiError && err.status === 409) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  error: "stale_version",
+                  message:
+                    (err.message || "The landing page has changed since you loaded it.") +
+                    " Re-fetch the page (view_landing_page or view_lp_draft) to see the latest currentVersionId and content, then re-apply your edit against it.",
+                }),
+              },
+            ],
+          };
+        }
+        throw err;
+      }
     }
   );
 
@@ -1087,8 +1130,11 @@ export function registerLpTools(server: McpServer) {
         .optional()
         .describe("Persisted SeoBrief ID — required for comparison-type generation"),
       roadmapItemId: z.string().optional().describe("Roadmap item ID this side page is fulfilling"),
+      language: languageParam(
+        "Applies to every generation mode (freeform, brief, spotlight, custom)."
+      ),
     },
-    async ({ slug, key, prompt, brief, keywords, selectedSections, sidePageType, name, voiceProfileId, autoAssignAssets, briefId, roadmapItemId }) => {
+    async ({ slug, key, prompt, brief, keywords, selectedSections, sidePageType, name, voiceProfileId, autoAssignAssets, briefId, roadmapItemId, language }) => {
       const body: Record<string, unknown> = { key };
       if (prompt !== undefined) body.prompt = prompt;
       if (brief !== undefined) body.brief = brief;
@@ -1100,6 +1146,7 @@ export function registerLpTools(server: McpServer) {
       if (autoAssignAssets !== undefined) body.autoAssignAssets = autoAssignAssets;
       if (briefId !== undefined) body.briefId = briefId;
       if (roadmapItemId !== undefined) body.roadmapItemId = roadmapItemId;
+      if (language) body.language = language;
       const data = await api.post<Record<string, unknown>>(
         `/api/agent/v1/landing-pages/${slug}/side-pages/generate`,
         body
@@ -1367,14 +1414,21 @@ export function registerLpTools(server: McpServer) {
       language: languageParam(
         "Only consulted when `instructions` triggers an AI edit pass — ignored for structured fields/field writes, which never translate anything."
       ),
+      humanize: z
+        .boolean()
+        .optional()
+        .describe(
+          "Run the anti-slop humanization pass (dash normalization, banned-phrase replacement, and the de-slop critic) over the supplied content before saving. Only consulted for structured `fields`/`field` writes — ignored when `instructions` alone triggers the AI edit pass, which does not run humanization."
+        ),
     },
-    async ({ slug, sideKey, sectionId, fields, field, value, instructions, language }) => {
+    async ({ slug, sideKey, sectionId, fields, field, value, instructions, language, humanize }) => {
       const body: Record<string, unknown> = { sectionId };
       if (fields !== undefined) body.fields = coerceJsonValue(fields);
       if (field !== undefined) body.field = field;
       if (value !== undefined) body.value = coerceJsonValue(value);
       if (instructions !== undefined) body.instructions = instructions;
       if (language) body.language = language;
+      if (humanize !== undefined) body.humanize = humanize;
       const data = await api.patch<Record<string, unknown>>(
         `/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}/section`,
         body

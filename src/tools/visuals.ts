@@ -126,22 +126,26 @@ export function registerVisualTools(server: McpServer) {
   // ── List assets ───────────────────────────────────────────────────────────
   server.tool(
     "list_assets",
-    "List assets in the brand's visual library. Filter by type (IMAGE|DOCUMENT|VIDEO|LINK|LOTTIE), tags, or search text. Supports detail param: short=id+type+name, medium=key fields, full=raw.",
+    "List assets in the brand's visual library. Filter by type (IMAGE|DOCUMENT|VIDEO|LINK|LOTTIE) or multiple types, tags, or search text. Supports detail param: short=id+type+name, medium=key fields, full=raw.",
     {
       type: z.enum(["IMAGE", "DOCUMENT", "VIDEO", "LINK", "LOTTIE"]).optional().describe("Asset type filter: IMAGE | DOCUMENT | VIDEO | LINK | LOTTIE"),
+      types: z.string().optional().describe("Comma-separated list of types to filter by, e.g. 'IMAGE,VIDEO'. Use instead of type for a multi-type filter."),
       tags: z.string().optional().describe("Comma-separated tags to filter by"),
       search: z.string().optional().describe("Full-text search within asset name/description"),
       limit: z.number().int().min(1).max(200).optional().default(50),
+      offset: z.number().int().min(0).optional().describe("Number of assets to skip, for pagination beyond limit"),
       detail: detailParam("short"),
       brandId: brandOpt,
     },
-    async ({ type, tags, search, limit, detail, brandId }) => {
+    async ({ type, types, tags, search, limit, offset, detail, brandId }) => {
       const id = requireBrandId(brandId);
       const params = new URLSearchParams();
       if (type) params.set("type", type);
+      if (types) params.set("types", types);
       if (tags) params.set("tags", tags);
       if (search) params.set("search", search);
       if (limit) params.set("limit", String(limit));
+      if (offset) params.set("offset", String(offset));
       const qs = params.toString() ? `?${params}` : "";
       const data = await api.get<any>(`/api/agent/v1/brands/${id}/assets${qs}`);
       const rawAssets = (data?.assets ?? []) as Record<string, unknown>[];
@@ -447,14 +451,24 @@ export function registerVisualTools(server: McpServer) {
     {
       url: z.string().url().describe("Publicly accessible URL of the image/video/PDF to import"),
       name: z.string().optional().describe("Display name for the asset"),
+      description: z.string().optional().describe("Description for the imported asset"),
       tags: z.array(z.string()).optional(),
+      type: z.enum(["IMAGE", "VIDEO", "DOCUMENT", "LINK", "LOTTIE"]).optional().describe("Explicit asset type override. If omitted, the server derives it from the downloaded file's content-type."),
+      thumbnailUrl: z.string().url().optional().describe("Custom thumbnail URL override for the imported asset"),
       assetType: z.string().optional().describe("Optional source-provenance for the imported asset, e.g. 'google-image' when importing a search_web_images result. Recorded as a tag (not a separate field)."),
       brandId: brandOpt,
     },
-    async ({ url, name, tags, assetType, brandId }) => {
+    async ({ url, name, description, tags, type, thumbnailUrl, assetType, brandId }) => {
       const id = requireBrandId(brandId);
       const resolvedTags = assetType ? Array.from(new Set([...(tags ?? []), assetType])) : tags;
-      const data = await api.post<any>(`/api/agent/v1/brands/${id}/assets`, { url, name, tags: resolvedTags });
+      const data = await api.post<any>(`/api/agent/v1/brands/${id}/assets`, {
+        url,
+        name,
+        description,
+        tags: resolvedTags,
+        type,
+        thumbnailUrl,
+      });
       const a = data?.asset ?? data;
       return { content: [{ type: "text" as const, text: JSON.stringify(slimAsset(a), null, 2) }] };
     }
@@ -484,6 +498,25 @@ export function registerVisualTools(server: McpServer) {
   );
 
   // ── Tag asset ─────────────────────────────────────────────────────────────
+  // The server's AssetPatchBody (PostKing src/agent/schemas/visuals.ts) only
+  // supports a full-replace `tags` array — there is no server-side
+  // addTags/removeTags delta endpoint (the dashboard's edit modal works the
+  // same way: it PUTs the whole re-parsed tags array). So this tool computes
+  // the delta client-side: read the asset's current tags, apply add/remove,
+  // then PATCH the resulting full array. Keeping addTags/removeTags as the
+  // tool's public params (rather than making callers pass a whole array) is
+  // much friendlier for an agent.
+  //
+  // Race window: between the GET and the PATCH, another writer could change
+  // this asset's tags; this PATCH only sends `tags`, so it can't clobber
+  // name/description/isActive, but it can still overwrite a concurrent
+  // tag change with a stale base (last-write-wins on `tags` only). No lock
+  // or version check exists server-side to guard this, and none is added
+  // here — same exposure the dashboard's edit modal already has today.
+  // A failed/missing read (e.g. the asset doesn't exist, or a network/auth
+  // error) throws an ApiError from `api.get`, which propagates as the tool's
+  // error result — same as every other tool in this file that reads before
+  // acting; no special handling is added.
   server.tool(
     "tag_asset",
     "Add or remove tags on an asset. Provide addTags and/or removeTags as arrays.",
@@ -500,9 +533,46 @@ export function registerVisualTools(server: McpServer) {
           content: [{ type: "text" as const, text: "Provide at least one of addTags or removeTags." }],
         };
       }
+      const existing = await api.get<any>(`/api/agent/v1/brands/${id}/assets/${assetId}`);
+      const existingAsset = existing?.asset ?? existing;
+      const currentTags = ((existingAsset?.tags ?? []) as string[]).slice();
+      const removeSet = new Set(removeTags ?? []);
+      const nextTags = currentTags.filter((t) => !removeSet.has(t));
+      for (const t of addTags ?? []) {
+        if (!nextTags.includes(t)) nextTags.push(t);
+      }
+      const data = await api.patch<any>(`/api/agent/v1/brands/${id}/assets/${assetId}`, { tags: nextTags });
+      const a = data?.asset ?? data;
+      return { content: [{ type: "text" as const, text: JSON.stringify(slimAsset(a), null, 2) }] };
+    }
+  );
+
+  // ── Update asset ──────────────────────────────────────────────────────────
+  // Covers the AssetPatchBody fields tag_asset deliberately doesn't touch
+  // (name, description, isActive) — see the comment above tag_asset. Kept as
+  // a separate tool rather than folded into tag_asset, whose name promises
+  // tagging only; this one leaves tags untouched (use tag_asset for those).
+  server.tool(
+    "update_asset",
+    "Update an asset's display name, description, or active status. Does not touch tags — use tag_asset for those. Set isActive:false to deactivate (soft-hide) an asset, true to reactivate it.",
+    {
+      assetId: z.string().describe("Asset ID"),
+      name: z.string().min(1).optional().describe("New display name"),
+      description: z.string().optional().describe("New description"),
+      isActive: z.boolean().optional().describe("false deactivates (soft-hides) the asset, true reactivates it"),
+      brandId: brandOpt,
+    },
+    async ({ assetId, name, description, isActive, brandId }) => {
+      const id = requireBrandId(brandId);
+      if (name === undefined && description === undefined && isActive === undefined) {
+        return {
+          content: [{ type: "text" as const, text: "Provide at least one of name, description, or isActive." }],
+        };
+      }
       const body: Record<string, unknown> = {};
-      if (addTags?.length) body.addTags = addTags;
-      if (removeTags?.length) body.removeTags = removeTags;
+      if (name !== undefined) body.name = name;
+      if (description !== undefined) body.description = description;
+      if (isActive !== undefined) body.isActive = isActive;
       const data = await api.patch<any>(`/api/agent/v1/brands/${id}/assets/${assetId}`, body);
       const a = data?.asset ?? data;
       return { content: [{ type: "text" as const, text: JSON.stringify(slimAsset(a), null, 2) }] };
@@ -543,15 +613,17 @@ export function registerVisualTools(server: McpServer) {
   // ── Suggest assets for post ───────────────────────────────────────────────
   server.tool(
     "suggest_assets_for_post",
-    "Get AI-suggested assets from the brand library that match a given post context or topic.",
+    "Get AI-suggested assets from the brand library that match a given post context or topic. Optionally filter to a single asset type.",
     {
       context: z.string().describe("Post content or topic to find matching assets for"),
+      type: z.enum(["IMAGE", "DOCUMENT", "VIDEO", "LINK", "LOTTIE"]).optional().describe("Restrict suggestions to a single asset type"),
       limit: z.number().int().min(1).max(20).optional().default(5),
       brandId: brandOpt,
     },
-    async ({ context, limit, brandId }) => {
+    async ({ context, type, limit, brandId }) => {
       const id = requireBrandId(brandId);
       const params = new URLSearchParams({ context });
+      if (type) params.set("type", type);
       if (limit) params.set("limit", String(limit));
       const data = await api.get<any>(
         `/api/agent/v1/brands/${id}/assets/suggestions?${params}`

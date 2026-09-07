@@ -99,6 +99,13 @@ export function registerSeoMarketSettingsTools(server: McpServer) {
         "user rather than retrying.",
       "Returns { ok, marketsChanged, resolved }. After this, call seo_estimate_research_cost(language) to " +
         "see the cost for a newly-configured language, then seo_generate_keywords(language) to run it.",
+      "COVERAGE GUARD: a save that would drop a language the brand still has researched keywords in " +
+        "(any non-deleted SeoScoredKeyword) is REJECTED with HTTP 400 and body { error, droppedLanguages }. " +
+        "Omitting `confirmDropLanguages` is the safe default — do this on every normal call. On a 400, " +
+        "`droppedLanguages` names exactly which language(s) would lose coverage; surface that list to the " +
+        "user verbatim and stop. Only call seo_set_market_settings again with `confirmDropLanguages` set to " +
+        "those same codes AFTER the user has explicitly confirmed they want to drop them. Never retry " +
+        "automatically with the 400's `droppedLanguages` on your own judgment — that defeats the guard.",
     ].join(" "),
     {
       markets: z
@@ -106,13 +113,25 @@ export function registerSeoMarketSettingsTools(server: McpServer) {
         .describe(
           "\"global\" to revert to the default (single US/en pull), or 1-3 curated (location, language) pairs."
         ),
+      confirmDropLanguages: z
+        .array(z.string())
+        .optional()
+        .describe(
+          "Explicit, per-call acknowledgement that it's OK to drop coverage for these languages (DataForSEO " +
+            "codes, e.g. \"en\", \"cs\" — NOT BCP-47 like \"pt-BR\"). Omitting this is the safe default and " +
+            "what you should pass on every normal call. Only supply it after a prior call without it returned " +
+            "HTTP 400 with a `droppedLanguages` array AND the user has explicitly confirmed, in this " +
+            "conversation, that those specific languages should be dropped — never fill this in from the 400 " +
+            "response and retry on your own; that is an unconfirmed blind retry, not an acknowledgement, and " +
+            "defeats the guard's purpose."
+        ),
       brandId: brandOpt,
     },
-    async ({ markets, brandId }) => {
+    async ({ markets, confirmDropLanguages, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.put<unknown>(`/api/agent/v1/brands/${id}/seo/market-settings`, {
-        markets,
-      });
+      const body: Record<string, unknown> = { markets };
+      if (confirmDropLanguages !== undefined) body.confirmDropLanguages = confirmDropLanguages;
+      const data = await api.put<unknown>(`/api/agent/v1/brands/${id}/seo/market-settings`, body);
       return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
     }
   );

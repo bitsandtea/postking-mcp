@@ -336,24 +336,46 @@ export function registerPostTools(server: McpServer) {
   // ── List posts ────────────────────────────────────────────────────────────
   server.tool(
     "list_posts",
-    "List recent posts and drafts. Filter by status or platform. Use status='created' to find unscheduled drafts. Returns id+status+scheduledAt by default; use detail='medium' or 'full' for more fields. For a single post use get_post.",
+    [
+      "List recent posts and drafts. Filter by status or platform. Use status='created' to find unscheduled drafts. Returns id+status+scheduledAt by default; use detail='medium' or 'full' for more fields. For a single post use get_post.",
+      "Pagination is offset-based: pass limit and offset. The response includes a `pagination` object ({ total, limit, offset, hasMore }) — keep adding the previous limit to offset while hasMore is true to page through all results.",
+      "from/to filter by when the post is scheduled/published (postAt) — use these for \"posts happening in this window\", e.g. get_calendar-style queries. createdFrom/createdTo filter by when the post row was created (createdAt) — use these for \"posts authored in this window\", independent of when they run. Combine both pairs to scope on both axes at once.",
+      "from/to must be UTC ISO 8601 with a literal 'Z' suffix, e.g. 2026-03-11T09:00:00Z — a numeric offset like +02:00 is rejected. createdFrom/createdTo accept either a 'Z' suffix or a numeric offset, e.g. 2026-03-11T09:00:00+02:00.",
+    ].join(" "),
     {
       status: z.enum(["created", "approved", "scheduled", "posted", "failed", "cancelled", "disapproved"]).optional(),
       platform: z.enum(PLATFORMS).optional(),
       limit: z.number().min(1).max(100).optional().default(10),
+      offset: z.number().int().min(0).optional().describe("Row offset for pagination. Start at 0 (default) and add the previous call's limit each time; stop when the response's pagination.hasMore is false."),
+      from: z.string().datetime().optional().describe("Only posts scheduled/published at or after this UTC datetime (postAt), e.g. 2026-03-11T00:00:00Z."),
+      to: z.string().datetime().optional().describe("Only posts scheduled/published at or before this UTC datetime (postAt), e.g. 2026-03-18T00:00:00Z."),
+      createdFrom: z.string().datetime({ offset: true }).optional().describe("Only posts created at or after this datetime (createdAt — when the row was made, not when it runs). ISO 8601 with a 'Z' suffix or numeric offset, e.g. 2026-03-11T00:00:00Z or 2026-03-11T00:00:00+02:00."),
+      createdTo: z.string().datetime({ offset: true }).optional().describe("Only posts created at or before this datetime (createdAt — when the row was made, not when it runs). ISO 8601 with a 'Z' suffix or numeric offset."),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
       detail: detailParam("short"),
     },
-    async ({ status, platform, limit, brandId, detail }) => {
+    async ({ status, platform, limit, offset, from, to, createdFrom, createdTo, brandId, detail }) => {
       const id = requireBrandId(brandId);
       const params = new URLSearchParams();
       if (status) params.set("status", status);
       if (platform) params.set("platform", platform);
       if (limit) params.set("limit", String(limit));
+      if (offset !== undefined) params.set("offset", String(offset));
+      if (from) params.set("from", from);
+      if (to) params.set("to", to);
+      if (createdFrom) params.set("createdFrom", createdFrom);
+      if (createdTo) params.set("createdTo", createdTo);
       const qs = params.toString() ? `?${params}` : "";
       const data = await api.get<unknown>(`/api/agent/v1/brands/${id}/posts${qs}`);
       const posts = unwrapPosts(data);
-      const text = JSON.stringify({ count: posts.length, detail, posts: projectList(detail, posts, postProjector) });
+      const raw = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
+      const pagination = raw.pagination && typeof raw.pagination === "object" ? raw.pagination : undefined;
+      const text = JSON.stringify({
+        count: posts.length,
+        detail,
+        ...(pagination ? { pagination } : {}),
+        posts: projectList(detail, posts, postProjector),
+      });
       return {
         content: [{ type: "text" as const, text }],
       };

@@ -5,6 +5,7 @@ import { requireBrandId } from "../../state.js";
 import { detailParam, project, projectList, type Projector } from "../../detail.js";
 import { brandDashboardUrl } from "../../links.js";
 import { etaFor } from "../../etas.js";
+import { SUPPORTED_LANGUAGE_CODES, LANGUAGE_CODE_LIST_TEXT, languageParam } from "../../languages.js";
 
 /**
  * SEO / GEO flow — brief review/approval, custom (one-off) brief creation, and
@@ -147,6 +148,7 @@ export function registerSeoBriefTools(server: McpServer) {
       "Use detail=\"medium\" for compact summary (clusterId, clusterName, briefSummary, sidePageUrl, generationError, blogArticleId, generatedAt, approvedAt) or detail=\"full\" for raw briefs including briefData outline.",
       "To inspect a single brief's full outline, call seo_get_brief with detail=\"full\".",
       "Filters: status (CSV — e.g. 'pending_review,approved'), type (CSV — e.g. 'blog,comparison,landing'), clusterId, roadmapItemId, q (cluster-name fuzzy match), limit (default 50, max 200), cursor.",
+      `Multilingual brands: pass \`language\` to scope to briefs whose roadmap item is in ONE of the brand's languages (${LANGUAGE_CODE_LIST_TEXT}). Omitting it returns briefs in EVERY language mixed together — always pass it once a brand has more than one configured language, otherwise counts and titles will look wrong for that language.`,
       "Response shape: { count, total, nextCursor, statusBreakdown, detail, briefs: [...] }.",
     ].join(" "),
     {
@@ -161,12 +163,18 @@ export function registerSeoBriefTools(server: McpServer) {
       clusterId: z.string().optional().describe("Filter to briefs under one cluster"),
       roadmapItemId: z.string().optional().describe("Filter to briefs for a single roadmap item"),
       q: z.string().optional().describe("Fuzzy match on cluster name"),
+      language: z
+        .enum(SUPPORTED_LANGUAGE_CODES)
+        .optional()
+        .describe(
+          `Filter to briefs whose roadmap item is in this content language (${LANGUAGE_CODE_LIST_TEXT}). Omit to return briefs in every language mixed together.`
+        ),
       limit: z.number().int().min(1).max(200).optional().describe("Page size (default 50)"),
       cursor: z.string().optional().describe("Pagination cursor from a previous page"),
       detail: detailParam("short"),
       brandId: brandOpt,
     },
-    async ({ status, type, clusterId, roadmapItemId, q, limit, cursor, detail, brandId }) => {
+    async ({ status, type, clusterId, roadmapItemId, q, language, limit, cursor, detail, brandId }) => {
       const id = requireBrandId(brandId);
       const qs = new URLSearchParams();
       if (status) qs.set("status", status);
@@ -174,6 +182,7 @@ export function registerSeoBriefTools(server: McpServer) {
       if (clusterId) qs.set("clusterId", clusterId);
       if (roadmapItemId) qs.set("roadmapItemId", roadmapItemId);
       if (q) qs.set("q", q);
+      if (language) qs.set("language", language);
       if (limit !== undefined) qs.set("limit", String(limit));
       if (cursor) qs.set("cursor", cursor);
       const suffix = qs.toString() ? `?${qs.toString()}` : "";
@@ -274,9 +283,15 @@ export function registerSeoBriefTools(server: McpServer) {
         .string()
         .optional()
         .describe("Existing KeywordCluster ID (from seo_create_cluster / seo_list_clusters) to add this brief into. Omit for the legacy throwaway-cluster behavior."),
+      languageCode: z
+        .string()
+        .optional()
+        .describe(
+          "DataForSEO-vocabulary language code (e.g. \"en\", \"cs\" — NOT a BCP-47 code) for a NEW synthetic cluster, only meaningful when clusterId is omitted. Ignored when clusterId is supplied — an existing cluster's language is already fixed by its members. Omit to use the brand's default SEO research language."
+        ),
       brandId: brandOpt,
     },
-    async ({ pillarKeyword, supportingKeywords, type, intent, research, selectedCompetitors, clusterId, brandId }) => {
+    async ({ pillarKeyword, supportingKeywords, type, intent, research, selectedCompetitors, clusterId, languageCode, brandId }) => {
       const id = requireBrandId(brandId);
       const body: Record<string, unknown> = {
         pillarKeyword,
@@ -287,6 +302,7 @@ export function registerSeoBriefTools(server: McpServer) {
       if (research !== undefined) body.research = research;
       if (selectedCompetitors !== undefined) body.selectedCompetitors = selectedCompetitors;
       if (clusterId !== undefined) body.clusterId = clusterId;
+      if (languageCode !== undefined) body.languageCode = languageCode;
       const data = await api.post<unknown>(
         `/api/agent/v1/brands/${id}/seo/briefs/generate-one`,
         body
@@ -341,9 +357,17 @@ export function registerSeoBriefTools(server: McpServer) {
         .enum(["current", "published"])
         .optional()
         .describe("Landing-brief approval: which parent LP draft to extend from."),
+      verify: z
+        .boolean()
+        .optional()
+        .describe(
+          "When approving an article-type brief, override the brand's default automatic verification pass (brand.brandSettings.seoVerification.enabled). " +
+            "When on (the brand default unless disabled), the written article runs through an automated fact/quality check and — if it fails — one repair attempt before finalizing; a brief that still fails after repair is flagged needs_human_review instead of drafted. " +
+            "No extra credits — it costs additional generation time (one or two extra LLM passes), not credit balance. Pass false to skip the check and always finalize as first written."
+        ),
       brandId: brandOpt,
     },
-    async ({ briefId, briefData, status, generateHeroImage, voiceProfileId, attachedAssetId, parentSource, brandId }) => {
+    async ({ briefId, briefData, status, generateHeroImage, voiceProfileId, attachedAssetId, parentSource, verify, brandId }) => {
       const id = requireBrandId(brandId);
       const body: Record<string, unknown> = {};
       if (briefData !== undefined) body.briefData = briefData;
@@ -352,6 +376,7 @@ export function registerSeoBriefTools(server: McpServer) {
       if (voiceProfileId !== undefined) body.voiceProfileId = voiceProfileId;
       if (attachedAssetId !== undefined) body.attachedAssetId = attachedAssetId;
       if (parentSource !== undefined) body.parentSource = parentSource;
+      if (verify !== undefined) body.verify = verify;
       const data = await api.patch<unknown>(
         `/api/agent/v1/brands/${id}/seo/briefs/${briefId}`,
         body
@@ -405,13 +430,18 @@ export function registerSeoBriefTools(server: McpServer) {
     ].join(" "),
     {
       briefId: z.string().describe("Brief ID from seo_list_briefs"),
+      language: languageParam(
+        "Wins over the brief's cluster's own language for this regeneration. Omit to regenerate in the cluster's existing language."
+      ),
       brandId: brandOpt,
     },
-    async ({ briefId, brandId }) => {
+    async ({ briefId, language, brandId }) => {
       const id = requireBrandId(brandId);
+      const body: Record<string, unknown> = {};
+      if (language !== undefined) body.language = language;
       const data = await api.post<unknown>(
         `/api/agent/v1/brands/${id}/seo/briefs/${briefId}/regenerate`,
-        {}
+        body
       );
       return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
     }
@@ -426,21 +456,46 @@ export function registerSeoBriefTools(server: McpServer) {
       `Typically takes ${etaFor("seo_article_generate")}.`,
       "Precondition: the brief for this roadmap item must be in status `approved`. If the brief is still `drafted` or `pending_review`, review with `seo_list_briefs` / `seo_get_brief`, refine with `seo_edit_brief`, then approve with `seo_approve_briefs` (which will auto-generate).",
       "Returns an articleId that can be reviewed, edited, or published.",
+      "generateHeroImage, attachedAssetId, verify, and language only apply to article (blog) briefs — for comparison/landing-type roadmap items the server silently ignores all four and generates the page through the comparison/landing pipeline instead.",
     ].join(" "),
     {
       roadmapItemId: z.string().describe("Roadmap item ID from seo_list_roadmap"),
-      count: z.number().int().min(1).max(10).optional().default(1),
       voiceProfileId: z
         .string()
         .optional()
         .describe("Voice profile ID to write in a specific style"),
+      generateHeroImage: z
+        .boolean()
+        .optional()
+        .describe("Also generate a hero image for the article (extra credits). Article-type briefs only."),
+      attachedAssetId: z
+        .string()
+        .optional()
+        .describe("Attach an existing asset to the article instead of generating a hero image. Article-type briefs only."),
+      verify: z
+        .boolean()
+        .optional()
+        .describe(
+          "Override the brand's default automatic verification pass (brand.brandSettings.seoVerification.enabled). " +
+            "When on (the brand default unless disabled), the written article runs through an automated fact/quality check and — if it fails — one repair attempt before finalizing; a brief that still fails after repair is flagged needs_human_review instead of drafted. " +
+            "No extra credits — it costs additional generation time (one or two extra LLM passes), not credit balance. Pass false to skip the check and always finalize as first written."
+        ),
+      language: languageParam(
+        "Wins over the roadmap item's own language for this article. Omit to write in the brief's existing language."
+      ),
       brandId: brandOpt,
     },
-    async ({ roadmapItemId, count, voiceProfileId, brandId }) => {
+    async ({ roadmapItemId, voiceProfileId, generateHeroImage, attachedAssetId, verify, language, brandId }) => {
       const id = requireBrandId(brandId);
+      const body: Record<string, unknown> = {};
+      if (voiceProfileId !== undefined) body.voiceProfileId = voiceProfileId;
+      if (generateHeroImage !== undefined) body.generateHeroImage = generateHeroImage;
+      if (attachedAssetId !== undefined) body.attachedAssetId = attachedAssetId;
+      if (verify !== undefined) body.verify = verify;
+      if (language !== undefined) body.language = language;
       const data = await api.post<unknown>(
         `/api/agent/v1/brands/${id}/seo/roadmap/${roadmapItemId}/write`,
-        { count, voiceProfileId }
+        body
       );
       return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
     }

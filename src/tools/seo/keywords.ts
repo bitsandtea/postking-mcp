@@ -65,16 +65,25 @@ export function registerSeoKeywordTools(server: McpServer) {
     [
       "Step 1 of the SEO / GEO flow. Add 3–10 seed keywords that describe what the brand wants to rank for.",
       "After this, call seo_generate_keywords to expand them into the full keyword universe.",
+      `Multilingual brands: pass \`language\` to explicitly scope these seed keywords to one of the brand's languages (${LANGUAGE_CODE_LIST_TEXT}). Omit to use the brand's default SEO research language.`,
     ].join(" "),
     {
       seeds: z.array(z.string()).min(1).describe("Seed keywords or topics"),
+      language: z
+        .enum(SUPPORTED_LANGUAGE_CODES)
+        .optional()
+        .describe(
+          `Explicitly scope these seed keywords to one of the brand's languages (${LANGUAGE_CODE_LIST_TEXT}). Omit to use the brand's default SEO research language.`
+        ),
       brandId: brandOpt,
     },
-    async ({ seeds, brandId }) => {
+    async ({ seeds, language, brandId }) => {
       const id = requireBrandId(brandId);
+      const body: Record<string, unknown> = { seeds };
+      if (language !== undefined) body.language = language;
       const data = await api.post<unknown>(
         `/api/agent/v1/brands/${id}/seo/seeds`,
-        { seeds }
+        body
       );
       return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
     }

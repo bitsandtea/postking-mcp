@@ -187,9 +187,26 @@ export function registerBlogTools(server: McpServer) {
   );
 
   // ── Update publication ────────────────────────────────────────────────────
+  // Mirrors Blog.ctaDestinations' write-path validation (types/blog-cta-destinations.ts,
+  // MAX_CTA_DESTINATIONS/MAX_CTA_DESTINATION_LABEL/MAX_CTA_DESTINATION_DESCRIPTION) —
+  // every field is required per entry; this is a full-replace ordered list, not a patch.
+  const ctaDestinationShape = z.object({
+    id: z.string().min(1).describe("Client-generatable stable id (cuid2-ish) — keep the same id across edits/reorders of an existing destination; make up a new one for a new destination."),
+    label: z.string().min(1).max(80).describe("Short human name, e.g. \"Book a demo\" — also the target name the CTA generator's copy is written around."),
+    url: z.string().min(1).describe("Absolute http(s) URL, or a site-relative path starting with \"/\". Protocol-relative (\"//host\") and non-http schemes are rejected."),
+    description: z.string().min(1).max(400).describe("What this destination is/does and who it's for — this is the text the CTA generator's relevance pick matches against."),
+    tier: z.enum(["primary", "secondary", "tertiary"]).describe("How hard to push this destination. \"primary\" is the money link and owns the end-anchored CTA; \"secondary\" is preferred for in-article section CTAs; \"tertiary\" is used sparingly, as the last resort on both selection ladders."),
+    enabled: z.boolean().describe("Disabled entries are kept for later but never picked by the generator."),
+  }).strict();
+  const ctaSettingsShape = z.object({
+    defaultCtaCount: z.number().int().min(0).max(6).optional().describe("0-6. How many CTAs to auto-generate per article at persist time."),
+    autoGenerate: z.boolean().optional().describe("Whether persist-time auto-CTA-generation runs at all."),
+    sectionCtaStyle: z.enum(["strong", "light"]).optional().describe("Visual style stamped onto generated after_h2 section CTAs. The end-anchored CTA (when one is generated) is always \"strong\" regardless of this setting. Server default \"light\"."),
+  }).strict().describe("Any omitted sub-field keeps its current/default value — this is a merge, not a full replace, of the settings object itself.");
+
   server.tool(
     "update_publication",
-    "Update an existing blog publication's metadata — title, description, domain/routing config, or layout. Only the fields you pass are changed (partial update). Distinct from create_publication (which creates a new one). publicationId comes from list_publications or list_blogs.",
+    "Update an existing blog publication's metadata — title, description, domain/routing config, layout, or CTA configuration. Only the fields you pass are changed (partial update). Distinct from create_publication (which creates a new one). publicationId comes from list_publications or list_blogs.",
     {
       publicationId: z.string().describe("Blog publication ID (from list_publications or list_blogs)"),
       title: z.string().optional(),
@@ -198,9 +215,23 @@ export function registerBlogTools(server: McpServer) {
       routingType: z.string().optional(),
       pathPrefix: z.string().optional(),
       layout: z.string().optional(),
+      redirectLegacyBlogPath: z
+        .boolean()
+        .optional()
+        .describe("Only meaningful when this publication is on \"subdomain\" routing: when true, requests to the old <apex-domain>/blog/* path redirect to the new blog.<apex-domain>/* location instead of 404ing. Ignored for path/root routing."),
+      ctaSettings: ctaSettingsShape
+        .nullable()
+        .optional()
+        .describe("Publication-level defaults for auto-generated CTAs (how many per article, whether auto-generation runs at all, and the visual style of in-article section CTAs). Pass null to reset to the server defaults (defaultCtaCount: 1, autoGenerate: true, sectionCtaStyle: \"light\")."),
+      ctaDestinations: z
+        .array(ctaDestinationShape)
+        .max(24)
+        .nullable()
+        .optional()
+        .describe("Full-replace ordered list (max 24) of hand-curated CTA link destinations the generator rotates through — for publications whose real conversion pages aren't PostKing side pages (e.g. externally-hosted/synced blogs). Pass null or [] to clear the pool, which puts the publication back on automatic side-page matching."),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ publicationId, title, description, domainId, routingType, pathPrefix, layout, brandId }) => {
+    async ({ publicationId, title, description, domainId, routingType, pathPrefix, layout, redirectLegacyBlogPath, ctaSettings, ctaDestinations, brandId }) => {
       const id = requireBrandId(brandId);
       const body: Record<string, unknown> = {};
       if (title !== undefined) body.title = title;
@@ -209,15 +240,18 @@ export function registerBlogTools(server: McpServer) {
       if (routingType !== undefined) body.routingType = routingType;
       if (pathPrefix !== undefined) body.pathPrefix = pathPrefix;
       if (layout !== undefined) body.layout = layout;
+      if (redirectLegacyBlogPath !== undefined) body.redirectLegacyBlogPath = redirectLegacyBlogPath;
+      if (ctaSettings !== undefined) body.ctaSettings = ctaSettings;
+      if (ctaDestinations !== undefined) body.ctaDestinations = ctaDestinations;
       if (Object.keys(body).length === 0) {
         return {
-          content: [{ type: "text" as const, text: "No fields to update. Pass at least one of: title, description, domainId, routingType, pathPrefix, layout." }],
+          content: [{ type: "text" as const, text: "No fields to update. Pass at least one of: title, description, domainId, routingType, pathPrefix, layout, redirectLegacyBlogPath, ctaSettings, ctaDestinations." }],
         };
       }
       const data = await api.patch<any>(`/api/agent/v1/brands/${id}/publications/${publicationId}`, body);
       const pub = data?.publication ?? data;
       return {
-        content: [{ type: "text" as const, text: JSON.stringify({ id: pub?.id ?? publicationId, title: pub?.title, description: pub?.description, updated: Object.keys(body) }, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify({ id: pub?.id ?? publicationId, title: pub?.title, description: pub?.description, redirectLegacyBlogPath: pub?.redirectLegacyBlogPath ?? null, ctaSettings: pub?.ctaSettings ?? null, ctaDestinations: pub?.ctaDestinations ?? null, updated: Object.keys(body) }, null, 2) }],
       };
     }
   );
@@ -401,12 +435,20 @@ export function registerBlogTools(server: McpServer) {
       articleId: z.string().describe("Blog article ID"),
       title: z.string().optional(),
       content: z.string().optional().describe("Full post body (HTML or markdown). Do not put CTA content here — use the `cta` field."),
+      description: z.string().optional().describe("Article summary/description — distinct from `excerpt` and `metaDescription` (used as a fallback for both elsewhere, and as the summary field on external syncs like Webflow)."),
       excerpt: z.string().optional(),
       status: z.enum(["draft", "published"]).optional().describe("'published' makes it live on your blog"),
       metaTitle: z.string().optional(),
       metaDescription: z.string().optional(),
+      humanize: z.boolean().optional().describe("Run the anti-slop humanization pass (dash normalization, banned-phrase replacement, and the de-slop critic) over the supplied content before saving."),
       authorId: z.string().optional().describe("Author ID (from list_blog_authors)"),
       categoryId: z.string().optional().describe("Category ID (from list_blog_categories)"),
+      featured: z.boolean().optional().describe("Toggle the article's \"featured\" flag."),
+      authorityLinkPlacement: z
+        .enum(["inline", "footer"])
+        .nullable()
+        .optional()
+        .describe("Per-article override of where this article's authority links render: \"inline\" (woven into the prose) or \"footer\" (end-of-article list). null clears the override back to inheriting the brand-level default (itself defaulting to \"footer\")."),
       featuredImageUrl: z.string().optional().describe("The header/featured image — pass an image URL, a brand-asset URL (the `fileUrl` from list_assets — an absolute CDN URL, e.g. https://cdn.postking.app/assets/<brandId>/...), or a data: URI; bare legacy /assets/... paths are still accepted as input; external URLs are auto-downloaded when the article is published; pass an empty string to remove the current image."),
       featuredImageAlt: z.string().optional().describe("Alt text for the featured/header image"),
       featuredImageDescription: z.string().optional().describe("Description/caption for the featured/header image"),
@@ -456,17 +498,21 @@ export function registerBlogTools(server: McpServer) {
         ),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ articleId, title, content, excerpt, status, metaTitle, metaDescription, authorId, categoryId, featuredImageUrl, featuredImageAlt, featuredImageDescription, cta, sidePageInfo, slug, publicationId, updateReferences, brandId }) => {
+    async ({ articleId, title, content, description, excerpt, status, metaTitle, metaDescription, humanize, authorId, categoryId, featured, authorityLinkPlacement, featuredImageUrl, featuredImageAlt, featuredImageDescription, cta, sidePageInfo, slug, publicationId, updateReferences, brandId }) => {
       const id = requireBrandId(brandId);
       const data = await api.patch<any>(`/api/agent/v1/brands/${id}/blogs/${articleId}`, {
         postTitle: title,
         postText: content,
+        postDescription: description,
         postExcerpt: excerpt,
         status,
         postMetaTitle: metaTitle,
         postMetaDescription: metaDescription,
+        humanize,
         authorId,
         categoryId,
+        postFeatured: featured,
+        authorityLinkPlacement,
         postImage: featuredImageUrl,
         postImageAlt: featuredImageAlt,
         postImageDesc: featuredImageDescription,
@@ -689,19 +735,33 @@ export function registerBlogTools(server: McpServer) {
   // ── Create blog author ────────────────────────────────────────────────────
   server.tool(
     "create_blog_author",
-    "Create a new author for blog articles. Returns an authorId that can be used in generate_blog_post and update_blog_article.",
+    "Create a new author for blog articles. Returns an authorId that can be used in generate_blog_post and update_blog_article. Only firstName/lastName are required — pass the bio/social fields too so bylines aren't name-only.",
     {
       firstName: z.string().describe("Author first name"),
       lastName: z.string().describe("Author last name"),
       email: z.string().optional().describe("Author email address"),
+      url: z.string().optional().describe("Author's personal/portfolio URL (byline link)."),
+      about: z.string().optional().describe("Short author bio shown on their byline/archive page."),
+      linkedin: z.string().optional().describe("LinkedIn profile URL."),
+      twitter: z.string().optional().describe("Twitter/X profile URL."),
+      youtube: z.string().optional().describe("YouTube channel URL."),
+      website: z.string().optional().describe("Author's website URL (distinct from the personal/portfolio `url` field)."),
+      avatar: z.string().optional().describe("Avatar image URL for the author's byline."),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ firstName, lastName, email, brandId }) => {
+    async ({ firstName, lastName, email, url, about, linkedin, twitter, youtube, website, avatar, brandId }) => {
       const id = requireBrandId(brandId);
       const data = await api.post<any>(`/api/agent/v1/brands/${id}/authors`, {
         authorFirstName: firstName,
         authorLastName: lastName,
         authorEmail: email,
+        authorUrl: url,
+        authorAbout: about,
+        authorLinkedin: linkedin,
+        authorTwitter: twitter,
+        authorYoutube: youtube,
+        authorWebsite: website,
+        authorAvatar: avatar,
       });
       return {
         content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],

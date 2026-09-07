@@ -209,9 +209,15 @@ export function registerBrandTruthTools(server: McpServer) {
       type: z.enum(TRUTH_TYPES).optional().describe("Reclassify the truth type."),
       personaScope: z.enum(PERSONA_SCOPES).optional().describe("Updated persona scope."),
       pinned: z.boolean().optional().describe("Pin (true) or unpin (false) this truth."),
+      humanize: z
+        .boolean()
+        .optional()
+        .describe(
+          "Run the anti-slop humanization pass (dash normalization, banned-phrase replacement, and the de-slop critic) over name/description/content before saving. No credit cost, but the critic step is a synchronous LLM call that adds a few seconds of latency to this request. Only applies when at least one of those fields is also being edited."
+        ),
       brandId: brandOpt,
     },
-    async ({ id: entryId, name, description, content, tags, type, personaScope, pinned, brandId }) => {
+    async ({ id: entryId, name, description, content, tags, type, personaScope, pinned, humanize, brandId }) => {
       const id = requireBrandId(brandId);
       const body: Record<string, unknown> = {};
       if (name !== undefined) body.name = name;
@@ -221,6 +227,7 @@ export function registerBrandTruthTools(server: McpServer) {
       if (type !== undefined) body.type = type;
       if (personaScope !== undefined) body.personaScope = personaScope;
       if (pinned !== undefined) body.pinned = pinned;
+      if (humanize !== undefined) body.humanize = humanize;
       const data = await api.patch<unknown>(`/api/agent/v1/brands/${id}/brand-truth/${entryId}`, body);
       return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
     }

@@ -71,6 +71,7 @@ export function registerSeoRoadmapTools(server: McpServer) {
       "Step 6. Turn one or more clusters into a prioritized content roadmap of blog articles to write.",
       "Pass `clusterId` (single) or `clusterIds` (array of cluster IDs from seo_list_clusters) — omit both to roadmap all clusters.",
       "After this, call seo_write_article.",
+      "Pass `languageCode` to scope brief generation to one language when clusterIds is omitted or spans more than one cluster — ignored for a single explicit clusterId, whose own language wins. Omit to use the brand's first configured SEO market language. This WRITES brief/roadmap rows stamped with that language — get it wrong and you mis-stamp them, not just filter a read.",
     ].join(" "),
     {
       clusterId: z
@@ -81,9 +82,15 @@ export function registerSeoRoadmapTools(server: McpServer) {
         .array(z.string())
         .optional()
         .describe("Array of cluster IDs from seo_list_clusters"),
+      languageCode: z
+        .string()
+        .optional()
+        .describe(
+          "DataForSEO-vocabulary language code scoping brief generation to one language, when clusterIds is omitted or spans more than one cluster (ignored for a single explicit clusterId — re-derived from that cluster's own language). Omit to use the brand's first configured SEO market language."
+        ),
       brandId: brandOpt,
     },
-    async ({ clusterId, clusterIds, brandId }) => {
+    async ({ clusterId, clusterIds, languageCode, brandId }) => {
       const id = requireBrandId(brandId);
       const merged = [
         ...(clusterIds ?? []),
@@ -91,6 +98,7 @@ export function registerSeoRoadmapTools(server: McpServer) {
       ];
       const body: Record<string, unknown> = {};
       if (merged.length > 0) body.clusterIds = merged;
+      if (languageCode !== undefined) body.languageCode = languageCode;
       const data = await api.post<unknown>(
         `/api/agent/v1/brands/${id}/seo/roadmap/generate`,
         body
@@ -163,23 +171,28 @@ export function registerSeoRoadmapTools(server: McpServer) {
   // ── Roadmap item — edit ───────────────────────────────────────────────────
   server.tool(
     "seo_roadmap_edit",
-    "Edit a roadmap item — update its title, status (suggested|in_progress|completed|ignored), or priority.",
+    [
+      "Edit a roadmap item's status. Pass EITHER `action` (a shortcut) OR `status` directly — the server requires at least one.",
+      "`action` shortcuts: \"ignore\" (dismiss the suggestion, status -> ignored, stamps ignoredAt), \"restore\" (bring an ignored item back, status -> suggested, clears ignoredAt), \"start\" (status -> in_progress, clears ignoredAt/completedAt), \"complete\" (status -> completed, stamps completedAt).",
+      "There is no title or priority field on this endpoint — the roadmap item's title and priority cannot be edited via this tool (or the underlying server route at all).",
+    ].join(" "),
     {
       itemId: z.string().describe("Roadmap item ID from seo_list_roadmap"),
-      title: z.string().optional().describe("New title for the roadmap item"),
+      action: z
+        .enum(["ignore", "restore", "start", "complete"])
+        .optional()
+        .describe("Shortcut status transition: ignore -> ignored, restore -> suggested, start -> in_progress, complete -> completed."),
       status: z
         .enum(["suggested", "in_progress", "completed", "ignored"])
         .optional()
-        .describe("New status"),
-      priority: z.number().int().optional().describe("Priority integer (lower = higher priority)"),
+        .describe("Set the status directly. Omit if using `action` instead."),
       brandId: brandOpt,
     },
-    async ({ itemId, title, status, priority, brandId }) => {
+    async ({ itemId, action, status, brandId }) => {
       const id = requireBrandId(brandId);
       const body: Record<string, unknown> = {};
-      if (title !== undefined) body.title = title;
+      if (action !== undefined) body.action = action;
       if (status !== undefined) body.status = status;
-      if (priority !== undefined) body.priority = priority;
       const data = await api.patch<unknown>(
         `/api/agent/v1/brands/${id}/seo/roadmap/${itemId}`,
         body

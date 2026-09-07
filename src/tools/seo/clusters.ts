@@ -4,6 +4,7 @@ import { api, ApiError } from "../../client.js";
 import { requireBrandId } from "../../state.js";
 import { detailParam, truncate, projectList, type Projector } from "../../detail.js";
 import { etaFor } from "../../etas.js";
+import { SUPPORTED_LANGUAGE_CODES, LANGUAGE_CODE_LIST_TEXT } from "../../languages.js";
 
 /**
  * SEO / GEO flow — cluster generation, review, and manual cluster creation.
@@ -66,13 +67,24 @@ export function registerSeoClusterTools(server: McpServer) {
       `Typically takes ${etaFor("seo_cluster_generate")}.`,
       "Returns `{operationId, status}` — Poll `get_job` with the operationId until `state` is `completed` (or `failed`/`partially_failed`/`cancelled` on error).",
       "After completion, call seo_list_clusters to pick a target, then seo_generate_roadmap.",
+      "Pass `languageCode` to scope this run to one language; omit to use the brand's first configured SEO market language. This WRITES new cluster rows stamped with that language — get it wrong and you mis-stamp clusters, not just filter a read.",
     ].join(" "),
-    { brandId: brandOpt },
-    async ({ brandId }) => {
+    {
+      languageCode: z
+        .string()
+        .optional()
+        .describe(
+          "DataForSEO-vocabulary language code to scope this cluster-generation run to (e.g. \"en\", \"cs\"). Omit to use the brand's first configured SEO market language."
+        ),
+      brandId: brandOpt,
+    },
+    async ({ languageCode, brandId }) => {
       const id = requireBrandId(brandId);
+      const body: Record<string, unknown> = {};
+      if (languageCode !== undefined) body.languageCode = languageCode;
       const data = await api.post<unknown>(
         `/api/agent/v1/brands/${id}/seo/clusters/generate`,
-        {}
+        body
       );
       return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
     }
@@ -85,18 +97,26 @@ export function registerSeoClusterTools(server: McpServer) {
       "Create a real, named SEO cluster by hand — bypasses the auto-clustering pipeline entirely (no LLM call). The cluster starts empty; use seo_create_custom_brief with the returned `id` as `clusterId` to add its first brief.",
       "Manual clusters are tagged `origin: \"manual\"` so the dashboard can distinguish them from pipeline-generated clusters, and are created already `approved` (no separate approval step needed).",
       "Cluster names must be unique per brand — if the name is already taken, this returns a clear `cluster_name_taken` error instead of creating a duplicate; pick a different name or reuse the existing cluster via seo_list_clusters.",
+      "Pass `languageCode` to stamp the new cluster with a language; omit to use the brand's first configured SEO market language. Get this right — a wrong value creates a mis-stamped cluster row, not just a filtered read.",
     ].join(" "),
     {
       name: z.string().trim().min(1).max(200).describe("Cluster name (must be unique for this brand)"),
       pillarKeyword: z.string().trim().min(1).optional().describe("Optional pillar keyword for the cluster"),
       description: z.string().trim().min(1).max(2000).optional().describe("Optional description"),
+      languageCode: z
+        .string()
+        .optional()
+        .describe(
+          "DataForSEO-vocabulary language code for the new cluster (e.g. \"en\", \"cs\"). Omit to use the brand's first configured SEO market language."
+        ),
       brandId: brandOpt,
     },
-    async ({ name, pillarKeyword, description, brandId }) => {
+    async ({ name, pillarKeyword, description, languageCode, brandId }) => {
       const id = requireBrandId(brandId);
       const body: Record<string, unknown> = { name };
       if (pillarKeyword !== undefined) body.pillarKeyword = pillarKeyword;
       if (description !== undefined) body.description = description;
+      if (languageCode !== undefined) body.languageCode = languageCode;
       try {
         const data = await api.post<Record<string, unknown>>(
           `/api/agent/v1/brands/${id}/seo/clusters`,
@@ -235,6 +255,7 @@ export function registerSeoClusterTools(server: McpServer) {
       "Use detail=\"medium\" for the full compact summary (pillarKeyword, briefGenerationStatus, briefCount, keywordCount, topKeywords, firstBriefId, description, productFit, relevanceScore) or detail=\"full\" for raw cluster objects.",
       "Full keyword detail (keywordsMeta, contentMix, briefAssignments) is intentionally omitted at short/medium to keep context small — use cluster IDs with approve/reject tools directly.",
       "Supports server-side filtering: status (CSV of pending_review/approved/rejected), productFit (core/adjacent/out_of_scope), archetype (competitor), origin (CSV of pipeline/manual), q (text search over name/description/pillarKeyword).",
+      `Multilingual brands: pass \`language\` (${LANGUAGE_CODE_LIST_TEXT}) to filter to one language's clusters; omit to see every configured language's clusters mixed together.`,
     ].join(" "),
     {
       detail: detailParam("short"),
@@ -243,9 +264,15 @@ export function registerSeoClusterTools(server: McpServer) {
       archetype: z.enum(["competitor"]).optional().describe("Filter by cluster archetype"),
       origin: z.string().optional().describe("CSV of origins to filter by (pipeline, manual)"),
       q: z.string().optional().describe("Text search over cluster name, description, and pillarKeyword"),
+      language: z
+        .enum(SUPPORTED_LANGUAGE_CODES)
+        .optional()
+        .describe(
+          `Filter to clusters in this content language (${LANGUAGE_CODE_LIST_TEXT}). Omit to see every configured language's clusters mixed together.`
+        ),
       brandId: brandOpt,
     },
-    async ({ detail, status, productFit, archetype, origin, q, brandId }) => {
+    async ({ detail, status, productFit, archetype, origin, q, language, brandId }) => {
       const id = requireBrandId(brandId);
       const params = new URLSearchParams();
       if (status !== undefined) params.set("status", status);
@@ -253,6 +280,7 @@ export function registerSeoClusterTools(server: McpServer) {
       if (archetype !== undefined) params.set("archetype", archetype);
       if (origin !== undefined) params.set("origin", origin);
       if (q !== undefined) params.set("q", q);
+      if (language !== undefined) params.set("language", language);
       const qs = params.toString();
       const data = await api.get<unknown>(
         `/api/agent/v1/brands/${id}/seo/clusters${qs ? `?${qs}` : ""}`

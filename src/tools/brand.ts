@@ -9,6 +9,7 @@ import {
   LANGUAGE_LIST_TEXT,
   SUPPORTED_LANGUAGES,
   SUPPORTED_LANGUAGE_CODES,
+  languageParam,
 } from "../languages.js";
 
 function slimBrand(b: any) {
@@ -103,9 +104,25 @@ export function registerBrandTools(server: McpServer) {
       audience: z.string().optional().describe("Target audience description"),
       website: z.string().url().optional().describe("Website URL"),
       description: z.string().optional().describe("Brand description (required if no website)"),
+      brandType: z
+        .enum(["personal", "business"])
+        .optional()
+        .describe(
+          "Whether this brand represents a person or a company. Affects tone/voice defaults used in generation. Defaults to 'business' server-side if omitted."
+        ),
     },
-    async (args) => {
-      const data = await api.post<{ brand?: { id?: string }; id?: string }>("/api/agent/v1/brands", args);
+    async ({ name, tone, audience, website, description, brandType }) => {
+      // The server field is `websiteUrl` (src/agent/schemas/brands.ts
+      // BrandCreateBody) — `website` is kept as the tool's public param name
+      // since renaming it would break existing callers.
+      const data = await api.post<{ brand?: { id?: string }; id?: string }>("/api/agent/v1/brands", {
+        name,
+        tone,
+        audience,
+        websiteUrl: website,
+        description,
+        brandType,
+      });
       const brandId = data.brand?.id ?? data.id;
       if (brandId) setActiveBrandId(brandId);
       return {
@@ -507,15 +524,17 @@ export function registerBrandTools(server: McpServer) {
       count: z.number().min(1).max(20).optional().default(5).describe("Number of themes to generate"),
       instructions: z.string().optional().describe("Custom instructions, e.g. 'Focus on startup growth'"),
       input: z.string().optional().describe("Source text or file path to derive themes from"),
+      language: languageParam(),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ count, instructions, input, brandId }) => {
+    async ({ count, instructions, input, language, brandId }) => {
       const id = requireBrandId(brandId);
 
       await api.post(`/api/agent/v1/brands/${id}/themes/generate`, {
         count,
         instructions,
         input,
+        language,
       });
 
       // Poll brand until theme generation is complete, or the grace window elapses.

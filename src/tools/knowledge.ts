@@ -107,9 +107,15 @@ export function registerKnowledgeTools(server: McpServer) {
       content: z.string().min(1).describe("The full content body. Must be valid JSON string when contentType='json'."),
       tags: z.array(z.string()).optional().describe("Optional tags for filtering (e.g. ['brand', 'voice']). Auto-generated if omitted."),
       isGlobal: z.boolean().optional().describe("Mark as account-wide knowledge (shared across all the user's brands)"),
+      humanize: z
+        .boolean()
+        .optional()
+        .describe(
+          "Run the anti-slop humanization pass (dash normalization, banned-phrase replacement, and the de-slop critic) over the supplied content before saving. No credit cost, but the critic step is a synchronous LLM call that adds a few seconds of latency to this already-async operation."
+        ),
       brandId: brandOpt,
     },
-    async ({ name, description, contentType, content, tags, isGlobal, brandId }) => {
+    async ({ name, description, contentType, content, tags, isGlobal, humanize, brandId }) => {
       // Client-side JSON validation for contentType='json' — guidance before hitting the API.
       if (contentType === "json") {
         try {
