@@ -52,6 +52,7 @@ import { z } from "zod";
 import { api, ApiError } from "../client.js";
 import { requireBrandId } from "../state.js";
 import { detailParam, projectList, pick, type Projector } from "../detail.js";
+import { toUrlSegment } from "../sidePageSlug.js";
 
 const brandOpt = z.string().optional().describe("Brand ID (defaults to active brand)");
 
@@ -187,7 +188,11 @@ export function registerBlockTools(server: McpServer) {
     ].join(" "),
     {
       slug: z.string().describe("Parent landing page slug"),
-      sideKey: z.string().describe("Side page key (from list_side_pages) — must be a type:\"custom\" side page"),
+      sideKey: z
+        .string()
+        .describe(
+          "Side page key — the slug as returned by list_side_pages. A nested key containing \"/\" (e.g. \"features/feature-1\") is passed as-is; the server handles the URL encoding. Must be a type:\"custom\" side page."
+        ),
       type: z
         .string()
         .min(1)
@@ -209,7 +214,7 @@ export function registerBlockTools(server: McpServer) {
       if (position !== undefined) body.position = position;
       try {
         const data = await api.post<Record<string, unknown>>(
-          `/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}/blocks`,
+          `/api/agent/v1/landing-pages/${slug}/side-pages/${toUrlSegment(sideKey)}/blocks`,
           body
         );
         return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
@@ -230,7 +235,11 @@ export function registerBlockTools(server: McpServer) {
     ].join(" "),
     {
       slug: z.string().describe("Parent landing page slug"),
-      sideKey: z.string().describe("Side page key (from list_side_pages)"),
+      sideKey: z
+        .string()
+        .describe(
+          "Side page key — the slug as returned by list_side_pages. A nested key containing \"/\" (e.g. \"features/feature-1\") is passed as-is; the server handles the URL encoding."
+        ),
       blockId: z.string().describe("Block id (blk_xxxxxxxx) from view_side_page's overrides.blocks"),
       type: z
         .string()
@@ -251,7 +260,7 @@ export function registerBlockTools(server: McpServer) {
       if (props !== undefined) body.props = coerceJsonValue(props);
       try {
         const data = await api.patch<Record<string, unknown>>(
-          `/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}/blocks/${blockId}`,
+          `/api/agent/v1/landing-pages/${slug}/side-pages/${toUrlSegment(sideKey)}/blocks/${blockId}`,
           body
         );
         return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
@@ -276,14 +285,18 @@ export function registerBlockTools(server: McpServer) {
     ].join(" "),
     {
       slug: z.string().describe("Parent landing page slug"),
-      sideKey: z.string().describe("Side page key (from list_side_pages)"),
+      sideKey: z
+        .string()
+        .describe(
+          "Side page key — the slug as returned by list_side_pages. A nested key containing \"/\" (e.g. \"features/feature-1\") is passed as-is; the server handles the URL encoding."
+        ),
       blockId: z.string().describe("Block id (blk_xxxxxxxx) from view_side_page's overrides.blocks"),
       confirm: z.literal(true).describe("Must be true to confirm deletion"),
     },
     async ({ slug, sideKey, blockId }) => {
       try {
         const data = await api.delete<Record<string, unknown>>(
-          `/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}/blocks/${blockId}`
+          `/api/agent/v1/landing-pages/${slug}/side-pages/${toUrlSegment(sideKey)}/blocks/${blockId}`
         );
         return {
           content: [
@@ -321,7 +334,11 @@ export function registerBlockTools(server: McpServer) {
     ].join(" "),
     {
       slug: z.string().describe("Parent landing page slug"),
-      sideKey: z.string().describe("Side page key (from list_side_pages)"),
+      sideKey: z
+        .string()
+        .describe(
+          "Side page key — the slug as returned by list_side_pages. A nested key containing \"/\" (e.g. \"features/feature-1\") is passed as-is; the server handles the URL encoding."
+        ),
       blockIds: z
         .array(z.string())
         .min(1)
@@ -330,7 +347,7 @@ export function registerBlockTools(server: McpServer) {
     async ({ slug, sideKey, blockIds }) => {
       try {
         const data = await api.put<Record<string, unknown>>(
-          `/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}/blocks/order`,
+          `/api/agent/v1/landing-pages/${slug}/side-pages/${toUrlSegment(sideKey)}/blocks/order`,
           { orderedBlockIds: blockIds }
         );
         return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };

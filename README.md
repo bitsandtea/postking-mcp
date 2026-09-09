@@ -8,9 +8,9 @@ The official [Model Context Protocol](https://modelcontextprotocol.io) server fo
 
 Connect Claude (Desktop, Cursor, or any MCP client) to your PostKing account and manage your entire content operation through conversation — generate posts, schedule them, repurpose URLs into social content, write and publish blog articles, generate landing pages and side pages, run SEO / GEO research and drafting, manage your asset library and weekly posting schedule, handle domains and API keys, and more.
 
-The server exposes **210 tools across 26 modules** — full parity with the `postking-cli`.
+The server exposes **270 tools across 28 modules** — full parity with the `postking-cli`.
 
-> **Transport note:** On the remote HTTP transport (`mcp.postking.app`), 206 tools are available. The 4 authentication tools (`login_start`, `login_complete`, `logout`, `whoami`) are omitted on that transport because it uses OAuth bearer tokens rather than device-code login. All other 206 tools are identical across both transports.
+> **Transport note:** On the remote HTTP transport (`mcp.postking.app`), 266 tools are available. The 4 authentication tools (`login_start`, `login_complete`, `logout`, `whoami`) are omitted on that transport because it uses OAuth bearer tokens rather than device-code login. All other 266 tools are identical across both transports.
 
 ---
 
@@ -417,10 +417,21 @@ _Canonical flow (one-off): `billing_list_packs` → `billing_topup` → (Stripe 
 | `billing_list_tiers` | List available PostKing subscription tiers with pricing and monthly credits |
 | `billing_subscribe` | Create a Stripe Checkout session for a GROWTH, PRO, or ENTERPRISE subscription |
 
+### Search performance & AI visibility
+_Canonical flow: `search_sources` (is a connector even live?) → `search_performance` (SEO clicks/impressions/CTR/position) → `search_ai_visibility` / `search_ai_citations` (AI-answer-engine visibility) → `search_worklist` ("do this next", synthesized from all of the above)._
+
+| Tool | Description |
+|------|-------------|
+| `search_sources` | List the brand's connected search-performance sources (Google Search Console, Bing Webmaster, Google Analytics) with status and last sync time |
+| `search_performance` | Search Console (Google/Bing) + GA4 performance readout — clicks, impressions, CTR, position; section-selectable (summary/queries/pages/timeseries) |
+| `search_ai_visibility` | Deep AI Dive (GEO) visibility readout — mention/citation coverage vs. competitors across AI answer engines (Google AI Overview, ChatGPT, Perplexity, Claude), by topic. Requires PRO+ tier |
+| `search_ai_citations` | Bing "AI Performance" citation readout — daily citation counts plus the latest grounding-query and cited-page snapshots from an imported CSV export |
+| `search_worklist` | Ranked "do this next" SEO + GEO worklist synthesized from the tools above |
+
 ### Dashboard
 | Tool | Description |
 |------|-------------|
-| `dashboard_link` | Get a clickable browser URL to any section of the PostKing dashboard (overview, SEO, posts, blogs, landing pages, reddit, storylines, knowledge, trends, competitors, jobs, etc.) |
+| `dashboard_link` | Get a clickable browser URL to any section of the PostKing dashboard (overview, SEO, posts, blogs, landing pages, reddit, storylines, knowledge, trends, competitors, search performance, jobs, etc.) |
 
 ---
 

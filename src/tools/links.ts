@@ -22,6 +22,8 @@ const SECTIONS = [
   "knowledge",
   "trends",
   "competitors",
+  "search_performance",
+  "tools",
 ] as const;
 
 export function registerLinkTools(server: McpServer) {

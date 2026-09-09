@@ -15,6 +15,7 @@ import { requireBrandId, getActiveBrandId } from "../state.js";
 import { detailParam, project, projectList, pick, truncate } from "../detail.js";
 import { brandDashboardUrl } from "../links.js";
 import { languageParam, SUPPORTED_LANGUAGE_CODES, LANGUAGE_CODE_LIST_TEXT } from "../languages.js";
+import { toUrlSegment } from "../sidePageSlug.js";
 
 const brandOpt = z.string().optional().describe("Brand ID (defaults to active brand)");
 
@@ -1226,12 +1227,16 @@ export function registerLpTools(server: McpServer) {
     "View a side page including sections and rendered HTML. detail='full' (default) includes rendered HTML and full overrides (use this to read a section's typed shape before editing it with set_side_page_section); 'medium' gives summary + overrideSectionKeys (the section ids you can pass to set_side_page_section); 'short' gives id/slug/name/type/isPublished. Rendered HTML appears only at full. Every detail level includes previewUrl (browser-openable draft-preview link, always available) and liveUrl (browser-openable public link, present only when a custom domain is connected). medium/full also include currentVersionId (the draft) and publishedVersionId (the live version) — a mismatch means there are unpublished draft edits.",
     {
       slug: z.string().describe("Parent landing page slug"),
-      sideKey: z.string().describe("Side page key (from list_side_pages)"),
+      sideKey: z
+        .string()
+        .describe(
+          "Side page key — the slug as returned by list_side_pages. A nested key containing \"/\" (e.g. \"features/feature-1\") is passed as-is; the server handles the URL encoding."
+        ),
       detail: detailParam("full"),
     },
     async ({ slug, sideKey, detail }) => {
       const raw = await api.get<Record<string, unknown>>(
-        `/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}`
+        `/api/agent/v1/landing-pages/${slug}/side-pages/${toUrlSegment(sideKey)}`
       );
       const p = (raw["sidePage"] !== undefined ? raw["sidePage"] : raw) as SidePageDetail;
       const proj = {
@@ -1266,7 +1271,7 @@ export function registerLpTools(server: McpServer) {
     "edit_side_page",
     "Update a side page's page-level metadata and, for type:\"text\" pages only, its content. " +
       "Metadata (any side-page type): `name` (display title, shown in auto-generated footer/nav 'Solutions' links and breadcrumbs), " +
-      "`newKey` (rename the URL-slug fragment; old URL 404s, no redirect; internal references are rewritten in the background), " +
+      "`newKey` (rename the slug — 1 or 2 segments, e.g. \"features/feature-1\" for a nested page; old URL 404s, no redirect; internal references are rewritten in the background), " +
       "and `instructions` (stored as an annotation for future context — does NOT trigger an AI edit). " +
       "Content — type:\"text\" pages ONLY: `title` and/or `htmlContent`. Text side pages store a flat {title, htmlContent} " +
       "document, not per-section overrides, so this is the direct way to write their content — landing/comparison pages have " +
@@ -1281,7 +1286,11 @@ export function registerLpTools(server: McpServer) {
       "a reference rewrite, the response includes slugRewriteOperationId — poll it to confirm the cascade finished.",
     {
       slug: z.string().describe("Parent landing page slug"),
-      sideKey: z.string().describe("Side page key"),
+      sideKey: z
+        .string()
+        .describe(
+          "Side page key — the slug as returned by list_side_pages. A nested key containing \"/\" (e.g. \"features/feature-1\") is passed as-is; the server handles the URL encoding."
+        ),
       instructions: z.string().optional().describe("Updated instructions for the AI"),
       name: z
         .string()
@@ -1293,7 +1302,7 @@ export function registerLpTools(server: McpServer) {
         .string()
         .optional()
         .describe(
-          "New URL-slug fragment to RENAME the side page's key. The old URL will stop working (404) after rename — there is no redirect. Existing internal links from blogs/other pages to this page are rewritten automatically in the background (poll the returned slugRewriteOperationId)."
+          "New slug to RENAME the side page's key — 1 or 2 segments, lowercase [a-z0-9-], separated by \"/\" for a nested page (e.g. \"features/feature-1\"). Reserved first segments the renderer's own routes shadow: api, assets, blog, byslug, dev, tools — rejected with 400. Reserved second-segment shapes: \"draft\" or all-digits (e.g. \"2024\") — rejected with 400. \"~\" is stripped from input (it's the internal URL-segment separator). A slug already in use on this landing page returns 409. The old URL will stop working (404) after rename — there is no redirect. Existing internal links from blogs/other pages to this page are rewritten automatically in the background (poll the returned slugRewriteOperationId)."
         ),
       updateReferences: z
         .boolean()
@@ -1332,7 +1341,7 @@ export function registerLpTools(server: McpServer) {
         let currentHtmlContent: string | undefined;
         if (title === undefined || htmlContent === undefined) {
           const current = await api.get<Record<string, unknown>>(
-            `/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}`
+            `/api/agent/v1/landing-pages/${slug}/side-pages/${toUrlSegment(sideKey)}`
           );
           const currentOverrides = (current["overrides"] ?? {}) as Record<string, unknown>;
           currentTitle = typeof currentOverrides["title"] === "string" ? (currentOverrides["title"] as string) : undefined;
@@ -1345,7 +1354,7 @@ export function registerLpTools(server: McpServer) {
         };
       }
       const data = await api.patch<Record<string, unknown>>(
-        `/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}`,
+        `/api/agent/v1/landing-pages/${slug}/side-pages/${toUrlSegment(sideKey)}`,
         body
       );
       return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
@@ -1358,11 +1367,15 @@ export function registerLpTools(server: McpServer) {
     "Delete a side page. Pass confirm: true to proceed.",
     {
       slug: z.string().describe("Parent landing page slug"),
-      sideKey: z.string().describe("Side page key"),
+      sideKey: z
+        .string()
+        .describe(
+          "Side page key — the slug as returned by list_side_pages. A nested key containing \"/\" (e.g. \"features/feature-1\") is passed as-is; the server handles the URL encoding."
+        ),
       confirm: z.literal(true).describe("Must be true to confirm deletion"),
     },
     async ({ slug, sideKey }) => {
-      await api.delete(`/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}`);
+      await api.delete(`/api/agent/v1/landing-pages/${slug}/side-pages/${toUrlSegment(sideKey)}`);
       return {
         content: [
           { type: "text" as const, text: `Side page "${sideKey}" deleted from "${slug}".` },
@@ -1386,7 +1399,11 @@ export function registerLpTools(server: McpServer) {
       "Every edit creates a new draft version (like landing-page section edits) — see list_side_page_versions / restore_side_page_version; on a published page, edits stay draft-only until set_side_page_state({published:true}) publishes them.",
     {
       slug: z.string().describe("Parent landing page slug"),
-      sideKey: z.string().describe("Side page key"),
+      sideKey: z
+        .string()
+        .describe(
+          "Side page key — the slug as returned by list_side_pages. A nested key containing \"/\" (e.g. \"features/feature-1\") is passed as-is; the server handles the URL encoding."
+        ),
       sectionId: z
         .string()
         .describe(
@@ -1430,7 +1447,7 @@ export function registerLpTools(server: McpServer) {
       if (language) body.language = language;
       if (humanize !== undefined) body.humanize = humanize;
       const data = await api.patch<Record<string, unknown>>(
-        `/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}/section`,
+        `/api/agent/v1/landing-pages/${slug}/side-pages/${toUrlSegment(sideKey)}/section`,
         body
       );
       return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
@@ -1443,12 +1460,16 @@ export function registerLpTools(server: McpServer) {
     "Publish or unpublish a side page. published:true publishes the CURRENT DRAFT — it sets the published pointer to the latest draft version, which is how you make draft edits (from edit_side_page / set_side_page_section) live. published:false hides the page publicly but keeps the last-published version marker, so re-publishing with no further edits restores it instantly. The response includes `publishedVersionId` — the version now live (unchanged from before on unpublish) — so you know exactly which version is public without a follow-up view_side_page call.",
     {
       slug: z.string().describe("Parent landing page slug"),
-      sideKey: z.string().describe("Side page key"),
+      sideKey: z
+        .string()
+        .describe(
+          "Side page key — the slug as returned by list_side_pages. A nested key containing \"/\" (e.g. \"features/feature-1\") is passed as-is; the server handles the URL encoding."
+        ),
       published: z.boolean().describe("true = publish, false = unpublish"),
     },
     async ({ slug, sideKey, published }) => {
       const data = await api.post<Record<string, unknown>>(
-        `/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}/state`,
+        `/api/agent/v1/landing-pages/${slug}/side-pages/${toUrlSegment(sideKey)}/state`,
         { published }
       );
       return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
@@ -1461,12 +1482,16 @@ export function registerLpTools(server: McpServer) {
     "List all saved versions of a side page. Default detail='short'. Always includes top-level currentVersionId (the draft) and publishedVersionId (the live version) so an agent can tell draft vs. live without a second call. Use view_side_page_version to see section content.",
     {
       slug: z.string().describe("Parent landing page slug"),
-      sideKey: z.string().describe("Side page key"),
+      sideKey: z
+        .string()
+        .describe(
+          "Side page key — the slug as returned by list_side_pages. A nested key containing \"/\" (e.g. \"features/feature-1\") is passed as-is; the server handles the URL encoding."
+        ),
       detail: detailParam("short"),
     },
     async ({ slug, sideKey, detail }) => {
       const raw = await api.get<Record<string, unknown>>(
-        `/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}/versions`
+        `/api/agent/v1/landing-pages/${slug}/side-pages/${toUrlSegment(sideKey)}/versions`
       );
       const versions: SidePageVersionItem[] = Array.isArray(raw["versions"])
         ? (raw["versions"] as SidePageVersionItem[])
@@ -1499,13 +1524,17 @@ export function registerLpTools(server: McpServer) {
     "View a specific side-page version snapshot. detail='full' (default) returns the complete snapshot { type, overrides, siteMetadata, slotMap, config } plus _meta { versionId, isCurrent, isPublished, createdAt }; 'medium' gives type + _meta + overrideSectionKeys (section ids only, no content); 'short' gives just _meta.",
     {
       slug: z.string().describe("Parent landing page slug"),
-      sideKey: z.string().describe("Side page key"),
+      sideKey: z
+        .string()
+        .describe(
+          "Side page key — the slug as returned by list_side_pages. A nested key containing \"/\" (e.g. \"features/feature-1\") is passed as-is; the server handles the URL encoding."
+        ),
       versionId: z.number().int().describe("Numeric version ID from list_side_page_versions"),
       detail: detailParam("full"),
     },
     async ({ slug, sideKey, versionId, detail }) => {
       const raw = await api.get<Record<string, unknown>>(
-        `/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}/versions/${versionId}`
+        `/api/agent/v1/landing-pages/${slug}/side-pages/${toUrlSegment(sideKey)}/versions/${versionId}`
       );
       const p = raw as SidePageVersionDetail;
       const proj = {
@@ -1530,12 +1559,16 @@ export function registerLpTools(server: McpServer) {
     "Restore a side page's draft to a prior version. Find valid version IDs via list_side_page_versions. This only changes the DRAFT — it moves currentVersionId forward to a new version copied from the target (forward history is never deleted). The live/public page is unaffected until you publish again via set_side_page_state({ published: true }).",
     {
       slug: z.string().describe("Parent landing page slug"),
-      sideKey: z.string().describe("Side page key"),
+      sideKey: z
+        .string()
+        .describe(
+          "Side page key — the slug as returned by list_side_pages. A nested key containing \"/\" (e.g. \"features/feature-1\") is passed as-is; the server handles the URL encoding."
+        ),
       versionId: z.number().int().describe("Numeric version ID from list_side_page_versions to restore as the draft"),
     },
     async ({ slug, sideKey, versionId }) => {
       const data = await api.put<Record<string, unknown>>(
-        `/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}/versions/${versionId}`,
+        `/api/agent/v1/landing-pages/${slug}/side-pages/${toUrlSegment(sideKey)}/versions/${versionId}`,
         { action: "restore" }
       );
       return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
@@ -1548,12 +1581,16 @@ export function registerLpTools(server: McpServer) {
     "Permanently delete a historical side-page version. Deleting the current (draft) version is allowed and repoints the draft to the newest remaining version. Cannot delete the published (live) version or the only remaining version — the server will reject those and the rejection reason is returned as-is. Pass confirm: true to proceed.",
     {
       slug: z.string().describe("Parent landing page slug"),
-      sideKey: z.string().describe("Side page key"),
+      sideKey: z
+        .string()
+        .describe(
+          "Side page key — the slug as returned by list_side_pages. A nested key containing \"/\" (e.g. \"features/feature-1\") is passed as-is; the server handles the URL encoding."
+        ),
       versionId: z.number().int().describe("Numeric version ID from list_side_page_versions"),
       confirm: z.literal(true).describe("Must be true to confirm deletion"),
     },
     async ({ slug, sideKey, versionId }) => {
-      await api.delete(`/api/agent/v1/landing-pages/${slug}/side-pages/${sideKey}/versions/${versionId}`);
+      await api.delete(`/api/agent/v1/landing-pages/${slug}/side-pages/${toUrlSegment(sideKey)}/versions/${versionId}`);
       return {
         content: [
           { type: "text" as const, text: `Version ${versionId} deleted from side page "${sideKey}" on "${slug}".` },

@@ -18,7 +18,9 @@ export type DashboardSection =
   | "storylines"
   | "knowledge"
   | "trends"
-  | "competitors";
+  | "competitors"
+  | "search_performance"
+  | "tools";
 
 const SECTION_PATHS: Record<DashboardSection, string> = {
   overview: "",
@@ -39,6 +41,8 @@ const SECTION_PATHS: Record<DashboardSection, string> = {
   knowledge: "/knowledge",
   trends: "/trends",
   competitors: "/competitors",
+  search_performance: "/search-performance",
+  tools: "/tools",
 };
 
 export function brandDashboardUrl(brandId: string, section: DashboardSection = "overview"): string {

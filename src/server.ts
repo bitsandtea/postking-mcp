@@ -10,8 +10,10 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { setSessionToken } from "./config.js";
 import { log, redactForLog } from "./log.js";
+import { annotationsFor } from "./toolAnnotations.js";
 import { registerAuthTools } from "./tools/auth.js";
 import { registerBrandTools } from "./tools/brand.js";
 import { registerPostTools } from "./tools/posts.js";
@@ -42,6 +44,8 @@ import { registerBrandTruthTools } from "./tools/brand-truth.js";
 import { registerAudienceTools } from "./tools/audience.js";
 import { registerTrendsTools } from "./tools/trends.js";
 import { registerBillingTools } from "./tools/billing.js";
+import { registerSearchPerformanceTools } from "./tools/search-performance.js";
+import { registerBrandToolsTools } from "./tools/brand-tools.js";
 import { registerPrompts } from "./prompts.js";
 
 // Both `src/server.ts` (via tsx) and the compiled `dist/server.js` sit one
@@ -56,7 +60,7 @@ export function createServer(token?: string): McpServer {
       version: pkg.version,
     },
     {
-      instructions: `You're connected to PostKing — a hosted platform for social content, blogs, SEO/GEO, and landing pages. ~140 tools cover the full surface: posts, blogs, SEO, landing pages, visuals, Reddit, billing, and more.
+      instructions: `You're connected to PostKing — a hosted platform for social content, blogs, SEO/GEO, and landing pages. ~270 tools cover the full surface: posts, blogs, SEO, landing pages, visuals, Reddit, billing, search performance / AI visibility reporting, and more.
 
 ## Start every session here
 1. Call \`list_brands\` to see which brands this account can access.
@@ -83,6 +87,7 @@ Generation costs credits. Call \`get_credits\` before a \`generate_post\`/\`gene
 - **Visuals are never auto-attached.** \`generate_post_visual_options\`/\`search_stock_images\` only return candidates — you must call \`pick_post_visual\` explicitly to attach one.
 - **Custom themes are free-text, not IDs.** Pass a descriptive string to \`theme\`, or register one first with the template/theme creation tool if you want it reusable.
 - **API keys are scoped.** Content-generation calls need a \`write\`-scoped key. "Invalid or revoked API key" usually means the active key's scope is wrong or it was rotated — create a fresh one rather than debugging the old one.
+- **A bare "No approval received" (or similar) error is your MCP client's own approval prompt going unanswered** — not a PostKing error, not a permissions/scope problem, and not brand-specific. It can happen on any tool, including read-only ones. Approve the prompt in your client (choosing "always allow" for this connector stops the repeats) and retry the identical call — re-running with different arguments or calling \`set_active_brand\`/re-authenticating will not help.
 
 ## Where to go deeper
 This server also exposes guided prompts for common end-to-end flows — \`getting_started\`, and others covering SEO/GEO (seed keywords → clusters → briefs → articles), content weeks, Reddit distribution, and landing pages. Prefer invoking those for a first-time walkthrough of a flow rather than guessing the tool order from names alone.`,
@@ -92,14 +97,62 @@ This server also exposes guided prompts for common end-to-end flows — \`gettin
   // Per-session token store — resolved by `config.getToken()`.
   setSessionToken(server, token ?? null);
 
-  // Wrap server.tool to emit structured [tool] logs on every invocation.
+  // Recognized ToolAnnotations keys — used to tell an annotations object
+  // apart from a Zod raw shape (both are plain objects at this layer).
+  const ANNOTATION_KEYS = new Set(["title", "readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"]);
+
+  // A Zod schema value carries `_def` and a `.parse` method; a real
+  // annotations value (string/boolean) never does. Any object whose keys
+  // aren't all recognized annotation keys — or whose values look like Zod
+  // schemas — is a raw params shape, not annotations.
+  function looksLikeAnnotations(candidate: unknown): candidate is ToolAnnotations {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+    const entries = Object.entries(candidate as Record<string, unknown>);
+    if (entries.length === 0) return false; // an empty object is a valid empty raw shape; never real annotations here
+    return entries.every(([key, value]) => {
+      if (!ANNOTATION_KEYS.has(key)) return false;
+      if (value && typeof value === "object" && ("_def" in value || typeof (value as { parse?: unknown }).parse === "function")) {
+        return false;
+      }
+      return true;
+    });
+  }
+
+  // Wrap server.tool to (1) splice in centrally-derived MCP tool annotations
+  // — merging with any annotations a call site already passes, call-site
+  // keys winning — and (2) emit structured [tool] logs on every invocation.
+  // Handles every arity `McpServer#tool` supports: (name, cb),
+  // (name, description, cb), (name, schemaOrAnnotations, cb),
+  // (name, description, schema, cb), (name, schema, annotations, cb), and
+  // (name, description, schema, annotations, cb).
   const originalTool = server.tool.bind(server);
   (server as any).tool = (...toolArgs: any[]) => {
     const name: string = toolArgs[0];
-    const lastArg = toolArgs[toolArgs.length - 1];
-    if (typeof lastArg === "function") {
-      const originalHandler = lastArg;
-      toolArgs[toolArgs.length - 1] = async (...handlerArgs: any[]) => {
+    const handlerIndex = toolArgs.length - 1;
+    const originalHandler = toolArgs[handlerIndex];
+
+    let description: string | undefined;
+    let schema: unknown;
+    let callSiteAnnotations: Partial<ToolAnnotations> | undefined;
+    for (const arg of toolArgs.slice(1, handlerIndex)) {
+      if (typeof arg === "string") {
+        description = arg;
+      } else if (looksLikeAnnotations(arg)) {
+        callSiteAnnotations = arg;
+      } else if (arg && typeof arg === "object") {
+        schema = arg;
+      }
+    }
+
+    const mergedAnnotations: ToolAnnotations = { ...annotationsFor(name), ...(callSiteAnnotations ?? {}) };
+
+    const newArgs: unknown[] = [name];
+    if (description !== undefined) newArgs.push(description);
+    if (schema !== undefined) newArgs.push(schema);
+    newArgs.push(mergedAnnotations);
+
+    if (typeof originalHandler === "function") {
+      newArgs.push(async (...handlerArgs: any[]) => {
         const args = handlerArgs[0];
         log("tool", "→ " + name, redactForLog(args));
         const start = Date.now();
@@ -113,9 +166,12 @@ This server also exposes guided prompts for common end-to-end flows — \`gettin
           log("tool", "✗ " + name + " (" + ms + "ms)", { error: err instanceof Error ? err.message : String(err) });
           throw err;
         }
-      };
+      });
+    } else {
+      newArgs.push(originalHandler);
     }
-    return (originalTool as any)(...toolArgs);
+
+    return (originalTool as any)(...newArgs);
   };
 
   // login_start / login_complete / logout / whoami are registered on both
@@ -152,6 +208,8 @@ This server also exposes guided prompts for common end-to-end flows — \`gettin
   registerAudienceTools(server);
   registerTrendsTools(server);
   registerBillingTools(server);
+  registerSearchPerformanceTools(server);
+  registerBrandToolsTools(server);
   registerPrompts(server);
 
   return server;

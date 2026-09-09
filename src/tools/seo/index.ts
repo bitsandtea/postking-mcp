@@ -6,6 +6,7 @@ import { registerSeoBriefTools } from "./briefs.js";
 import { registerSeoResultsTools } from "./results.js";
 import { registerSeoSidePageTools } from "./side-pages.js";
 import { registerSeoMarketSettingsTools } from "./market-settings.js";
+import { registerSeoPublicationTargetTools } from "./publication-targets.js";
 
 /**
  * SEO end-to-end agentic flow.
@@ -37,6 +38,10 @@ import { registerSeoMarketSettingsTools } from "./market-settings.js";
  * language-scoped step 2: seo_get_market_settings / seo_set_market_settings
  * (market-settings.ts).
  *
+ * Publication targeting — which blog publication step 8's writes land in per
+ * language, on brands with 2+ publications: seo_get_publication_targets /
+ * seo_set_publication_target (publication-targets.ts).
+ *
  * This module was split out of a single 1510-line seo.ts (over the repo's 800-line
  * file-size limit) into one file per tool group, each exporting a single
  * `register*Tools(server)` entry point. Behavior of every pre-existing tool is
@@ -50,4 +55,5 @@ export function registerSeoTools(server: McpServer) {
   registerSeoResultsTools(server);
   registerSeoSidePageTools(server);
   registerSeoMarketSettingsTools(server);
+  registerSeoPublicationTargetTools(server);
 }
