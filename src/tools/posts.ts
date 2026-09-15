@@ -43,6 +43,22 @@ function parseVariations(outputData: unknown): { content: string }[] {
   return [];
 }
 
+function parseLengthCheck(inner: Record<string, unknown>): Record<string, unknown> | undefined {
+  if (inner.lengthCheck && typeof inner.lengthCheck === "object") {
+    return inner.lengthCheck as Record<string, unknown>;
+  }
+  const outputData = inner.outputData;
+  if (!outputData) return undefined;
+  try {
+    const parsed = typeof outputData === "string" ? JSON.parse(outputData) : outputData;
+    if (parsed && typeof parsed === "object") {
+      const lc = (parsed as { lengthCheck?: unknown }).lengthCheck;
+      if (lc && typeof lc === "object") return lc as Record<string, unknown>;
+    }
+  } catch { /* not parseable — fall through */ }
+  return undefined;
+}
+
 function summarizeVisuals(catalog: Record<string, unknown>): {
   bestPick?: Record<string, unknown>;
   options?: Record<string, unknown>[];
@@ -126,6 +142,7 @@ export function registerPostTools(server: McpServer) {
       "After generation, visual options (quote/card templates, stock photos) are prepared but NOT attached — brand-library assets are NOT prepared as options on this path. Share viewInBrowser for the visual picker, or call pick_post_visual to attach one. Do not attach a visual unless the user chooses it.",
       "To attach the user's own uploaded photos, call list_assets to find the asset ID(s), then pick_post_visual with assetId (or assetIds for several).",
       "The response includes editInVisualEditor: a direct URL to edit the post in the visual editor (once completed).",
+      "To control length, pass `length` (short/medium/long) or `targetWordCount` — do NOT rely on word counts written into `theme`; they are soft hints and get compressed. The result includes `lengthCheck`; surface `lengthCheck.warning` to the user if present.",
     ].join(" "),
     {
       platform: z
@@ -135,14 +152,16 @@ export function registerPostTools(server: McpServer) {
       theme: z.string().optional().describe("Free-text topic/brief describing what the post should be about — include any angle, emphasis, key facts, or tone (e.g. \"Launch announcement for our new MCP; emphasize NVIDIA + Stripe + Amotron; B2B authoritative tone\"). ALWAYS pass this when the user wants the post to be about something specific. If omitted, a RANDOM brand theme is used and the topic will NOT match the user's request."),
       themeId: z.string().optional().describe("Optional ID of a saved brand theme (from list_themes). Most callers should pass the free-text `theme` instead. If both are given, the free-text `theme` wins."),
       voice: z.string().optional().describe("Voice profile ID to apply"),
+      length: z.enum(["short", "medium", "long"]).optional().describe("Hard post length. short = 50–80 words, medium = 100–150, long = 200–280. Enforced through generation AND the voice rewrite — use this instead of putting word counts in `theme` (theme-text length hints are soft and get compressed). Omit for the platform's natural default."),
+      targetWordCount: z.number().int().min(20).max(1500).optional().describe("Exact word target with a ±15% tolerance band. Wins over `length` when both are given."),
       language: languageParam("Set the brand's standing language with set_brand_content_language instead when every future generation should use it."),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ platform, variations, theme, themeId, voice, language, brandId }) => {
+    async ({ platform, variations, theme, themeId, voice, length, targetWordCount, language, brandId }) => {
       const id = requireBrandId(brandId);
       const customTheme = typeof theme === "string" && theme.trim().length > 0 ? theme.trim() : undefined;
 
-      const resp = await api.post<{ postId: string; sessionId?: string; pollUrl?: string }>(
+      const resp = await api.post<{ postId: string; sessionId?: string; pollUrl?: string; warnings?: string[] }>(
         `/api/agent/v1/brands/${id}/posts/generate`,
         {
           medium: platform,
@@ -151,6 +170,8 @@ export function registerPostTools(server: McpServer) {
           customTheme,
           randomTheme: !customTheme && !themeId,
           voiceProfileId: voice,
+          length,
+          targetWordCount,
           // Omitted when the caller said nothing, so the server can tell
           // "no override" from an explicit "en" (JSON.stringify drops undefined).
           language,
@@ -195,6 +216,7 @@ export function registerPostTools(server: McpServer) {
                 postId,
                 ...(sessionId ? { sessionId } : {}),
                 ...(viewInBrowser ? { viewInBrowser } : {}),
+                ...(resp.warnings?.length ? { warnings: resp.warnings } : {}),
                 message:
                   "Generation is in progress and will finish server-side. Poll it with get_post using this postId. Do NOT call generate_post again for this request — retrying will create duplicate drafts.",
               }),
@@ -213,6 +235,7 @@ export function registerPostTools(server: McpServer) {
         // visual options are best-effort; never block returning the generated content
       }
       const parsedVariations = parseVariations(inner.outputData);
+      const lengthCheck = parseLengthCheck(inner);
       const editInVisualEditor = visualEditorUrl(id, postId, typeof inner.platform === "string" ? inner.platform : platform);
       const result = {
         postId,
@@ -231,6 +254,8 @@ export function registerPostTools(server: McpServer) {
         ...(viewInBrowser ? { viewInBrowser } : {}),
         editInVisualEditor,
         ...(visuals ? { visuals } : {}),
+        ...(resp.warnings?.length ? { warnings: resp.warnings } : {}),
+        ...(lengthCheck ? { lengthCheck } : {}),
       };
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result) }],
@@ -505,6 +530,48 @@ export function registerPostTools(server: McpServer) {
       if (inner.scheduledAt !== undefined) confirmation.scheduledAt = inner.scheduledAt;
       else if (inner.postAt !== undefined) confirmation.scheduledAt = inner.postAt;
       if (inner.webUrl !== undefined) confirmation.webUrl = inner.webUrl;
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(confirmation) }],
+      };
+    }
+  );
+
+  // ── Reply to X post ────────────────────────────────────────────────────────
+  server.tool(
+    "reply_to_x_post",
+    [
+      "Reply to an X (Twitter) post from the brand's connected X account. PRO plan and above.",
+      "Pass the tweet URL or id. By default publishes immediately; use postType 'scheduled' (+scheduledAt) or 'queue' (draft).",
+    ].join(" "),
+    {
+      replyTo: z.string().describe("The X (Twitter) tweet URL (x.com/twitter.com) or bare numeric tweet id to reply to"),
+      content: z.string().describe("Reply content"),
+      postType: z
+        .enum(["now", "scheduled", "queue"])
+        .optional()
+        .describe("'now' (default, publishes immediately), 'scheduled' (requires scheduledAt), or 'queue' (save as draft)"),
+      scheduledAt: z.string().datetime().optional().describe("Future ISO 8601 UTC datetime, required when postType is 'scheduled'"),
+      timezone: z.string().optional().describe("User timezone, e.g. 'America/New_York'"),
+      brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
+    },
+    async ({ replyTo, content, postType, scheduledAt, timezone, brandId }) => {
+      const id = requireBrandId(brandId);
+      const data = await api.post<Record<string, unknown>>(`/api/agent/v1/brands/${id}/posts/x-reply`, {
+        replyTo,
+        content,
+        postType,
+        scheduledAt,
+        userTimezone: timezone,
+      });
+      const d = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
+      const inner = (d.post && typeof d.post === "object" ? d.post : d) as Record<string, unknown>;
+      const confirmation: Record<string, unknown> = {
+        postId: inner.id,
+        status: inner.status,
+      };
+      if (inner.platformPostId !== undefined) confirmation.platformPostId = inner.platformPostId;
+      if (inner.postLink !== undefined) confirmation.postLink = inner.postLink;
+      if (d.webUrl !== undefined) confirmation.webUrl = d.webUrl;
       return {
         content: [{ type: "text" as const, text: JSON.stringify(confirmation) }],
       };

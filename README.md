@@ -122,6 +122,7 @@ _Available on stdio/local transport only. Remote HTTP transport authenticates vi
 | `approve_post` | Approve and schedule a draft post |
 | `schedule_post` | Set a scheduled time on an existing post |
 | `reschedule_post` | Move a scheduled post to a new time |
+| `reply_to_x_post` | Reply to an X (Twitter) post from the brand's account (PRO plan and above) |
 | `cancel_post` | Cancel a scheduled post without deleting it |
 | `delete_post` | Cancel and delete a post |
 | `get_calendar` | View upcoming scheduled content |
