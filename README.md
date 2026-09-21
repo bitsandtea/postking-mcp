@@ -8,9 +8,9 @@ The official [Model Context Protocol](https://modelcontextprotocol.io) server fo
 
 Connect Claude (Desktop, Cursor, or any MCP client) to your PostKing account and manage your entire content operation through conversation — generate posts, schedule them, repurpose URLs into social content, write and publish blog articles, generate landing pages and side pages, run SEO / GEO research and drafting, manage your asset library and weekly posting schedule, handle domains and API keys, and more.
 
-The server exposes **270 tools across 28 modules** — full parity with the `postking-cli`.
+The server exposes **275 tools across 29 modules** — full parity with the `postking-cli`.
 
-> **Transport note:** On the remote HTTP transport (`mcp.postking.app`), 266 tools are available. The 4 authentication tools (`login_start`, `login_complete`, `logout`, `whoami`) are omitted on that transport because it uses OAuth bearer tokens rather than device-code login. All other 266 tools are identical across both transports.
+> **Transport note:** On the remote HTTP transport (`mcp.postking.app`), 271 tools are available. The 4 authentication tools (`login_start`, `login_complete`, `logout`, `whoami`) are omitted on that transport because it uses OAuth bearer tokens rather than device-code login. All other 271 tools are identical across both transports.
 
 ---
 
@@ -173,6 +173,10 @@ _Reddit is a repurpose-to-Reddit workflow, not a scheduled publishing medium. Fl
 | `get_blog_status` | Poll generation/publish status for an article |
 | `update_blog_article` | Edit title, content, SEO fields, author, category, status, or the featured/header image (`featuredImageUrl`, `featuredImageAlt`, `featuredImageDescription`) |
 | `delete_blog_article` | Permanently delete an article |
+| `blog_cta_list` | List every CTA on an article individually, with raw anchor data — find a ctaId or an open anchor slot |
+| `blog_cta_add` | Append a new CTA to an article without touching the existing ones |
+| `blog_cta_update` | Edit one CTA by id (url/label/headline/body/style/anchor/sidePageId/slug) without touching the others |
+| `blog_cta_delete` | Remove one CTA by id without touching the others |
 | `publish_blog_article` | Push to WordPress, Medium, Substack, etc. |
 | `list_publishing_connections` | List external platform connections |
 | `import_blog_articles` | Import from RSS feed or Blogger URL |
@@ -375,15 +379,16 @@ _Canonical flow: `knowledge_list` → `knowledge_get` → `knowledge_create` (po
 | `knowledge_delete` | Soft-delete a knowledge base item |
 
 ### Brand truth
-_Atomic facts/observations about a brand (hard facts, audience truths, strategy notes, negative space, content insights, topics) used to ground generation. Canonical flow: `brand_truth_list` → `brand_truth_get` → `brand_truth_create` (LLM extraction decides what to store) → `brand_truth_update` → `brand_truth_delete`._
+_Atomic facts/observations about a brand (hard facts, audience truths, strategy notes, negative space, content insights, topics) used to ground generation. Canonical flow: `brand_truth_list` → `brand_truth_get` → `brand_truth_create` (LLM extraction decides what to store) → `brand_truth_update` → `brand_truth_delete` (soft) → `brand_truth_restore` if needed._
 
 | Tool | Description |
 |------|-------------|
-| `brand_truth_list` | List stored brand truths — filter by type, personaScope, tags, or free-text query |
+| `brand_truth_list` | List stored brand truths — filter by type, personaScope, tags, or free-text query; `includeDeleted` to also see soft-deleted rows |
 | `brand_truth_get` | Fetch a single brand truth with full content and metadata |
 | `brand_truth_create` | Describe facts in plain language; an LLM extraction pipeline decides which atomic truths to store vs skip (returns `added` + `skipped`) |
 | `brand_truth_update` | Direct field edit of a known truth (name, description, content, tags, type, personaScope, pinned) — does not re-run the LLM |
-| `brand_truth_delete` | Delete a truth and record rejection memory so it stops being re-suggested |
+| `brand_truth_delete` | Soft-delete a truth (undoable) and record rejection memory so it stops being re-suggested |
+| `brand_truth_restore` | Undo a `brand_truth_delete` — clears deletedAt and the rejection memory |
 
 ### Audience / ICP
 _The brand's audience intelligence (ideal customer profile) mined from its website + onboarding. Canonical flow: `get_audience` → `preview_audience_edit` (discover valid sections) → `edit_audience` (async LLM ai-edit; poll `get_job`)._

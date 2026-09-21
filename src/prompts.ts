@@ -343,7 +343,7 @@ Turns the approved cluster(s) into ~20 prioritized blog topics — each topic ge
 List the generated briefs, inspect with \`seo_get_brief\`, refine the briefData JSON via \`seo_edit_brief\` (or rerun the whole brief with \`seo_regenerate_brief\`), then \`seo_approve_briefs\` with the brief IDs. Approval is the gate that unlocks article generation.
 
 **Step 8 — Write** (\`seo_write_article\`)
-Draft the top 5 articles from the approved briefs. Review each with \`get_blog_article\`.
+Draft the top 5 articles from the approved briefs. Review each with \`get_blog_article\`. A cannibalization guard runs before each write and may 409 (or return a \`cannibalizationGuard\` field) if the topic duplicates existing content — see \`seo_check_cannibalization\`/\`refresh_blog_article\` if that happens.
 
 **Step 9 — Audit & Publish**
 - \`seo_gap\` + \`seo_competitor\` for a final audit.

@@ -34,6 +34,13 @@ import { registerSeoPublicationTargetTools } from "./publication-targets.js";
  *
  * Steps 5 and 7 are explicit human-in-the-loop approval gates.
  *
+ * Cannibalization guard (feature 124) — runs server-side before every article
+ * write (seo_write_article / generate_blog_post) to stop duplicate content on
+ * the same keyword: seo_check_cannibalization (preflight, briefs.ts),
+ * refresh_blog_article (rewrite an existing article instead of duplicating —
+ * blog.ts), seo_cannibalization_report (audit already-published near-dupes,
+ * results.ts).
+ *
  * Multilingual market config (feature 96/104/110) — prerequisite for a
  * language-scoped step 2: seo_get_market_settings / seo_set_market_settings
  * (market-settings.ts).

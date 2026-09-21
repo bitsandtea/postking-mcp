@@ -161,6 +161,36 @@ export function registerSeoResultsTools(server: McpServer) {
     }
   );
 
+  // ── 8b. Cannibalization audit report ─────────────────────────────────────
+  server.tool(
+    "seo_cannibalization_report",
+    [
+      "Read-only audit — zero writes, zero credits. Groups the brand's EXISTING published articles that look like near-duplicates (embedding similarity + shared Google Search Console queries) and proposes a canonical `winnerArticleId` per group plus a per-loser `proposedAction` ('keep' | 'merge' | 'noindex_only' | 'manual_review').",
+      "Use this to find and clean up cannibalization that already happened, as opposed to seo_check_cannibalization which prevents NEW duplicates before writing.",
+      "Response: { brandId, generatedAt, articleCount, groups: [{ groupId, winnerArticleId, members: [{articleId, title, slug, url?, status, wordCount, postDate, updatedAt, gscClicks?, gscQueries?, isWinner, proposedAction, reason, similarityToWinner?}], maxSimilarity, hasGscOverlap }], signals: { embedding, gsc } }.",
+      "`signals` tells you which detection methods were actually available for this run (e.g. `gsc: false` means no Search Console connection, so grouping relied on embedding similarity alone).",
+    ].join(" "),
+    {
+      language: z
+        .enum(SUPPORTED_LANGUAGE_CODES)
+        .optional()
+        .describe(
+          `Filter the audit to one content language (${LANGUAGE_CODE_LIST_TEXT}). Omit to audit every configured language's articles together.`
+        ),
+      brandId: brandOpt,
+    },
+    async ({ language, brandId }) => {
+      const id = requireBrandId(brandId);
+      const qs = new URLSearchParams();
+      if (language !== undefined) qs.set("language", language);
+      const suffix = qs.toString() ? `?${qs.toString()}` : "";
+      const data = await api.get<unknown>(
+        `/api/agent/v1/brands/${id}/seo/cannibalization-report${suffix}`
+      );
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    }
+  );
+
   // ── 9. Competitor diff ────────────────────────────────────────────────────
   server.tool(
     "seo_competitor",

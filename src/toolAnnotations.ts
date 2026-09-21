@@ -2,7 +2,7 @@
  * Central classifier that assigns MCP `ToolAnnotations` (title, readOnlyHint,
  * destructiveHint, idempotentHint, openWorldHint) to every tool by name.
  *
- * This exists so 270 `server.tool(...)` call sites don't each need to declare
+ * This exists so 269 `server.tool(...)` call sites don't each need to declare
  * annotations by hand — `src/server.ts`'s `server.tool` wrapper calls
  * `annotationsFor(name)` for every registration and splices the result in.
  * Without any annotations, MCP clients can't tell a read from a destructive
@@ -38,6 +38,14 @@ const EXPLICIT_HINTS: Record<string, Hints> = {
   billing_wallet: READ_ONLY,
   billing_list_packs: READ_ONLY,
   billing_list_tiers: READ_ONLY,
+
+  // Undoes a soft delete (clears deletedAt + rejection memory) rather than
+  // overwriting current data the way restore_lp_version/restore_side_page_version
+  // do — a benign write, not destructive. Needs an explicit override since the
+  // name ends in "_restore" and would otherwise hit the generic
+  // restore-is-destructive rule below. Mirrors seo_restore_cluster/
+  // seo_restore_keyword, which are plain writes for the same reason.
+  brand_truth_restore: WRITE,
 
   revoke_api_key: DESTRUCTIVE,
   disconnect_social_account: DESTRUCTIVE,
@@ -116,6 +124,10 @@ function isOpenWorld(name: string): boolean {
 const TITLE_OVERRIDES: Record<string, string> = {
   whoami: "Who am I",
   health: "Server health",
+  blog_cta_list: "Blog CTA list",
+  blog_cta_update: "Blog CTA update",
+  blog_cta_add: "Blog CTA add",
+  blog_cta_delete: "Blog CTA delete",
 };
 
 function toTitle(name: string): string {

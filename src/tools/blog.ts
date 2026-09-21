@@ -1,9 +1,12 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { api } from "../client.js";
+import { api, ApiError } from "../client.js";
 import { requireBrandId } from "../state.js";
 import { detailParam, project, projectList, truncate, type Projector } from "../detail.js";
 import { languageParam, SUPPORTED_LANGUAGE_CODES, LANGUAGE_CODE_LIST_TEXT } from "../languages.js";
+import { isCannibalizationGuardError, cannibalizationGuardResult } from "../cannibalizationGuard.js";
+import { etaFor } from "../etas.js";
+import { blogCtaEntryShape } from "./blog-ctas.js";
 
 // LIST tools must never carry article bodies — full bodies overflow small MCP clients.
 const HEAVY_ARTICLE_KEYS = ["postText", "postContent", "postContentHtml", "postContentHTML", "postContentMarkdown", "content", "body", "postBody", "bodyHtml"];
@@ -282,6 +285,7 @@ export function registerBlogTools(server: McpServer) {
       "Pass a voiceProfileId to write in a specific person's style (IDs from list_voices).",
       "Returns an articleId + operationId; generation is async — poll get_blog_status until completed, then get_blog_article. Use update_blog_article to edit, or publish_blog_article to push to external platforms.",
       "To make it live on your PostKing blog, call update_blog_article with status: 'published'.",
+      "Cannibalization guard: this write is checked server-side before drafting. Optionally preflight with seo_check_cannibalization first. On a 409 response here (or a preflight decision of 'refresh'), call refresh_blog_article with the guard's `targetArticleId` as `blogId` INSTEAD of retrying this tool. On decision 'blocked', an in-flight brief already covers this keyword (`conflictingBriefId`) — wait for it, don't force. Only pass forceCannibalization: true when the USER has explicitly said they want a duplicate/second article anyway — never decide this yourself. A success response may carry an optional `cannibalizationGuard` field when a guard outcome was already stamped on the brief.",
     ].join(" "),
     {
       publicationId: z.string().describe("Blog publication ID"),
@@ -297,39 +301,96 @@ export function registerBlogTools(server: McpServer) {
       selectedAssetId: z.string().optional().describe("ID of the brand asset to use for the header image"),
       skipBrandContext: z.boolean().optional().describe("Omit brand context from the generation prompt when true"),
       language: languageParam("Applies to this article only; the brand's standing language is set with set_brand_content_language."),
+      forceCannibalization: z
+        .boolean()
+        .optional()
+        .describe(
+          "Bypass the cannibalization guard and write a new article even if it duplicates an existing one. " +
+            "Only set this when the USER has explicitly said they want a duplicate/second article anyway — never decide this on your own initiative."
+        ),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ publicationId, topic, voiceProfileId, targetLength, primaryKeywords, secondaryKeywords, readabilityTarget, generateAiImage, imageVariationCount, attachVisualAsset, selectedAssetId, skipBrandContext, language, brandId }) => {
+    async ({ publicationId, topic, voiceProfileId, targetLength, primaryKeywords, secondaryKeywords, readabilityTarget, generateAiImage, imageVariationCount, attachVisualAsset, selectedAssetId, skipBrandContext, language, forceCannibalization, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.post<any>(`/api/agent/v1/brands/${id}/blogs/generate`, {
-        blogId: publicationId,
-        topic,
-        voiceProfileId,
-        targetLength,
-        primaryKeywords,
-        secondaryKeywords,
-        readabilityTarget,
-        generateAiImage,
-        imageVariationCount,
-        attachVisualAsset,
-        selectedAssetId,
-        skipBrandContext,
-        // Dropped from the JSON body when undefined, so "no override" stays
-        // distinguishable from an explicit "en" server-side.
-        language,
-        assignAsset: false,
-      });
-      const article = data?.blog ?? data?.article ?? null;
+      try {
+        const data = await api.post<any>(`/api/agent/v1/brands/${id}/blogs/generate`, {
+          blogId: publicationId,
+          topic,
+          voiceProfileId,
+          targetLength,
+          primaryKeywords,
+          secondaryKeywords,
+          readabilityTarget,
+          generateAiImage,
+          imageVariationCount,
+          attachVisualAsset,
+          selectedAssetId,
+          skipBrandContext,
+          // Dropped from the JSON body when undefined, so "no override" stays
+          // distinguishable from an explicit "en" server-side.
+          language,
+          forceCannibalization,
+          assignAsset: false,
+        });
+        const article = data?.blog ?? data?.article ?? null;
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                articleId: data?.blogId ?? article?.id ?? data?.id ?? null,
+                operationId: data?.operationId ?? null,
+                pollUrl: data?.pollUrl ?? null,
+                status: article?.status ?? "running",
+                cannibalizationGuard: data?.cannibalizationGuard ?? undefined,
+                note: "Generation is async. Poll get_blog_status with the returned articleId until status is completed, then get_blog_article to read the content.",
+              }, null, 2),
+            },
+          ],
+        };
+      } catch (err) {
+        if (isCannibalizationGuardError(err)) return cannibalizationGuardResult(err);
+        throw err;
+      }
+    }
+  );
+
+  // ── Refresh (rewrite) an existing blog article ────────────────────────────
+  server.tool(
+    "refresh_blog_article",
+    (() => {
+      const eta = etaFor("seo_article_generate");
+      return [
+        "Re-runs the article-writer pipeline against an EXISTING BlogArticle and overwrites its body in place, instead of creating a duplicate.",
+        "Use this when seo_write_article or generate_blog_post returned a cannibalization-guard 409 (or a seo_check_cannibalization preflight returned decision='refresh') naming a `targetArticleId` — pass that id as `blogId` here.",
+        "Async — returns `{ operationId, status }`. Poll get_job (or get_blog_status) with the returned id until state is 'completed' (or 'failed'/'partially_failed'/'cancelled' on error), then get_blog_article to read the refreshed content.",
+        ...(eta ? [`Typically takes ${eta}.`] : []),
+      ].join(" ");
+    })(),
+    {
+      blogId: z.string().describe("Existing BlogArticle ID to refresh (e.g. the cannibalization guard's targetArticleId)"),
+      briefId: z.string().optional().describe("SeoBrief ID to drive the refresh from, if one applies"),
+      topic: z.string().optional().describe("Updated topic/working title to refresh toward"),
+      instructions: z.string().optional().describe("Free-text instructions for what should change in the refresh"),
+      brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
+    },
+    async ({ blogId, briefId, topic, instructions, brandId }) => {
+      const id = requireBrandId(brandId);
+      const body: Record<string, unknown> = {};
+      if (briefId !== undefined) body.briefId = briefId;
+      if (topic !== undefined) body.topic = topic;
+      if (instructions !== undefined) body.instructions = instructions;
+      const data = await api.post<Record<string, unknown>>(
+        `/api/agent/v1/brands/${id}/blogs/${blogId}/refresh`,
+        body
+      );
       return {
         content: [
           {
             type: "text" as const,
             text: JSON.stringify({
-              articleId: data?.blogId ?? article?.id ?? data?.id ?? null,
-              operationId: data?.operationId ?? null,
-              pollUrl: data?.pollUrl ?? null,
-              status: article?.status ?? "running",
-              note: "Generation is async. Poll get_blog_status with the returned articleId until status is completed, then get_blog_article to read the content.",
+              ...data,
+              note: "Async refresh started. Poll get_job(operationId) until state is 'completed' (or 'failed'/'partially_failed'/'cancelled'), then get_blog_article to read the refreshed content.",
             }, null, 2),
           },
         ],
@@ -424,8 +485,9 @@ export function registerBlogTools(server: McpServer) {
       "Edit a blog article — title, content, excerpt, SEO fields, status, author, category, featured/header image, CTA, URL slug, or which publication it lives under. Set status='published' to make it live on your PostKing blog.",
       "CTA (call-to-action) is structured data, NOT part of the article body — never write CTA markup into `content`.",
       "Use `cta: { url, label, headline, body }` to set it (url is required when enabling), or `cta: { enabled: false }` to remove it.",
-      "`cta` and `sidePageInfo` are mutually exclusive — pass `sidePageInfo` only if you need to link to an existing side page by id/slug (from list_side_pages) instead of a raw url; either way, malformed CTA shapes are now rejected by the server rather than silently persisted, so pass exactly the documented fields.",
-      "`cta` is a PARTIAL patch: fields you omit keep their current values. The response echoes back the article's resulting `ctas[]` (the list the dashboard editor renders) plus the legacy `sidePageInfo` mirror — read those to confirm what was saved instead of relying on the 200 alone. An article may hold several CTAs; `cta`/`sidePageInfo` edit the end-anchored one (or the last one), leaving the rest untouched.",
+      "`cta`, `sidePageInfo`, and `ctas` are mutually exclusive — send only one. Pass `sidePageInfo` only if you need to link to an existing side page by id/slug (from list_side_pages) instead of a raw url; either way, malformed CTA shapes are now rejected by the server rather than silently persisted, so pass exactly the documented fields.",
+      "`cta` is a PARTIAL patch: fields you omit keep their current values. The response echoes back the article's resulting `ctas[]` (the list the dashboard editor renders) plus the legacy `sidePageInfo` mirror — read those to confirm what was saved instead of relying on the 200 alone.",
+      "IMPORTANT: an article may hold SEVERAL CTAs (one per `after_h2` section plus an optional `end` CTA). `cta`/`sidePageInfo` here only ever edit the end-anchored CTA (or the last one) — to read, add, edit, or remove any OTHER CTA by its own id, use blog_cta_list / blog_cta_add / blog_cta_update / blog_cta_delete instead. `ctas` (below) is the full-replace escape hatch for touching the whole list at once.",
       "Use `publicationId` to MOVE this article to a different blog publication of the same brand — get candidate ids from list_publications. A publication determines the article's language and its public URL (path/domain), so moving one changes both; an id that isn't one of this brand's publications is rejected with a 404 (call list_publications and retry), and moving into a publication that already has a published article on the same slug is rejected with a 409.",
       "Use `slug` to change the article's URL path segment; the server re-normalizes whatever you pass and rejects a collision with another published article in the target publication with a 409.",
       "Pass `updateReferences: true` alongside a `slug` and/or `publicationId` change on an ALREADY-PUBLISHED article so the server enqueues a background job to rewrite internal links elsewhere in the brand's content that pointed at the old URL — otherwise those links go stale. Only has an effect when the article is published and its public URL actually changes.",
@@ -478,6 +540,12 @@ export function registerBlogTools(server: McpServer) {
         .nullable()
         .optional()
         .describe("Full CTA object (advanced). Must include at least one of id/slug/ctaHref. Pass null to clear the CTA. Mutually exclusive with cta."),
+      ctas: z
+        .array(blogCtaEntryShape)
+        .optional()
+        .describe(
+          "Full-replace ordered list of ALL of this article's CTAs (advanced escape hatch). Mutually exclusive with `cta`/`sidePageInfo`. Rejected server-side unless anchors are valid (at most one `end`, unique `after_h2` indices). Pass `[]` to clear every CTA. For a targeted edit/add/remove of a SINGLE CTA by id without having to hand-assemble this whole array, prefer blog_cta_update / blog_cta_add / blog_cta_delete."
+        ),
       slug: z
         .string()
         .optional()
@@ -498,7 +566,7 @@ export function registerBlogTools(server: McpServer) {
         ),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ articleId, title, content, description, excerpt, status, metaTitle, metaDescription, humanize, authorId, categoryId, featured, authorityLinkPlacement, featuredImageUrl, featuredImageAlt, featuredImageDescription, cta, sidePageInfo, slug, publicationId, updateReferences, brandId }) => {
+    async ({ articleId, title, content, description, excerpt, status, metaTitle, metaDescription, humanize, authorId, categoryId, featured, authorityLinkPlacement, featuredImageUrl, featuredImageAlt, featuredImageDescription, cta, sidePageInfo, ctas, slug, publicationId, updateReferences, brandId }) => {
       const id = requireBrandId(brandId);
       const data = await api.patch<any>(`/api/agent/v1/brands/${id}/blogs/${articleId}`, {
         postTitle: title,
@@ -518,6 +586,7 @@ export function registerBlogTools(server: McpServer) {
         postImageDesc: featuredImageDescription,
         cta,
         sidePageInfo,
+        ctas,
         postUrl: slug,
         publicationId,
         updateReferences,

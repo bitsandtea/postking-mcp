@@ -17,11 +17,15 @@ import { detailParam, project, projectList, truncate, type Projector } from "../
  *   3. Add      → brand_truth_create (describe facts in plain language; an LLM
  *                 extraction pipeline decides which atomic truths to keep/skip)
  *   4. Edit     → brand_truth_update (direct field edit; does NOT re-run the LLM)
- *   5. Reject   → brand_truth_delete (deletes AND records rejection memory so the
- *                 system stops re-suggesting that fact)
+ *   5. Reject   → brand_truth_delete (SOFT delete — keeps the row with
+ *                 deletedAt set AND records rejection memory so the system
+ *                 stops re-suggesting that fact)
+ *   6. Undo     → brand_truth_restore (clears deletedAt and the rejection
+ *                 memory brand_truth_delete recorded)
  *
  * Read-only tools: brand_truth_list, brand_truth_get.
- * Write tools:     brand_truth_create, brand_truth_update, brand_truth_delete.
+ * Write tools:     brand_truth_create, brand_truth_update,
+ *                   brand_truth_delete, brand_truth_restore.
  */
 
 const brandOpt = z.string().optional().describe("Brand ID (defaults to active brand)");
@@ -42,7 +46,7 @@ const PERSONA_SCOPES = ["personal", "professional", "both"] as const;
 // ── Projectors ────────────────────────────────────────────────────────────────
 
 const truthProj: Projector<Record<string, unknown>> = {
-  short: (r) => ({ id: r.id, name: r.name, type: r.type, pinned: r.pinned }),
+  short: (r) => ({ id: r.id, name: r.name, type: r.type, pinned: r.pinned, deletedAt: r.deletedAt ?? null }),
   medium: (r) => ({
     id: r.id,
     name: r.name,
@@ -53,6 +57,7 @@ const truthProj: Projector<Record<string, unknown>> = {
     summary: truncate(r.description as unknown, 160),
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
+    deletedAt: r.deletedAt ?? null,
   }),
 };
 
@@ -64,8 +69,9 @@ export function registerBrandTruthTools(server: McpServer) {
     "brand_truth_list",
     [
       "List the brand's stored brand truths (atomic facts/observations used to ground generation).",
-      "short {id,name,type,pinned}; medium adds personaScope+tags+summary+timestamps; full = raw.",
+      "short {id,name,type,pinned,deletedAt}; medium adds personaScope+tags+summary+timestamps; full = raw.",
       "Filter by type, personaScope, tags (array or comma-separated), or a free-text query.",
+      "By default, soft-deleted truths (brand_truth_delete) are excluded. Pass includeDeleted: true to see them too — each returned row's `deletedAt` tells live rows (null) from trashed ones (a timestamp) apart. Restore a trashed one with brand_truth_restore.",
     ].join(" "),
     {
       type: z.enum(TRUTH_TYPES).optional().describe("Filter by truth type."),
@@ -76,10 +82,11 @@ export function registerBrandTruthTools(server: McpServer) {
         .optional()
         .describe("Filter by tags. Accepts an array (['pricing','tone']) or a comma-separated string ('pricing,tone')."),
       limit: z.number().int().min(1).max(200).optional().describe("Max number of entries to return."),
+      includeDeleted: z.boolean().optional().describe("Include soft-deleted truths (deletedAt set) alongside live ones. Defaults to false (live only)."),
       detail: detailParam("short"),
       brandId: brandOpt,
     },
-    async ({ type, query, personaScope, tags, limit, detail, brandId }) => {
+    async ({ type, query, personaScope, tags, limit, includeDeleted, detail, brandId }) => {
       const id = requireBrandId(brandId);
       const qs = new URLSearchParams();
       if (type) qs.set("type", type);
@@ -90,6 +97,7 @@ export function registerBrandTruthTools(server: McpServer) {
         if (csv) qs.set("tags", csv);
       }
       if (limit !== undefined) qs.set("limit", String(limit));
+      if (includeDeleted) qs.set("includeDeleted", "true");
       const suffix = qs.toString() ? `?${qs.toString()}` : "";
       const data = await api.get<unknown>(`/api/agent/v1/brands/${id}/brand-truth${suffix}`);
       // Defensive: endpoint returns { items: [...] }, but tolerate a raw array too.
@@ -237,9 +245,9 @@ export function registerBrandTruthTools(server: McpServer) {
   server.tool(
     "brand_truth_delete",
     [
-      "Delete a brand truth by ID.",
-      "This also records rejection memory: the system learns to stop re-suggesting that fact during future extractions.",
-      "Use it deliberately — deleting a truth teaches PostKing that the fact should not come back.",
+      "SOFT-delete a brand truth by ID — the row is kept (deletedAt is set) and is undoable with brand_truth_restore, it just stops showing up in brand_truth_list/brand_truth_get by default (pass includeDeleted: true to see it) and stops being used to ground generation.",
+      "This also records rejection memory: the system learns to stop re-suggesting that fact during future extractions, even while it's trashed.",
+      "Use it deliberately — deleting a truth teaches PostKing that the fact should not come back. If you got it wrong, brand_truth_restore undoes both the deletion and the rejection memory.",
     ].join(" "),
     {
       id: z.string().describe("Brand truth entry ID to delete."),
@@ -249,6 +257,22 @@ export function registerBrandTruthTools(server: McpServer) {
       const id = requireBrandId(brandId);
       const data = await api.delete<unknown>(`/api/agent/v1/brands/${id}/brand-truth/${entryId}`);
       return { content: [{ type: "text" as const, text: JSON.stringify(data ?? { ok: true }) }] };
+    }
+  );
+
+  // ── brand_truth_restore ────────────────────────────────────────────────────────
+  server.tool(
+    "brand_truth_restore",
+    "Undo a brand_truth_delete: clears the entry's deletedAt (making it live again — it reappears in default brand_truth_list/brand_truth_get results and resumes grounding generation) and clears the rejection memory that delete recorded, so the fact is no longer suppressed from future extractions.",
+    {
+      id: z.string().describe("Brand truth entry ID to restore (find trashed entries with brand_truth_list(includeDeleted: true))."),
+      brandId: brandOpt,
+    },
+    async ({ id: entryId, brandId }) => {
+      const id = requireBrandId(brandId);
+      const data = await api.post<unknown>(`/api/agent/v1/brands/${id}/brand-truth/${entryId}/restore`, {});
+      const raw = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
+      return { content: [{ type: "text" as const, text: JSON.stringify(raw.entry ?? raw) }] };
     }
   );
 }

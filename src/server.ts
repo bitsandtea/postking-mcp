@@ -25,6 +25,7 @@ import { registerSocialTools } from "./tools/social.js";
 import { registerDomainTools } from "./tools/domains.js";
 import { registerUserTools } from "./tools/user.js";
 import { registerBlogTools } from "./tools/blog.js";
+import { registerBlogCtaTools } from "./tools/blog-ctas.js";
 import { registerSeoTools } from "./tools/seo/index.js";
 import { registerKeyTools } from "./tools/keys.js";
 import { registerJobTools } from "./tools/jobs.js";
@@ -189,6 +190,7 @@ This server also exposes guided prompts for common end-to-end flows — \`gettin
   registerDomainTools(server);
   registerUserTools(server);
   registerBlogTools(server);
+  registerBlogCtaTools(server);
   registerSeoTools(server);
   registerKeyTools(server);
   registerJobTools(server);

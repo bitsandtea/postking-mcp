@@ -1,11 +1,12 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { api } from "../../client.js";
+import { api, ApiError } from "../../client.js";
 import { requireBrandId } from "../../state.js";
 import { detailParam, project, projectList, type Projector } from "../../detail.js";
 import { brandDashboardUrl } from "../../links.js";
 import { etaFor } from "../../etas.js";
 import { SUPPORTED_LANGUAGE_CODES, LANGUAGE_CODE_LIST_TEXT, languageParam } from "../../languages.js";
+import { isCannibalizationGuardError, cannibalizationGuardResult } from "../../cannibalizationGuard.js";
 
 /**
  * SEO / GEO flow — brief review/approval, custom (one-off) brief creation, and
@@ -447,6 +448,40 @@ export function registerSeoBriefTools(server: McpServer) {
     }
   );
 
+  // ── 6h. Cannibalization preflight ─────────────────────────────────────────
+  server.tool(
+    "seo_check_cannibalization",
+    [
+      "Read-only preflight — NO writes, NO credits charged. Checks whether a proposed article title/keyword would duplicate an existing published article or an in-flight brief before you write anything.",
+      "Call this BEFORE seo_write_article or generate_blog_post when you're unsure whether the brand already has content on this topic. It's optional — seo_write_article/generate_blog_post already run the same guard server-side and will 409 with the same outcome shape if you skip straight to writing.",
+      "Response is a CannibalizationGuardOutcome: { decision: 'create'|'refresh'|'blocked', reason, matches: [...], targetArticleId?, conflictingBriefId?, similarity? }.",
+      "decision='create': no conflict, proceed with seo_write_article/generate_blog_post as normal.",
+      "decision='refresh': an existing article already covers this — call refresh_blog_article with `targetArticleId` (from this response) as `blogId` INSTEAD of writing a new article.",
+      "decision='blocked': an in-flight brief already covers this keyword (`conflictingBriefId`) — wait for it to resolve, do not force.",
+      "Only pass forceCannibalization: true to seo_write_article/generate_blog_post when the USER has explicitly said they want a duplicate/second article anyway — never decide this on your own initiative.",
+    ].join(" "),
+    {
+      title: z.string().min(1).describe("Proposed article title"),
+      primaryKeyword: z.string().min(1).describe("Proposed article's primary target keyword"),
+      languageCode: z.string().optional().describe("Content language to scope the check to (omit to use the brand's default)"),
+      briefId: z.string().optional().describe("SeoBrief ID this check is for, if one already exists"),
+      exactOnly: z.boolean().optional().describe("Restrict matching to exact slug/title/keyword matches only, skipping embedding/LLM similarity (default false)"),
+      brandId: brandOpt,
+    },
+    async ({ title, primaryKeyword, languageCode, briefId, exactOnly, brandId }) => {
+      const id = requireBrandId(brandId);
+      const body: Record<string, unknown> = { title, primaryKeyword };
+      if (languageCode !== undefined) body.languageCode = languageCode;
+      if (briefId !== undefined) body.briefId = briefId;
+      if (exactOnly !== undefined) body.exactOnly = exactOnly;
+      const data = await api.post<unknown>(
+        `/api/agent/v1/brands/${id}/seo/cannibalization-check`,
+        body
+      );
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    }
+  );
+
   // ── 7. Write article ──────────────────────────────────────────────────────
   server.tool(
     "seo_write_article",
@@ -457,6 +492,7 @@ export function registerSeoBriefTools(server: McpServer) {
       "Precondition: the brief for this roadmap item must be in status `approved`. If the brief is still `drafted` or `pending_review`, review with `seo_list_briefs` / `seo_get_brief`, refine with `seo_edit_brief`, then approve with `seo_approve_briefs` (which will auto-generate).",
       "Returns an articleId that can be reviewed, edited, or published.",
       "generateHeroImage, attachedAssetId, verify, and language only apply to article (blog) briefs — for comparison/landing-type roadmap items the server silently ignores all four and generates the page through the comparison/landing pipeline instead.",
+      "Cannibalization guard: this write is checked server-side before drafting. Optionally preflight with seo_check_cannibalization first. On a 409 response here (or a preflight decision of 'refresh'), call refresh_blog_article with the guard's `targetArticleId` as `blogId` INSTEAD of retrying this tool. On decision 'blocked', an in-flight brief already covers this keyword (`conflictingBriefId`) — wait for it, don't force. Only pass forceCannibalization: true when the USER has explicitly said they want a duplicate/second article anyway — never decide this yourself. A success response may carry an optional `cannibalizationGuard` field when a guard outcome was already stamped on the brief.",
     ].join(" "),
     {
       roadmapItemId: z.string().describe("Roadmap item ID from seo_list_roadmap"),
@@ -483,9 +519,16 @@ export function registerSeoBriefTools(server: McpServer) {
       language: languageParam(
         "Wins over the roadmap item's own language for this article. Omit to write in the brief's existing language."
       ),
+      forceCannibalization: z
+        .boolean()
+        .optional()
+        .describe(
+          "Bypass the cannibalization guard and write a new article even if it duplicates an existing one. " +
+            "Only set this when the USER has explicitly said they want a duplicate/second article anyway — never decide this on your own initiative."
+        ),
       brandId: brandOpt,
     },
-    async ({ roadmapItemId, voiceProfileId, generateHeroImage, attachedAssetId, verify, language, brandId }) => {
+    async ({ roadmapItemId, voiceProfileId, generateHeroImage, attachedAssetId, verify, language, forceCannibalization, brandId }) => {
       const id = requireBrandId(brandId);
       const body: Record<string, unknown> = {};
       if (voiceProfileId !== undefined) body.voiceProfileId = voiceProfileId;
@@ -493,11 +536,17 @@ export function registerSeoBriefTools(server: McpServer) {
       if (attachedAssetId !== undefined) body.attachedAssetId = attachedAssetId;
       if (verify !== undefined) body.verify = verify;
       if (language !== undefined) body.language = language;
-      const data = await api.post<unknown>(
-        `/api/agent/v1/brands/${id}/seo/roadmap/${roadmapItemId}/write`,
-        body
-      );
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      if (forceCannibalization !== undefined) body.forceCannibalization = forceCannibalization;
+      try {
+        const data = await api.post<unknown>(
+          `/api/agent/v1/brands/${id}/seo/roadmap/${roadmapItemId}/write`,
+          body
+        );
+        return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      } catch (err) {
+        if (isCannibalizationGuardError(err)) return cannibalizationGuardResult(err);
+        throw err;
+      }
     }
   );
 }
