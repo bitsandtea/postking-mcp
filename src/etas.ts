@@ -48,6 +48,8 @@ const ETA_BY_KIND: Record<string, string> = {
   brand_audience_review_edit: "~30–90 s",
   // Brand Tools — AI draft (structural config + marketing copy, two sequential LLM calls)
   brand_tool_generate: "~20–40 s",
+  // Content repurposing (blog/URL/text/existing post → social posts, blog, or text)
+  post_repurpose: "~1–3 min",
 };
 
 /** Human ETA string for an operation kind, or null when unknown. */

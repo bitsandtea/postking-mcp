@@ -2,72 +2,24 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { api } from "../client.js";
 import { requireBrandId } from "../state.js";
-import { detailParam, project, type Projector } from "../detail.js";
+import { etaFor } from "../etas.js";
 import { languageParam } from "../languages.js";
-
-// The server response nests generated content under `saved` — `saved.posts` for
-// social targets, `saved.blog` for blog targets. There is no top-level `posts`
-// key, and `variations` is a platform-keyed object (Record<platform, ...>), not
-// an array — so it must never be treated as a list of posts.
-function getSavedPosts(data: Record<string, unknown>): Record<string, unknown>[] {
-  const saved = data.saved as Record<string, unknown> | undefined;
-  return Array.isArray(saved?.posts) ? (saved.posts as Record<string, unknown>[]) : [];
-}
-
-function getSavedBlog(data: Record<string, unknown>): Record<string, unknown> | undefined {
-  const saved = data.saved as Record<string, unknown> | undefined;
-  return saved?.blog as Record<string, unknown> | undefined;
-}
-
-const socialProjector: Projector<Record<string, unknown>> = {
-  short: (data) => {
-    const posts = getSavedPosts(data);
-    return { targetType: "social", postIds: posts.map((p) => p.id) };
-  },
-  medium: (data) => {
-    const posts = getSavedPosts(data);
-    return {
-      targetType: "social",
-      variations: posts.map((p) => ({ id: p.id, platform: p.platform, content: p.content })),
-    };
-  },
-};
-
-const blogProjector: Projector<Record<string, unknown>> = {
-  short: (data) => {
-    const blog = getSavedBlog(data);
-    return { targetType: "blog", articleId: blog?.id ?? null, blogId: blog?.blogId ?? null };
-  },
-  medium: (data) => {
-    const blog = getSavedBlog(data);
-    return {
-      targetType: "blog",
-      articleId: blog?.id ?? null,
-      blogId: blog?.blogId ?? null,
-      title: blog?.postTitle ?? null,
-    };
-  },
-};
-
-// targetType "text" has no `saved` posts/blog — the generated copy lives in the
-// same platform-keyed `variations` object as social output, so it gets its own
-// projector rather than being squeezed into socialProjector's post-array shape.
-const textProjector: Projector<Record<string, unknown>> = {
-  short: (data) => ({ targetType: "text", variations: data.variations ?? null }),
-  medium: (data) => ({ targetType: "text", variations: data.variations ?? null }),
-};
 
 export function registerRepurposeTools(server: McpServer) {
   server.tool(
     "repurpose_content",
-    [
-      "Turn a URL, text, blog post, or existing PostKing post into new content for social media or blogs.",
-      "IMPORTANT: When the source is a URL, pass it directly to this tool via sourceUrl — do NOT fetch or crawl the URL yourself first. PostKing handles all crawling internally.",
-      "Source types: url | text | blog | social_post.",
-      "Target types: social (LinkedIn, X, etc.) | blog | text.",
-      "When targetType is 'blog', pass publicationId to choose which blog publication the generated article is filed under (ids from list_publications) — omit to fall back to the brand's default publication for the content's language.",
-      "Supports detail param: short=ids only, medium=key fields (default), full=raw response.",
-    ].join(" "),
+    (() => {
+      const eta = etaFor("post_repurpose");
+      return [
+        "Async. Turn a URL, text, blog post, or existing PostKing post into new content for social media or blogs.",
+        "IMPORTANT: When the source is a URL, pass it directly to this tool via sourceUrl — do NOT fetch or crawl the URL yourself first. PostKing handles all crawling internally.",
+        "Source types: url | text | blog | social_post.",
+        "Target types: social (LinkedIn, X, etc.) | blog | text.",
+        "When targetType is 'blog', pass publicationId to choose which blog publication the generated article is filed under (ids from list_publications) — omit to fall back to the brand's default publication for the content's language.",
+        "Returns { operationId, jobId, pollUrl, status } — poll get_job(operationId) until state is 'completed' (or 'failed'/'cancelled'); the generated posts/blog are in the completed job's result.",
+        ...(eta ? [`Typically takes ${eta}.`] : []),
+      ].join(" ");
+    })(),
     {
       sourceType: z
         .enum(["url", "text", "blog", "social_post"])
@@ -105,7 +57,6 @@ export function registerRepurposeTools(server: McpServer) {
         .optional()
         .describe("Voice profile IDs. Single ID applies to all platforms: ['clxvoice1']. Per-platform: ['x:clxvoice1','linkedin:clxvoice2']. Get IDs from list_voices."),
       language: languageParam("The repurposed output is written in this language regardless of the source language."),
-      detail: detailParam("medium"),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
     async ({
@@ -124,7 +75,6 @@ export function registerRepurposeTools(server: McpServer) {
       voiceProfileIds,
       language,
       publicationId,
-      detail,
       brandId,
     }) => {
       const id = requireBrandId(brandId);
@@ -148,7 +98,7 @@ export function registerRepurposeTools(server: McpServer) {
         }
       }
 
-      const raw = await api.post(`/api/agent/v1/tools/repurpose`, {
+      const raw = await api.post(`/api/agent/v1/brands/${id}/posts/repurpose`, {
         brandId: id,
         sourceType,
         sourceUrl,
@@ -171,29 +121,10 @@ export function registerRepurposeTools(server: McpServer) {
 
       const data = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
 
-      // `variations` is present on every response regardless of target (it's the
-      // platform-keyed generation object), so it can't disambiguate the branch —
-      // metadata.targetType is the actual signal. Fall back to shape-sniffing
-      // `saved.blog` only if metadata is ever missing.
-      const metadata = data.metadata as Record<string, unknown> | undefined;
-      const responseTargetType =
-        (metadata?.targetType as string | undefined) ??
-        (getSavedBlog(data) ? "blog" : "social");
-
-      let result: unknown;
-      if (detail === "full") {
-        // `sourceContent` (the full source text, can be tens of KB) and
-        // `originalVariations` are raw generation inputs/intermediates — not
-        // useful to the caller and wasteful to return even at full detail.
-        const { sourceContent: _sourceContent, originalVariations: _originalVariations, ...rest } = data;
-        result = rest;
-      } else if (responseTargetType === "blog") {
-        result = project(detail, data, blogProjector);
-      } else if (responseTargetType === "text") {
-        result = project(detail, data, textProjector);
-      } else {
-        result = project(detail, data, socialProjector);
-      }
+      const result = {
+        ...data,
+        note: "Async repurpose started. Poll get_job(operationId) until state is 'completed' (or 'failed'/'cancelled'). The generated posts/blog are in the completed job's result.",
+      };
 
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result) }],

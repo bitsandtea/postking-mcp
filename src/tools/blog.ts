@@ -697,17 +697,57 @@ export function registerBlogTools(server: McpServer) {
   // ── Create category ───────────────────────────────────────────────────────
   server.tool(
     "create_blog_category",
-    "Create a new category in a blog publication.",
+    "Create a new category in a blog publication. seoTitle/metaDescription/intro/noindex can also be set later via update_blog_category.",
     {
       publicationId: z.string().describe("Blog publication ID"),
       name: z.string().describe("Category name"),
       slug: z.string().describe("URL slug, e.g. 'marketing-tips'"),
       description: z.string().optional(),
+      seoTitle: z.string().optional().describe("Overrides the hub page's generated <title> when set and non-empty."),
+      metaDescription: z.string().optional().describe("Overrides the hub page's generated meta description when set and non-empty."),
+      intro: z.string().optional().describe("Long-form hub body copy rendered under the H1, taking precedence over `description`."),
+      noindex: z.boolean().optional().describe("Set true to serve the hub page with robots noindex."),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ publicationId, name, slug, description, brandId }) => {
+    async ({ publicationId, name, slug, description, seoTitle, metaDescription, intro, noindex, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.post<any>(`/api/agent/v1/brands/${id}/blogs/${publicationId}/categories`, { name, slug, description });
+      const data = await api.post<any>(`/api/agent/v1/brands/${id}/blogs/${publicationId}/categories`, { name, slug, description, seoTitle, metaDescription, intro, noindex });
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+      };
+    }
+  );
+
+  // ── Update category ───────────────────────────────────────────────────────
+  server.tool(
+    "update_blog_category",
+    "Edit a category's name, slug, or hub-page SEO/body copy (seoTitle, metaDescription, intro, noindex). WARNING: changing `slug` changes the category hub's public URL (<blogPath>/category/<slug>) — there is NO redirect, so the old URL 404s the moment this call lands. Changing `name` alone never touches `slug`.",
+    {
+      categoryId: z.string().describe("Category ID (from list_blog_categories)"),
+      publicationId: z.string().describe("Blog publication ID"),
+      name: z.string().optional().describe("New category name."),
+      slug: z.string().optional().describe("New URL slug. Re-normalized server-side; rejected with an error if another category in the same publication already uses it. Changing this changes the public hub URL with no redirect."),
+      seoTitle: z.string().optional().describe("Overrides the hub page's generated <title> when set and non-empty."),
+      metaDescription: z.string().optional().describe("Overrides the hub page's generated meta description when set and non-empty."),
+      intro: z.string().optional().describe("Long-form hub body copy rendered under the H1, taking precedence over the category's `description`."),
+      noindex: z.boolean().optional().describe("Set true to serve the hub page with robots noindex."),
+      brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
+    },
+    async ({ categoryId, publicationId, name, slug, seoTitle, metaDescription, intro, noindex, brandId }) => {
+      const id = requireBrandId(brandId);
+      const body: Record<string, unknown> = {};
+      if (name !== undefined) body.name = name;
+      if (slug !== undefined) body.slug = slug;
+      if (seoTitle !== undefined) body.seoTitle = seoTitle;
+      if (metaDescription !== undefined) body.metaDescription = metaDescription;
+      if (intro !== undefined) body.intro = intro;
+      if (noindex !== undefined) body.noindex = noindex;
+      if (Object.keys(body).length === 0) {
+        return {
+          content: [{ type: "text" as const, text: "No fields to update. Pass at least one of: name, slug, seoTitle, metaDescription, intro, noindex." }],
+        };
+      }
+      const data = await api.patch<any>(`/api/agent/v1/brands/${id}/blogs/${publicationId}/categories/${categoryId}`, body);
       return {
         content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
       };
