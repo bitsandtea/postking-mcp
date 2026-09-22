@@ -2,38 +2,59 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { api } from "../client.js";
 import { requireBrandId } from "../state.js";
-import { detailParam, project, truncate, type Projector } from "../detail.js";
+import { detailParam, project, type Projector } from "../detail.js";
 import { languageParam } from "../languages.js";
+
+// The server response nests generated content under `saved` — `saved.posts` for
+// social targets, `saved.blog` for blog targets. There is no top-level `posts`
+// key, and `variations` is a platform-keyed object (Record<platform, ...>), not
+// an array — so it must never be treated as a list of posts.
+function getSavedPosts(data: Record<string, unknown>): Record<string, unknown>[] {
+  const saved = data.saved as Record<string, unknown> | undefined;
+  return Array.isArray(saved?.posts) ? (saved.posts as Record<string, unknown>[]) : [];
+}
+
+function getSavedBlog(data: Record<string, unknown>): Record<string, unknown> | undefined {
+  const saved = data.saved as Record<string, unknown> | undefined;
+  return saved?.blog as Record<string, unknown> | undefined;
+}
 
 const socialProjector: Projector<Record<string, unknown>> = {
   short: (data) => {
-    const posts = (data.posts ?? data.variations ?? []) as Record<string, unknown>[];
+    const posts = getSavedPosts(data);
     return { targetType: "social", postIds: posts.map((p) => p.id) };
   },
   medium: (data) => {
-    const posts = (data.posts ?? data.variations ?? []) as Record<string, unknown>[];
+    const posts = getSavedPosts(data);
     return {
       targetType: "social",
-      variations: posts.map((p) => ({ platform: p.platform, content: p.content })),
+      variations: posts.map((p) => ({ id: p.id, platform: p.platform, content: p.content })),
     };
   },
 };
 
 const blogProjector: Projector<Record<string, unknown>> = {
   short: (data) => {
-    const article = data.article as Record<string, unknown> | undefined;
-    return { targetType: "blog", articleId: article?.id ?? data.articleId ?? null };
+    const blog = getSavedBlog(data);
+    return { targetType: "blog", articleId: blog?.id ?? null, blogId: blog?.blogId ?? null };
   },
   medium: (data) => {
-    const article = (data.article as Record<string, unknown> | undefined) ?? {};
-    const body = article.body ?? article.content ?? null;
+    const blog = getSavedBlog(data);
     return {
-      articleId: article.id ?? data.articleId ?? null,
-      title: article.title ?? null,
-      wordCount: article.wordCount ?? null,
-      excerpt: truncate(body, 500),
+      targetType: "blog",
+      articleId: blog?.id ?? null,
+      blogId: blog?.blogId ?? null,
+      title: blog?.postTitle ?? null,
     };
   },
+};
+
+// targetType "text" has no `saved` posts/blog — the generated copy lives in the
+// same platform-keyed `variations` object as social output, so it gets its own
+// projector rather than being squeezed into socialProjector's post-array shape.
+const textProjector: Projector<Record<string, unknown>> = {
+  short: (data) => ({ targetType: "text", variations: data.variations ?? null }),
+  medium: (data) => ({ targetType: "text", variations: data.variations ?? null }),
 };
 
 export function registerRepurposeTools(server: McpServer) {
@@ -150,11 +171,28 @@ export function registerRepurposeTools(server: McpServer) {
 
       const data = (typeof raw === "object" && raw !== null ? raw : {}) as Record<string, unknown>;
 
+      // `variations` is present on every response regardless of target (it's the
+      // platform-keyed generation object), so it can't disambiguate the branch —
+      // metadata.targetType is the actual signal. Fall back to shape-sniffing
+      // `saved.blog` only if metadata is ever missing.
+      const metadata = data.metadata as Record<string, unknown> | undefined;
+      const responseTargetType =
+        (metadata?.targetType as string | undefined) ??
+        (getSavedBlog(data) ? "blog" : "social");
+
       let result: unknown;
-      if ("posts" in data || "variations" in data) {
-        result = project(detail, data, socialProjector);
-      } else {
+      if (detail === "full") {
+        // `sourceContent` (the full source text, can be tens of KB) and
+        // `originalVariations` are raw generation inputs/intermediates — not
+        // useful to the caller and wasteful to return even at full detail.
+        const { sourceContent: _sourceContent, originalVariations: _originalVariations, ...rest } = data;
+        result = rest;
+      } else if (responseTargetType === "blog") {
         result = project(detail, data, blogProjector);
+      } else if (responseTargetType === "text") {
+        result = project(detail, data, textProjector);
+      } else {
+        result = project(detail, data, socialProjector);
       }
 
       return {
