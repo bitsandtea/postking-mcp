@@ -379,14 +379,14 @@ _Canonical flow: `knowledge_list` → `knowledge_get` → `knowledge_create` (po
 | `knowledge_delete` | Soft-delete a knowledge base item |
 
 ### Brand truth
-_Atomic facts/observations about a brand (hard facts, audience truths, strategy notes, negative space, content insights, topics) used to ground generation. Canonical flow: `brand_truth_list` → `brand_truth_get` → `brand_truth_create` (LLM extraction decides what to store) → `brand_truth_update` → `brand_truth_delete` (soft) → `brand_truth_restore` if needed._
+_Atomic facts/observations about a brand (hard facts, audience truths, strategy notes, negative space, content insights, topics) used to ground generation. Brand truths are maintained by PostKing's own model — callers never write name/description/content/type/tags/personaScope directly. Canonical flow: `brand_truth_list` → `brand_truth_get` → `brand_truth_create` (LLM extraction decides what to store) → `brand_truth_update` (LLM-mediated correction, or pin toggle) → `brand_truth_delete` (soft) → `brand_truth_restore` if needed._
 
 | Tool | Description |
 |------|-------------|
 | `brand_truth_list` | List stored brand truths — filter by type, personaScope, tags, or free-text query; `includeDeleted` to also see soft-deleted rows |
 | `brand_truth_get` | Fetch a single brand truth with full content and metadata |
 | `brand_truth_create` | Describe facts in plain language; an LLM extraction pipeline decides which atomic truths to store vs skip (returns `added` + `skipped`) |
-| `brand_truth_update` | Direct field edit of a known truth (name, description, content, tags, type, personaScope, pinned) — does not re-run the LLM |
+| `brand_truth_update` | Describe a correction in plain language and/or toggle `pinned`; PostKing's model decides whether/how to rewrite the entry (may refuse with `applied:false` + `reason`) — never a direct field edit |
 | `brand_truth_delete` | Soft-delete a truth (undoable) and record rejection memory so it stops being re-suggested |
 | `brand_truth_restore` | Undo a `brand_truth_delete` — clears deletedAt and the rejection memory |
 

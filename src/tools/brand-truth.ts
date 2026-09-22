@@ -16,7 +16,9 @@ import { detailParam, project, projectList, truncate, type Projector } from "../
  *   2. Inspect  → brand_truth_get
  *   3. Add      → brand_truth_create (describe facts in plain language; an LLM
  *                 extraction pipeline decides which atomic truths to keep/skip)
- *   4. Edit     → brand_truth_update (direct field edit; does NOT re-run the LLM)
+ *   4. Correct  → brand_truth_update (LLM-mediated: describe a correction in
+ *                 plain language, or toggle pinned; PostKing's own model
+ *                 decides whether/how to rewrite the entry's content)
  *   5. Reject   → brand_truth_delete (SOFT delete — keeps the row with
  *                 deletedAt set AND records rejection memory so the system
  *                 stops re-suggesting that fact)
@@ -203,41 +205,55 @@ export function registerBrandTruthTools(server: McpServer) {
   server.tool(
     "brand_truth_update",
     [
-      "Targeted edit of an existing, known brand truth (by ID).",
-      "This does NOT re-run the LLM extraction pipeline — it writes the provided fields directly.",
-      "Use it to correct wording (name/description/content), fix the type/personaScope, adjust tags, or pin/unpin.",
-      "To capture NEW facts from prose, use brand_truth_create instead.",
+      "Correct or pin/unpin an existing, known brand truth (by ID).",
+      "Brand truths are maintained by PostKing's OWN model, not written directly by callers — you cannot set name/description/content/type/tags/personaScope yourself.",
+      "Describe the correction in plain language via `correction` (e.g. \"the pricing is $49 not $39\", \"this only applies to the professional persona\", \"reword: say it plainer\") and PostKing's model reads the existing entry, decides whether the correction is a real, verifiable, on-topic, non-duplicate change, and rewrites exactly the fields that need to change.",
+      "The model may refuse: it returns { applied: false, reason } when the correction isn't about this entry, is speculation/marketing fluff, contradicts strong evidence, or asks to change nothing.",
+      "`pinned` is a separate, direct toggle (true/false) — it does not touch content and is never refused.",
+      "Pass at least one of `correction`/`pinned`. If both are given, the correction is applied first, then the pin toggle.",
+      "To capture a brand-new fact instead of correcting this one, use brand_truth_create.",
     ].join(" "),
     {
       id: z.string().describe("Brand truth entry ID to update."),
-      name: z.string().min(1).optional().describe("Updated short label/name."),
-      description: z.string().optional().describe("Updated description/summary."),
-      content: z.string().optional().describe("Updated full content body of the truth."),
-      tags: z.array(z.string()).optional().describe("Replacement tag list. Pass [] to clear all tags."),
-      type: z.enum(TRUTH_TYPES).optional().describe("Reclassify the truth type."),
-      personaScope: z.enum(PERSONA_SCOPES).optional().describe("Updated persona scope."),
-      pinned: z.boolean().optional().describe("Pin (true) or unpin (false) this truth."),
-      humanize: z
-        .boolean()
+      correction: z
+        .string()
+        .min(1)
+        .max(2000)
         .optional()
         .describe(
-          "Run the anti-slop humanization pass (dash normalization, banned-phrase replacement, and the de-slop critic) over name/description/content before saving. No credit cost, but the critic step is a synchronous LLM call that adds a few seconds of latency to this request. Only applies when at least one of those fields is also being edited."
+          "Plain-language description of what's wrong or what should change about this ONE entry (≤2000 chars). PostKing's model reads the existing entry plus this correction and decides whether/how to rewrite it. It may refuse — check `applied` in the response; when false, `reason` explains why."
         ),
+      pinned: z.boolean().optional().describe("Pin (true) or unpin (false) this truth. Direct toggle, independent of `correction`, never refused."),
       brandId: brandOpt,
     },
-    async ({ id: entryId, name, description, content, tags, type, personaScope, pinned, humanize, brandId }) => {
+    async ({ id: entryId, correction, pinned, brandId }) => {
+      if (correction === undefined && pinned === undefined) {
+        throw new Error("Pass at least one of `correction` or `pinned`.");
+      }
       const id = requireBrandId(brandId);
-      const body: Record<string, unknown> = {};
-      if (name !== undefined) body.name = name;
-      if (description !== undefined) body.description = description;
-      if (content !== undefined) body.content = content;
-      if (tags !== undefined) body.tags = tags;
-      if (type !== undefined) body.type = type;
-      if (personaScope !== undefined) body.personaScope = personaScope;
-      if (pinned !== undefined) body.pinned = pinned;
-      if (humanize !== undefined) body.humanize = humanize;
-      const data = await api.patch<unknown>(`/api/agent/v1/brands/${id}/brand-truth/${entryId}`, body);
-      return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
+      const result: Record<string, unknown> = {};
+
+      if (correction !== undefined) {
+        const data = await api.post<unknown>(
+          `/api/agent/v1/brands/${id}/brand-truth/${entryId}/revise`,
+          { correction }
+        );
+        const raw = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
+        result.applied = raw.applied ?? false;
+        if (raw.entry !== undefined) result.entry = raw.entry;
+        if (raw.changed !== undefined) result.changed = raw.changed;
+        if (raw.reason !== undefined) result.reason = raw.reason;
+      }
+
+      if (pinned !== undefined) {
+        const data = await api.patch<unknown>(`/api/agent/v1/brands/${id}/brand-truth/${entryId}`, { pinned });
+        const raw = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
+        if (raw.entry !== undefined) result.entry = raw.entry;
+        if (result.applied === undefined) result.applied = true;
+        result.pinned = pinned;
+      }
+
+      return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
     }
   );
 
