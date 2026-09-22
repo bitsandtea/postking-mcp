@@ -667,7 +667,7 @@ export function registerBlogTools(server: McpServer) {
   // ── List categories ───────────────────────────────────────────────────────
   server.tool(
     "list_blog_categories",
-    "List all categories for a blog publication. Returns id+name+slug by default (short); use detail='medium' for description+articleCount.",
+    "List all categories for a blog publication. Returns id+name+slug by default (short); use detail='medium' for description+articleCount+seoTitle+metaDescription+intro+noindex (the fields update_blog_category writes).",
     {
       publicationId: z.string().describe("Blog publication ID (from list_blogs)"),
       detail: detailParam("short"),
@@ -684,7 +684,11 @@ export function registerBlogTools(server: McpServer) {
           name: c.name,
           slug: c.slug,
           description: c.description,
-          articleCount: (c._count as Record<string, unknown>)?.blogArticles ?? c.articleCount ?? null,
+          articleCount: (c._count as Record<string, unknown>)?.articles ?? c.articleCount ?? null,
+          seoTitle: c.seoTitle,
+          metaDescription: c.metaDescription,
+          intro: c.intro,
+          noindex: c.noindex,
         }),
       };
       const result = { count: rawCategories.length, detail, categories: projectList(detail, rawCategories, proj) };
