@@ -8,8 +8,15 @@ function resolveApiUrl(): string {
   return process.env.POSTKING_API_URL || DEFAULT_API_URL;
 }
 
-/** True when `u` points at localhost, a loopback address, or a private-network host. */
-function isLocalHost(u: string): boolean {
+/**
+ * True when `u` points at localhost, a loopback address, or a private-network
+ * host. Exported for reuse as an SSRF guard on server-side fetches of
+ * caller-supplied URLs (e.g. `import_landing_page_bundle`'s manifest URLs) —
+ * this server has no dedicated fetch-arbitrary-URL guard of its own
+ * (asset/HTML imports normally fetch server-side, inside PostKing itself),
+ * so this is the closest existing check to reuse rather than duplicate.
+ */
+export function isLocalHost(u: string): boolean {
   try {
     const { hostname } = new URL(u);
     if (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "0.0.0.0" || hostname === "::1") {

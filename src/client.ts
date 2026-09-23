@@ -62,36 +62,25 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(
-  method: string,
-  path: string,
-  body?: unknown
-): Promise<T> {
+/** Resolved auth token + its source (file/env/oauth) — shared by JSON and multipart requests. */
+function requireToken(): { token: string; source: string } {
   const tokenResult = getTokenWithSource();
   if (!tokenResult) {
     throw new Error(notLoggedInMessage());
   }
-  const { token, source } = tokenResult;
+  return tokenResult;
+}
+
+async function doFetch(
+  method: string,
+  path: string,
+  headers: Record<string, string>,
+  body: BodyInit | undefined,
+  start: number
+): Promise<Response> {
   const url = `${config.apiUrl}${path}`;
-
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    Authorization: `Bearer ${token}`,
-  };
-  if (oauthConfig.internalSecret) {
-    headers["x-internal-secret"] = oauthConfig.internalSecret;
-  }
-
-  const start = Date.now();
-  log("api", "→ " + method + " " + path, { source });
-
-  let res: Response;
   try {
-    res = await fetch(url, {
-      method,
-      headers,
-      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-    });
+    return await fetch(url, { method, headers, ...(body !== undefined ? { body } : {}) });
   } catch (err) {
     const ms = Date.now() - start;
     const cause = err instanceof Error
@@ -100,7 +89,15 @@ async function request<T>(
     log("api", "✗ " + method + " " + path + " network error (" + ms + "ms)", { error: cause });
     throw new Error(`Cannot reach PostKing at ${url}: ${cause}`);
   }
+}
 
+async function handleResponse<T>(
+  res: Response,
+  method: string,
+  path: string,
+  start: number,
+  source: string
+): Promise<T> {
   if (!res.ok) {
     let message = `HTTP ${res.status}`;
     let envelope: AgentErrorEnvelope | undefined;
@@ -222,10 +219,60 @@ async function request<T>(
   return res.json() as Promise<T>;
 }
 
+async function request<T>(
+  method: string,
+  path: string,
+  body?: unknown
+): Promise<T> {
+  const { token, source } = requireToken();
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${token}`,
+  };
+  if (oauthConfig.internalSecret) {
+    headers["x-internal-secret"] = oauthConfig.internalSecret;
+  }
+
+  const start = Date.now();
+  log("api", "→ " + method + " " + path, { source });
+
+  const res = await doFetch(method, path, headers, body !== undefined ? JSON.stringify(body) : undefined, start);
+  return handleResponse<T>(res, method, path, start, source);
+}
+
+/**
+ * Same auth/error handling as `request`, but sends a `multipart/form-data`
+ * body (native `FormData`) instead of JSON — used for
+ * `import_landing_page_bundle`'s forward-to-agent-v1 call. Deliberately does
+ * NOT set a `Content-Type` header: the platform `fetch` implementation
+ * (undici, on Node >=18) sets the correct `multipart/form-data; boundary=...`
+ * header itself when the body is a `FormData` instance.
+ */
+async function requestMultipart<T>(
+  method: string,
+  path: string,
+  form: FormData
+): Promise<T> {
+  const { token, source } = requireToken();
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+  };
+  if (oauthConfig.internalSecret) {
+    headers["x-internal-secret"] = oauthConfig.internalSecret;
+  }
+
+  const start = Date.now();
+  log("api", "→ " + method + " " + path, { source });
+
+  const res = await doFetch(method, path, headers, form, start);
+  return handleResponse<T>(res, method, path, start, source);
+}
+
 export const api = {
   get: <T>(path: string) => request<T>("GET", path),
   post: <T>(path: string, body?: unknown) => request<T>("POST", path, body),
   put: <T>(path: string, body?: unknown) => request<T>("PUT", path, body),
   patch: <T>(path: string, body?: unknown) => request<T>("PATCH", path, body),
   delete: <T>(path: string) => request<T>("DELETE", path),
+  postMultipart: <T>(path: string, form: FormData) => requestMultipart<T>("POST", path, form),
 };

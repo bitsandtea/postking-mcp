@@ -16,6 +16,7 @@ import { detailParam, project, projectList, pick, truncate } from "../detail.js"
 import { brandDashboardUrl } from "../links.js";
 import { languageParam, SUPPORTED_LANGUAGE_CODES, LANGUAGE_CODE_LIST_TEXT } from "../languages.js";
 import { toUrlSegment } from "../sidePageSlug.js";
+import { fetchBundleFiles, BundleFetchError, type BundleManifestFile } from "../bundleImport.js";
 
 const brandOpt = z.string().optional().describe("Brand ID (defaults to active brand)");
 
@@ -197,6 +198,18 @@ interface RawHtmlInternalLinkAudit {
   [k: string]: unknown;
 }
 
+interface RawHtmlBundleReportSummary {
+  filesUploaded?: number;
+  totalBytes?: number;
+  entryPath?: string;
+  orphaned?: string[];
+  skipped?: { path?: string; reason?: string }[];
+  sanitizedSvgs?: string[];
+  malwareScan?: "clean" | "skipped";
+  sidePagesCreated?: number;
+  [k: string]: unknown;
+}
+
 interface RawHtmlImportReport {
   externalHosts?: string[];
   relativeAssetPaths?: string[];
@@ -205,6 +218,8 @@ interface RawHtmlImportReport {
   themeExtracted?: boolean;
   truncated?: boolean;
   extractability?: { verdict?: "ok" | "warn" | "blocked"; reasons?: string[] };
+  /** Present only on a bundle-sourced import (import_landing_page_bundle). */
+  bundle?: RawHtmlBundleReportSummary;
   [k: string]: unknown;
 }
 
@@ -474,6 +489,130 @@ export function registerLpTools(server: McpServer) {
               },
             ],
           };
+        }
+        throw err;
+      }
+    }
+  );
+
+  // ── Import landing page from a bundle of hosted files ──────────────────────
+  server.tool(
+    "import_landing_page_bundle",
+    [
+      "Import a multi-file static-build bundle (entry HTML + its img/css/font/js assets) as a raw-HTML landing page, resolving every relative asset path instead of leaving them broken.",
+      "IMPORTANT: this tool does NOT accept a local folder — MCP tool arguments can't carry a directory's worth of file bytes. For a local folder on disk, tell the user to run the postking CLI's `pking lp import-bundle <folder>` command instead; that command walks the folder directly and uploads it in one request.",
+      "This tool is for files that are already hosted somewhere reachable (e.g. brand Assets you already uploaded via upload_asset, or any public URL). Pass `files` as a manifest of `{path, url}` pairs — `path` is the file's path relative to the bundle root (forward-slash, no leading slash, e.g. \"img/home-v2/a.webp\"), `url` is where to fetch its bytes from. The server fetches every URL itself, then forwards the assembled bundle to the same import endpoint the CLI uses.",
+      "Include the entry HTML file's own path/url in `files` too (e.g. {path:\"index.html\", url:...}). Pass `entryPath` if the bundle has more than one .html file and it's ambiguous which is the entry — the error result lists candidates when needed.",
+      "Refused file types (executables, shell/server scripts, archives, .wasm, secrets like .env/.git/id_rsa) fail the whole import and name the offending path. Caps: 500 files, 150MB total, 20MB per image/font/video, 2MB per CSS file.",
+      "By default creates a brand-new landing page (optionally with `name`); pass `convertExistingSlug` to overwrite an existing landing page's content with the imported bundle instead. Set `createMissingSidePages` to true to auto-create side pages from other .html files found in the bundle.",
+      "Returns the same shape as import_landing_page_html, plus report.bundle: { filesUploaded, totalBytes, entryPath, orphaned (uploaded but never referenced), skipped, sanitizedSvgs, malwareScan, sidePagesCreated }.",
+    ].join(" "),
+    {
+      brandId: brandOpt,
+      files: z
+        .array(
+          z.object({
+            path: z.string().min(1).describe("Path relative to the bundle root, forward-slash, no leading slash (e.g. \"img/home-v2/a.webp\")."),
+            url: z.string().url().describe("Publicly fetchable URL to download this file's bytes from."),
+          })
+        )
+        .min(1)
+        .max(500)
+        .describe("Manifest of every file in the bundle, including the entry HTML itself."),
+      entryPath: z.string().optional().describe("Explicit entry HTML path (must match one of `files`' paths) when the bundle has multiple .html files and detection would be ambiguous."),
+      name: z.string().optional().describe("Display name for the new landing page"),
+      convertExistingSlug: z
+        .string()
+        .optional()
+        .describe("Slug of an EXISTING landing page to overwrite with the imported bundle, instead of creating a new one"),
+      createMissingSidePages: z
+        .boolean()
+        .optional()
+        .describe("Auto-create side pages from other .html files found in the bundle besides the entry"),
+    },
+    async ({ brandId, files, entryPath, name, convertExistingSlug, createMissingSidePages }) => {
+      const id = brandId ?? getActiveBrandId() ?? undefined;
+
+      let form: FormData;
+      try {
+        form = await fetchBundleFiles(files as BundleManifestFile[]);
+      } catch (err) {
+        if (err instanceof BundleFetchError) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  error: "bundle_fetch_failed",
+                  offendingPath: err.path || undefined,
+                  message: err.message,
+                }),
+              },
+            ],
+          };
+        }
+        throw err;
+      }
+
+      if (id !== undefined) form.append("brandId", id);
+      if (entryPath !== undefined) form.append("entryPath", entryPath);
+      if (name !== undefined) form.append("name", name);
+      if (convertExistingSlug !== undefined) form.append("convertExistingSlug", convertExistingSlug);
+      if (createMissingSidePages !== undefined) form.append("createMissingSidePages", String(createMissingSidePages));
+
+      try {
+        const data = await api.postMultipart<RawHtmlImportResult>("/api/agent/v1/landing-pages/import-html-bundle", form);
+        const result: Record<string, unknown> = { landingPage: data.landingPage, report: data.report };
+        if (id) result.dashboardUrl = brandDashboardUrl(id, "landing_pages");
+        return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 422 && err.code === "NOT_EXTRACTABLE") {
+          const reasons = Array.isArray(err.details?.reasons) ? (err.details!.reasons as string[]) : [];
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  error: "not_extractable",
+                  message:
+                    (err.message ||
+                      "This bundle can't be imported: it's a client-rendered app whose content depends on framework scripts that can't be hosted here.") +
+                    " Suggest to the user: use a fully static/exported build instead.",
+                  reasons,
+                }),
+              },
+            ],
+          };
+        }
+        if (err instanceof ApiError) {
+          const details = err.details as
+            | { offendingPath?: string; reason?: string; candidates?: string[] }
+            | undefined;
+          // BUNDLE_REJECTED can arrive with status 400, 413, or 422
+          // (BundleRejectedError.status on the server); entry-ambiguity
+          // VALIDATION errors carry `details.candidates` at 400; quota
+          // errors carry BUNDLE_QUOTA_EXCEEDED. Branch on the error shape,
+          // not the HTTP status, so all three still get the friendly message.
+          if (
+            err.code === "BUNDLE_REJECTED" ||
+            Array.isArray(details?.candidates) ||
+            err.code === "BUNDLE_QUOTA_EXCEEDED"
+          ) {
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text: JSON.stringify({
+                    error: "bundle_rejected",
+                    message: err.message,
+                    offendingPath: details?.offendingPath,
+                    reason: details?.reason,
+                    candidates: details?.candidates,
+                  }),
+                },
+              ],
+            };
+          }
         }
         throw err;
       }

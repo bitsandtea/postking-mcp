@@ -107,6 +107,7 @@ const OPEN_WORLD_EXACT = new Set([
   "competitor_refresh",
   "reddit_discover_subreddits",
   "import_asset_from_url",
+  "import_landing_page_bundle",
   "import_blog_articles",
   "check_ai_content",
   "trends_list",

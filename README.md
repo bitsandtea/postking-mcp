@@ -8,9 +8,9 @@ The official [Model Context Protocol](https://modelcontextprotocol.io) server fo
 
 Connect Claude (Desktop, Cursor, or any MCP client) to your PostKing account and manage your entire content operation through conversation — generate posts, schedule them, repurpose URLs into social content, write and publish blog articles, generate landing pages and side pages, run SEO / GEO research and drafting, manage your asset library and weekly posting schedule, handle domains and API keys, and more.
 
-The server exposes **275 tools across 29 modules** — full parity with the `postking-cli`.
+The server exposes **291 tools across 33 modules** — full parity with the `postking-cli`.
 
-> **Transport note:** On the remote HTTP transport (`mcp.postking.app`), 271 tools are available. The 4 authentication tools (`login_start`, `login_complete`, `logout`, `whoami`) are omitted on that transport because it uses OAuth bearer tokens rather than device-code login. All other 271 tools are identical across both transports.
+> **Transport note:** All 291 tools are registered on both transports, including on the remote HTTP transport (`mcp.postking.app`). The 4 authentication tools (`login_start`, `login_complete`, `logout`, `whoami`) stay registered there too — they just explain the OAuth bearer-token model instead of running a device-code flow, since that transport is already authenticated before any tool call happens.
 
 ---
 
@@ -229,6 +229,7 @@ _Canonical flow: `seo_add_seeds` → `seo_generate_keywords` → `seo_categorize
 |------|-------------|
 | `list_landing_pages` | List all landing pages for a brand |
 | `generate_landing_page` | Create and AI-generate a new landing page (async; poll via `get_job`) |
+| `import_landing_page_bundle` | Import a static-build bundle (entry HTML + assets) hosted at URLs — for a local folder, use the `postking-cli` `import-bundle` command instead |
 | `view_landing_page` | View a landing page including full section content |
 | `view_lp_draft` | View the current unpublished draft |
 | `edit_landing_page` | Edit landing page title or instructions (metadata only — does not touch page content) |
