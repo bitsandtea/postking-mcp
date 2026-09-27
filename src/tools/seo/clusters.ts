@@ -67,9 +67,33 @@ export function registerSeoClusterTools(server: McpServer) {
       `Typically takes ${etaFor("seo_cluster_generate")}.`,
       "Returns `{operationId, status}` — Poll `get_job` with the operationId until `state` is `completed` (or `failed`/`partially_failed`/`cancelled` on error).",
       "After completion, call seo_list_clusters to pick a target, then seo_generate_roadmap.",
+      "SCOPING (131-visibility-growth-probe): pass `keywordIds` and/or `seedKeywords` to cluster ONLY the keywords you care about — e.g. right after seeding + generating keywords for one new topic. Other unclustered keywords are left untouched (clusterId stays null). `seedKeywords` is resolved server-side to matching unclustered keyword ids (case-insensitive, word-boundary \"contains\" match against the seed phrase — a best-effort match, since keywords don't record their originating seed; use seo_list_keyword_ids for exact scoping instead).",
+      "Omit all of keywordIds/seedKeywords to cluster the whole unclustered pool (brand-wide write). If that pool is large, the server returns a dry-run summary `{ dryRun: true, unclusteredCount, bySource }` instead of running — pass `confirmBrandWide: true` to proceed anyway.",
       "Pass `languageCode` to scope this run to one language; omit to use the brand's first configured SEO market language. This WRITES new cluster rows stamped with that language — get it wrong and you mis-stamp clusters, not just filter a read.",
     ].join(" "),
     {
+      keywordIds: z
+        .array(z.string().min(1))
+        .min(1)
+        .max(500)
+        .optional()
+        .describe(
+          "Explicit SeoScoredKeyword ids (from seo_list_keyword_ids / seo_list_keywords) to cluster — scopes this run to only these keywords. Combine with seedKeywords to widen the scope."
+        ),
+      seedKeywords: z
+        .array(z.string().min(1))
+        .min(1)
+        .max(50)
+        .optional()
+        .describe(
+          "Seed phrases you generated keywords from (the seeds passed to seo_generate_keywords). Resolved server-side to the brand's unclustered, non-excluded keywords whose text contains each seed phrase. Use when you don't have keyword ids on hand."
+        ),
+      confirmBrandWide: z
+        .boolean()
+        .optional()
+        .describe(
+          "Required to proceed with an unscoped run (no keywordIds/seedKeywords) when the brand's unclustered pool is large. Ignored when keywordIds or seedKeywords are set."
+        ),
       languageCode: z
         .string()
         .optional()
@@ -78,15 +102,40 @@ export function registerSeoClusterTools(server: McpServer) {
         ),
       brandId: brandOpt,
     },
-    async ({ languageCode, brandId }) => {
+    async ({ keywordIds, seedKeywords, confirmBrandWide, languageCode, brandId }) => {
       const id = requireBrandId(brandId);
       const body: Record<string, unknown> = {};
+      if (keywordIds !== undefined) body.keywordIds = keywordIds;
+      if (seedKeywords !== undefined) body.seedKeywords = seedKeywords;
+      if (confirmBrandWide !== undefined) body.confirmBrandWide = confirmBrandWide;
       if (languageCode !== undefined) body.languageCode = languageCode;
-      const data = await api.post<unknown>(
-        `/api/agent/v1/brands/${id}/seo/clusters/generate`,
-        body
-      );
-      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      try {
+        const data = await api.post<unknown>(
+          `/api/agent/v1/brands/${id}/seo/clusters/generate`,
+          body
+        );
+        return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      } catch (err) {
+        // Unscoped call against a large unclustered pool: the server sends
+        // back a dry-run summary instead of running (see tool description).
+        // Surface it as a normal result, not a thrown error — the agent
+        // should read it and decide whether to re-call with a scope or
+        // confirmBrandWide: true.
+        if (err instanceof ApiError && err.details?.dryRun === true) {
+          return {
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                dryRun: true,
+                unclusteredCount: err.details.unclusteredCount,
+                bySource: err.details.bySource,
+                message: err.message,
+              }, null, 2),
+            }],
+          };
+        }
+        throw err;
+      }
     }
   );
 
