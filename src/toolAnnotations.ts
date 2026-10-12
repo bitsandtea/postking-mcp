@@ -59,7 +59,7 @@ const EXPLICIT_HINTS: Record<string, Hints> = {
 };
 
 // Prefixes (name must START with these) that make a tool read-only.
-const READ_ONLY_PREFIXES = ["list_", "get_", "view_", "search_", "check_", "preview_"];
+const READ_ONLY_PREFIXES = ["list_", "get_", "view_", "search_", "check_", "preview_", "export_"];
 
 // Underscore-delimited tokens that make a tool read-only wherever they occur
 // (prefix, infix, or suffix) — e.g. `seo_get_brief`, `brand_truth_list`,

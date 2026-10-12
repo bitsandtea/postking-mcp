@@ -85,6 +85,8 @@ export function registerCompetitorTools(server: McpServer) {
       "List the brand's tracked competitors.",
       "short {id,domain,analysisState}; medium adds source,creditsCharged,lastError,addedAt,lastCrawledAt,cacheSource; full = raw.",
       "Also returns a dashboard link to the Competitors tab.",
+      "Competitors added via competitor_probe_classify (direct), SEO competitors, or cluster approval are recorded with analysisState \"pending\" and are NOT analyzed until competitor_analyze is called (50 credits each unless the free slot is unused; subscription required after that).",
+      "Rows with analysisState \"pending\" carry a `hint` — run competitor_analyze on them.",
     ].join(" "),
     { detail: detailParam("short"), brandId: brandOpt },
     async ({ detail, brandId }) => {
@@ -101,7 +103,12 @@ export function registerCompetitorTools(server: McpServer) {
             text: JSON.stringify({
               count: items.length,
               detail,
-              competitors: projectList(detail, items, competitorProj),
+              competitors: projectList(detail, items, competitorProj).map((row) => {
+                const r = row as Record<string, unknown>;
+                return r.analysisState === "pending"
+                  ? { ...r, hint: "Pending: not analyzed yet. Call competitor_analyze (50 credits unless free slot unused)." }
+                  : row;
+              }),
               dashboardUrl: brandDashboardUrl(id, "seo_competitors"),
               creditBalance: (raw as Record<string, unknown>).creditBalance,
               requiresDeleteDown: (raw as Record<string, unknown>).requiresDeleteDown,
@@ -121,6 +128,7 @@ export function registerCompetitorTools(server: McpServer) {
         "Async. Batch-add competitor domains (1–20) to the brand.",
         "Returns { operationId, status } — poll get_job until state=completed.",
         "Each domain triggers crawl + profile analysis.",
+        "Rows added by other paths (probe-classify, SEO competitors, cluster approval) stay analysisState \"pending\" until competitor_analyze; 50 credits each unless the free slot is unused, subscription required after that.",
         ...(eta ? [`Typically takes ${eta}.`] : []),
       ].join(" ");
     })(),
@@ -195,6 +203,7 @@ export function registerCompetitorTools(server: McpServer) {
       return [
         "Async. Trigger analysis for existing BrandCompetitor rows that are pending or failed.",
         "Use competitor_add to create new rows; use this to retry failed ones.",
+        "Rows added via probe-classify, SEO competitors, or cluster approval are \"pending\" and NOT analyzed until this is called: 50 credits each unless the free slot is unused; subscription required after that.",
         "Returns { operationId, status } — poll get_job until state=completed.",
         ...(eta ? [`Typically takes ${eta}.`] : []),
       ].join(" ");
@@ -399,7 +408,7 @@ export function registerCompetitorTools(server: McpServer) {
     "competitor_probe_classify",
     [
       "Classify a discovered (or manually added) competitor candidate.",
-      "'direct' seeds a BrandCompetitor row; 'similar' and 'not_relevant' update the probe JSON only.",
+      "'direct' seeds a BrandCompetitor row with analysisState \"pending\" — it is NOT analyzed until competitor_analyze is called (50 credits each unless the free slot is unused; subscription required after that); 'similar' and 'not_relevant' update the probe JSON only.",
       "Call once per domain. Probe must be in completed state first.",
       "Returns { candidates } — the updated full candidate list.",
     ].join(" "),

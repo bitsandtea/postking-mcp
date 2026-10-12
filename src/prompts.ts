@@ -232,6 +232,7 @@ Want me to show your current themes?`,
 **Step 1 — Set up a publication (once)**
 \`list_blogs\` — shows your existing publications and articles.
 If you don't have one: \`create_publication\` with a title. Returns a publication ID.
+To have the customer's OWN app render the blog instead of PostKing, call \`set_publication_hosting_mode\` with \`hostingMode: 'self_hosted'\` (domain must be added with a matching hostingMode, TXT-only verification, then \`connect_domain_to_publication\`). Optional example renderer: https://github.com/bitsandtea/postking-selfhost.
 
 **Step 2 — Generate the article**
 \`generate_blog_post\` with:
@@ -482,12 +483,15 @@ What topic should I draft?`,
 **Step 3 — Optional side-pages**
 \`generate_side_page\` for feature pages, case studies, legal pages.
 
-**Step 4 — Connect a custom domain**
+**Step 4 — Connect a custom domain (optional)**
 \`add_domain\` → adds a DNS TXT record you add at your registrar → \`verify_domain\`.
-Then \`connect_domain\` with \`target: lp:<slug>\`.
+Then \`connect_domain_to_publication\`-style connect for the page: \`connect_landing_page_domain\` with \`domainId\`.
+
+**Step 4b — Or: self-host it instead (optional)**
+By default the page is served by PostKing ('hosted'). To have the customer's OWN infrastructure serve it instead, call \`set_landing_page_distribution\` with \`distribution: 'self_hosted'\` — localhost testing then works immediately against the public API, no domain needed. For a production host, add the domain with \`hostingMode: 'self_hosted'\` (add_domain), verify it (TXT-only), then \`connect_landing_page_domain\`. A Domain's hostingMode must match the page's distribution or connecting 409s — see set_landing_page_distribution / connect_landing_page_domain. An optional reference implementation to build against: https://github.com/bitsandtea/postking-selfhost.
 
 **Step 5 — Publish**
-\`publish_landing_page\` — free-tier choke point. Returns the live URL.
+\`publish_landing_page\` — free-tier choke point. Returns the live URL (or, for a self-hosted page, makes the content available at the public API for the customer's own renderer).
 
 What should the landing page be about?`,
           },

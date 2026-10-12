@@ -66,6 +66,8 @@ function slimArticle(a: any) {
     createdAt: a.createdAt,
     publicationId: a.blogId,
     featuredImageUrl: a.postImage ?? null,
+    updatedAt: a.updatedAt ?? null,
+    postDate: a.postDate ?? null,
   };
 }
 
@@ -83,32 +85,49 @@ export function registerBlogTools(server: McpServer) {
     "LIST tool. Even detail='full' OMITS article bodies (kept bounded) — to read an article's content, call get_blog_article. The number of rows is controlled by `limit` (default 50, max 200), NOT by `detail`; for a 'full list' of titles, raise `limit` and keep detail='short'. On a brand publishing in more than one language (see get_brand_languages), publications and articles both carry `languageCode` — check it before generating into a publication, since two publications with the same brand can differ only by language.",
     {
       status: z.enum(["draft", "published"]).optional().describe("Filter articles by status"),
+      updatedSince: z.string().optional().describe("ISO-8601 timestamp; only articles updated at or after this. For incremental sync prefer list_content_changes."),
       detail: detailParam("short"),
       limit: z.number().int().min(1).max(200).default(50),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ status, detail, limit, brandId }) => {
+    async ({ status, updatedSince, detail, limit, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.get<Record<string, unknown>>(`/api/agent/v1/brands/${id}/blogs`);
+      // Filters, paging and body omission are applied server-side. An older backend
+      // ignores the params and returns everything; the client-side logic below
+      // then does the same work (detected by the absence of `pagination`).
+      const qs = new URLSearchParams({ limit: String(limit), includeBody: detail === "full" ? "true" : "false" });
+      if (status) qs.set("status", status);
+      if (updatedSince) qs.set("updatedSince", updatedSince);
+      const data = await api.get<Record<string, unknown>>(`/api/agent/v1/brands/${id}/blogs?${qs.toString()}`);
+      const serverPage = (data as any)?.pagination as { total?: number } | undefined;
       const rawPubs = (Array.isArray((data as any)?.publications) ? (data as any).publications : []) as Record<string, unknown>[];
       const allArticles = (Array.isArray((data as any)?.blogs) ? (data as any).blogs : []) as Record<string, unknown>[];
 
       // Compute statusBreakdown over the FULL set before any status filter so the agent always sees the true split
-      const statusBreakdown: Record<string, number> = {};
-      for (const a of allArticles) {
-        const s = typeof a.status === "string" ? a.status : "unknown";
-        statusBreakdown[s] = (statusBreakdown[s] ?? 0) + 1;
+      let statusBreakdown: Record<string, number> = {};
+      if (serverPage && (data as any)?.statusBreakdown) {
+        statusBreakdown = (data as any).statusBreakdown as Record<string, number>;
+      } else {
+        for (const a of allArticles) {
+          const s = typeof a.status === "string" ? a.status : "unknown";
+          statusBreakdown[s] = (statusBreakdown[s] ?? 0) + 1;
+        }
       }
 
-      // Apply status filter for returned rows
-      let filteredArticles = status ? allArticles.filter((a) => a.status === status) : allArticles;
-      const total = filteredArticles.length;
+      // Apply status/updatedSince filter for returned rows (a no-op when the server already did it)
+      const sinceMs = updatedSince ? Date.parse(updatedSince) : null;
+      let filteredArticles = allArticles.filter(
+        (a) =>
+          (!status || a.status === status) &&
+          (sinceMs === null || Number.isNaN(sinceMs) || Date.parse(String(a.updatedAt ?? "")) >= sinceMs)
+      );
+      const total = typeof serverPage?.total === "number" ? serverPage.total : filteredArticles.length;
       filteredArticles = filteredArticles.slice(0, limit);
       const count = filteredArticles.length;
       const truncated = total > count;
 
       const pubProj: Projector<Record<string, unknown>> = {
-        short: (p) => ({ id: p.id, name: p.title, languageCode: p.languageCode ?? null }),
+        short: (p) => ({ id: p.id, name: p.title, languageCode: p.languageCode ?? null, hostingMode: p.hostingMode ?? null, siteBaseUrl: p.siteBaseUrl ?? null }),
         medium: (p) => ({
           id: p.id,
           title: p.title,
@@ -116,6 +135,11 @@ export function registerBlogTools(server: McpServer) {
           languageCode: p.languageCode ?? null,
           pathPrefix: p.pathPrefix ?? null,
           domain: (p.domain as string | null) ?? null,
+          hostingMode: p.hostingMode ?? null,
+          siteBaseUrl: p.siteBaseUrl ?? null,
+          articlePattern: p.articlePattern ?? null,
+          categoryPattern: p.categoryPattern ?? null,
+          uncategorizedSegment: p.uncategorizedSegment ?? null,
           layout: p.layout,
           articleCount: (p._count as Record<string, unknown>)?.blogArticles ?? null,
         }),
@@ -130,9 +154,11 @@ export function registerBlogTools(server: McpServer) {
         short: (a) => ({
           id: a.id,
           title: a.postTitle ?? a.title,
-          slug: a.postSlug ?? a.slug,
+          slug: a.postUrl ?? a.postSlug ?? a.slug,
           status: a.status,
           languageCode: pubLangById.get(a.blogId) ?? null,
+          updatedAt: a.updatedAt ?? null,
+          postDate: a.postDate ?? null,
         }),
         medium: (a) => ({ ...slimArticle(a), languageCode: pubLangById.get(a.blogId) ?? null }),
       };
@@ -171,9 +197,17 @@ export function registerBlogTools(server: McpServer) {
         .describe(
           `Language for this new publication, as a BCP-47 code. One of: ${LANGUAGE_CODE_LIST_TEXT}. Omit to default to the brand's configured content language. Must already be enabled on the brand's language roster (get_brand_languages / add_brand_language) — an un-enabled code returns 403.`
         ),
+      hostingMode: z
+        .enum(["postking", "self_hosted", "external"])
+        .optional()
+        .describe("'postking' (default), 'self_hosted' (you render the blog with your own app against /api/blog-posts?blogId=<publicationId>) or 'external' (your own site serves it; PostKing only emits URLs from siteBaseUrl + patterns, no domain may be connected). Can be changed later with set_publication_hosting_mode."),
+      siteBaseUrl: z.string().nullable().optional().describe("https origin (optional path) the publication's public URLs are built on, e.g. https://linkmatch.com. Overrides the connected-domain base and is honoured with no domain for hostingMode 'external'. null clears."),
+      articlePattern: z.string().nullable().optional().describe("Article path pattern; tokens {slug} (required), {category}, {lang}. E.g. '/blog/{category}/{slug}/'. Trailing slash follows the pattern. Default '{pathPrefix}/{slug}'. null clears."),
+      categoryPattern: z.string().nullable().optional().describe("Category hub path pattern with {category}, e.g. '/blog/{category}/'. Must not be able to match the same URL as articlePattern. Default derived from articlePattern. null clears."),
+      uncategorizedSegment: z.string().nullable().optional().describe("Path segment substituted for {category} on articles with no category. Default 'uncategorized'. null clears."),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ title, description, layout, languageCode, brandId }) => {
+    async ({ title, description, layout, languageCode, hostingMode, siteBaseUrl, articlePattern, categoryPattern, uncategorizedSegment, brandId }) => {
       const id = requireBrandId(brandId);
       const data = await api.post<any>(`/api/agent/v1/brands/${id}/blogs`, {
         title,
@@ -182,9 +216,14 @@ export function registerBlogTools(server: McpServer) {
         // Omitted when the caller said nothing, so the server can tell
         // "no override" from an explicit language code (JSON.stringify drops undefined).
         languageCode,
+        hostingMode,
+        siteBaseUrl,
+        articlePattern,
+        categoryPattern,
+        uncategorizedSegment,
       });
       return {
-        content: [{ type: "text" as const, text: JSON.stringify({ id: data.id, title: data.title, languageCode: data.languageCode ?? null }, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify({ id: data.id, title: data.title, languageCode: data.languageCode ?? null, hostingMode: data.hostingMode ?? "postking", siteBaseUrl: data.siteBaseUrl ?? null, articlePattern: data.articlePattern ?? null, categoryPattern: data.categoryPattern ?? null }, null, 2) }],
       };
     }
   );
@@ -209,7 +248,7 @@ export function registerBlogTools(server: McpServer) {
 
   server.tool(
     "update_publication",
-    "Update an existing blog publication's metadata — title, description, domain/routing config, layout, or CTA configuration. Only the fields you pass are changed (partial update). Distinct from create_publication (which creates a new one). publicationId comes from list_publications or list_blogs.",
+    "Update an existing blog publication's metadata — title, description, domain/routing config, layout, public URL settings (siteBaseUrl, articlePattern like '/blog/{category}/{slug}/', categoryPattern, uncategorizedSegment; hostingMode 'external' for headless sites that serve content themselves), or CTA configuration. Only the fields you pass are changed (partial update). Distinct from create_publication (which creates a new one). publicationId comes from list_publications or list_blogs.",
     {
       publicationId: z.string().describe("Blog publication ID (from list_publications or list_blogs)"),
       title: z.string().optional(),
@@ -218,6 +257,14 @@ export function registerBlogTools(server: McpServer) {
       routingType: z.string().optional(),
       pathPrefix: z.string().optional(),
       layout: z.string().optional(),
+      hostingMode: z
+        .enum(["postking", "self_hosted", "external"])
+        .optional()
+        .describe("'postking' (default, PostKing serves the blog), 'self_hosted' (you render it with your own app against the public /api/blog-posts?blogId=<publicationId> API) or 'external' (your own site serves it; PostKing only emits URLs, no domain may be connected). Must match the connected domain's hostingMode, else 409 hosting_mode_mismatch. See set_publication_hosting_mode."),
+      siteBaseUrl: z.string().nullable().optional().describe("https origin (optional path) the publication's public URLs are built on, e.g. https://linkmatch.com. Overrides the connected-domain base and is honoured with no domain for hostingMode 'external'. null clears."),
+      articlePattern: z.string().nullable().optional().describe("Article path pattern; tokens {slug} (required), {category}, {lang}. E.g. '/blog/{category}/{slug}/'. Trailing slash follows the pattern. Default '{pathPrefix}/{slug}'. null clears."),
+      categoryPattern: z.string().nullable().optional().describe("Category hub path pattern with {category}, e.g. '/blog/{category}/'. Must not be able to match the same URL as articlePattern. Default derived from articlePattern. null clears."),
+      uncategorizedSegment: z.string().nullable().optional().describe("Path segment substituted for {category} on articles with no category. Default 'uncategorized'. null clears."),
       redirectLegacyBlogPath: z
         .boolean()
         .optional()
@@ -234,7 +281,7 @@ export function registerBlogTools(server: McpServer) {
         .describe("Full-replace ordered list (max 24) of hand-curated CTA link destinations the generator rotates through — for publications whose real conversion pages aren't PostKing side pages (e.g. externally-hosted/synced blogs). Pass null or [] to clear the pool, which puts the publication back on automatic side-page matching."),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ publicationId, title, description, domainId, routingType, pathPrefix, layout, redirectLegacyBlogPath, ctaSettings, ctaDestinations, brandId }) => {
+    async ({ publicationId, title, description, domainId, routingType, pathPrefix, layout, hostingMode, siteBaseUrl, articlePattern, categoryPattern, uncategorizedSegment, redirectLegacyBlogPath, ctaSettings, ctaDestinations, brandId }) => {
       const id = requireBrandId(brandId);
       const body: Record<string, unknown> = {};
       if (title !== undefined) body.title = title;
@@ -243,18 +290,47 @@ export function registerBlogTools(server: McpServer) {
       if (routingType !== undefined) body.routingType = routingType;
       if (pathPrefix !== undefined) body.pathPrefix = pathPrefix;
       if (layout !== undefined) body.layout = layout;
+      if (hostingMode !== undefined) body.hostingMode = hostingMode;
+      if (siteBaseUrl !== undefined) body.siteBaseUrl = siteBaseUrl;
+      if (articlePattern !== undefined) body.articlePattern = articlePattern;
+      if (categoryPattern !== undefined) body.categoryPattern = categoryPattern;
+      if (uncategorizedSegment !== undefined) body.uncategorizedSegment = uncategorizedSegment;
       if (redirectLegacyBlogPath !== undefined) body.redirectLegacyBlogPath = redirectLegacyBlogPath;
       if (ctaSettings !== undefined) body.ctaSettings = ctaSettings;
       if (ctaDestinations !== undefined) body.ctaDestinations = ctaDestinations;
       if (Object.keys(body).length === 0) {
         return {
-          content: [{ type: "text" as const, text: "No fields to update. Pass at least one of: title, description, domainId, routingType, pathPrefix, layout, redirectLegacyBlogPath, ctaSettings, ctaDestinations." }],
+          content: [{ type: "text" as const, text: "No fields to update. Pass at least one of: title, description, domainId, routingType, pathPrefix, layout, hostingMode, siteBaseUrl, articlePattern, categoryPattern, uncategorizedSegment, redirectLegacyBlogPath, ctaSettings, ctaDestinations." }],
         };
       }
       const data = await api.patch<any>(`/api/agent/v1/brands/${id}/publications/${publicationId}`, body);
       const pub = data?.publication ?? data;
       return {
-        content: [{ type: "text" as const, text: JSON.stringify({ id: pub?.id ?? publicationId, title: pub?.title, description: pub?.description, redirectLegacyBlogPath: pub?.redirectLegacyBlogPath ?? null, ctaSettings: pub?.ctaSettings ?? null, ctaDestinations: pub?.ctaDestinations ?? null, updated: Object.keys(body) }, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify({ id: pub?.id ?? publicationId, title: pub?.title, description: pub?.description, redirectLegacyBlogPath: pub?.redirectLegacyBlogPath ?? null, ctaSettings: pub?.ctaSettings ?? null, ctaDestinations: pub?.ctaDestinations ?? null, hostingMode: pub?.hostingMode ?? null, siteBaseUrl: pub?.siteBaseUrl ?? null, articlePattern: pub?.articlePattern ?? null, categoryPattern: pub?.categoryPattern ?? null, uncategorizedSegment: pub?.uncategorizedSegment ?? null, updated: Object.keys(body) }, null, 2) }],
+      };
+    }
+  );
+
+  // ── Set publication hosting mode (postking vs. self-hosted) ──────────────
+  server.tool(
+    "set_publication_hosting_mode",
+    [
+      "Set whether a blog publication is served by PostKing ('postking', the default) or by the customer's OWN app ('self_hosted').",
+      "Self-hosted means the customer renders the blog themselves against the public blog API (GET /api/blog-posts?blogId=<publicationId>). A minimal, MIT-licensed example is https://github.com/bitsandtea/postking-selfhost (env POSTKING_API_URL, POSTKING_BLOG_ID, SITE_URL) — optional, not required; any custom build against that endpoint works the same.",
+      "For a production host, add a Domain with hostingMode: 'self_hosted' (add_domain), verify it (verify_domain — TXT ownership only), then connect_domain_to_publication.",
+      "Mode-match rule: the publication's connected domain must have the same hostingMode as the publication. A mismatch returns 409 hosting_mode_mismatch — disconnect the domain or add one with the matching hostingMode.",
+    ].join(" "),
+    {
+      publicationId: z.string().describe("Blog publication ID (from list_publications or list_blogs)"),
+      hostingMode: z.enum(["postking", "self_hosted", "external"]).describe("'postking' (default, PostKing serves it), 'self_hosted' (you render it against the public API) or 'external' (your own site serves it; PostKing only emits URLs, no domain may be connected)."),
+      brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
+    },
+    async ({ publicationId, hostingMode, brandId }) => {
+      const id = requireBrandId(brandId);
+      const data = await api.patch<any>(`/api/agent/v1/brands/${id}/publications/${publicationId}`, { hostingMode });
+      const pub = data?.publication ?? data;
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify({ id: pub?.id ?? publicationId, title: pub?.title, hostingMode: pub?.hostingMode ?? hostingMode }, null, 2) }],
       };
     }
   );
@@ -445,10 +521,34 @@ export function registerBlogTools(server: McpServer) {
           featuredImageAlt: a.postImageAlt ?? null,
           featuredImageDescription: a.postImageDesc ?? null,
           category: (a.category as Record<string, unknown>)?.name ?? null,
+          categorySlug: (a.category as Record<string, unknown>)?.slug ?? null,
           author: a.author
             ? `${(a.author as Record<string, unknown>).authorFirstName} ${(a.author as Record<string, unknown>).authorLastName}`.trim()
             : null,
+          authorDetail: a.author
+            ? {
+                name: `${(a.author as Record<string, unknown>).authorFirstName} ${(a.author as Record<string, unknown>).authorLastName}`.trim(),
+                bio: (a.author as Record<string, unknown>).authorAbout ?? null,
+                avatar: (a.author as Record<string, unknown>).authorAvatar ?? null,
+                url: (a.author as Record<string, unknown>).authorUrl ?? null,
+              }
+            : null,
           publicationId: a.blogId,
+          // Fields the backend returns that were previously dropped here.
+          description: a.postDescription ?? null,
+          postDate: a.postDate ?? null,
+          scheduledAt: a.scheduledAt ?? null,
+          updatedAt: a.updatedAt ?? null,
+          tags: a.postTags ?? null,
+          canonicalUrl: a.postCanonicalUrl ?? null,
+          noindex: a.postNoindex ?? null,
+          readingTime: a.postReadingTime ?? null,
+          internalLinks: a.internalLinks ?? null,
+          publicUrl: a.publicUrl ?? null,
+          breadcrumb: a.breadcrumb ?? null,
+          breadcrumbSchema: a.breadcrumbSchema ?? null,
+          relatedPosts: a.relatedPosts ?? null,
+          promotedSidePages: a.promotedSidePages ?? null,
           ...projectCtas(a),
           previewUrl,
           editUrl,
@@ -758,6 +858,24 @@ export function registerBlogTools(server: McpServer) {
     }
   );
 
+  // ── Delete category ───────────────────────────────────────────────────────
+  server.tool(
+    "delete_blog_category",
+    "Permanently delete a blog category. Its articles are kept but become uncategorized, and the category hub URL (<blogPath>/category/<slug>) 404s with no redirect. To keep the articles grouped, move them first via update_blog_article's categoryId.",
+    {
+      categoryId: z.string().describe("Category ID (from list_blog_categories)"),
+      publicationId: z.string().describe("Blog publication ID"),
+      brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
+    },
+    async ({ categoryId, publicationId, brandId }) => {
+      const id = requireBrandId(brandId);
+      await api.delete(`/api/agent/v1/brands/${id}/blogs/${publicationId}/categories/${categoryId}`);
+      return {
+        content: [{ type: "text" as const, text: `Category ${categoryId} deleted.` }],
+      };
+    }
+  );
+
   // ── List publishing connections ───────────────────────────────────────────
   server.tool(
     "list_publishing_connections",
@@ -885,7 +1003,7 @@ export function registerBlogTools(server: McpServer) {
   // ── List publications ─────────────────────────────────────────────────────
   server.tool(
     "list_publications",
-    "List all blog publications (the containers that blog articles live under). detail='short' returns id+name+languageCode; detail='medium' adds pathPrefix; detail='full' returns raw rows. On a brand publishing in more than one language (see get_brand_languages), languageCode is how you tell same-brand publications apart. Distinct from list_publishing_connections which lists external platforms like WordPress.",
+    "List all blog publications (the containers that blog articles live under). detail='short' returns id+name+languageCode+publicUrl; detail='medium' adds pathPrefix, hostingMode and the public URL settings (siteBaseUrl, articlePattern, categoryPattern, uncategorizedSegment) plus the computed publicUrl (index) and exampleArticleUrl; detail='full' returns raw rows. On a brand publishing in more than one language (see get_brand_languages), languageCode is how you tell same-brand publications apart. Distinct from list_publishing_connections which lists external platforms like WordPress.",
     {
       detail: detailParam("short"),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
@@ -895,7 +1013,7 @@ export function registerBlogTools(server: McpServer) {
       const data = await api.get<Record<string, unknown>>(`/api/agent/v1/brands/${id}/blogs`);
       const rawPubs = (Array.isArray((data as any)?.publications) ? (data as any).publications : []) as Record<string, unknown>[];
       const proj: Projector<Record<string, unknown>> = {
-        short: (p) => ({ id: p.id, name: p.title, languageCode: p.languageCode ?? null }),
+        short: (p) => ({ id: p.id, name: p.title, languageCode: p.languageCode ?? null, publicUrl: p.publicUrl ?? null }),
         medium: (p) => ({
           id: p.id,
           title: p.title,
@@ -904,6 +1022,13 @@ export function registerBlogTools(server: McpServer) {
           pathPrefix: p.pathPrefix ?? null,
           domain: (p.domain as string | null) ?? null,
           layout: p.layout,
+          hostingMode: p.hostingMode ?? null,
+          siteBaseUrl: p.siteBaseUrl ?? null,
+          articlePattern: p.articlePattern ?? null,
+          categoryPattern: p.categoryPattern ?? null,
+          uncategorizedSegment: p.uncategorizedSegment ?? null,
+          publicUrl: p.publicUrl ?? null,
+          exampleArticleUrl: p.exampleArticleUrl ?? null,
           articleCount: (p._count as Record<string, unknown>)?.blogArticles ?? null,
         }),
       };

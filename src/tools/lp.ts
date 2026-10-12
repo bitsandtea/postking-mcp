@@ -383,7 +383,7 @@ export function registerLpTools(server: McpServer) {
       const proj = {
         short: (row: LpListItem) => pick(row, ["id", "slug", "name", "status", "languageCode"]),
         medium: (row: LpListItem) =>
-          pick(row, ["id", "slug", "name", "status", "languageCode", "updatedAt", "currentVersionId", "publishedVersionId", "webUrl"]),
+          pick(row, ["id", "slug", "name", "status", "languageCode", "distribution", "updatedAt", "currentVersionId", "publishedVersionId", "webUrl"]),
       };
       const text = JSON.stringify({ count: pages.length, detail, landingPages: projectList(detail, pages, proj) });
       return { content: [{ type: "text" as const, text }] };
@@ -431,6 +431,7 @@ export function registerLpTools(server: McpServer) {
       "Set `createMissingSidePages` to true to auto-create stub side pages for internal links discovered in the HTML that don't already exist.",
       "Returns { landingPage: {id, slug}, report } where report audits the import: externalHosts (third-party domains referenced), relativeAssetPaths (local asset paths that may need re-hosting), placeholders (unresolved template tokens found), internalLinks (each { href, slug, existingSidePage }), themeExtracted (whether a theme was inferred from the HTML), truncated (whether the source HTML was cut down to fit limits), and extractability ({ verdict: 'ok'|'warn', reasons } — 'warn' means framework hydration scripts won't load post-import but static content still renders).",
       "If the source is a client-rendered app shell whose content depends entirely on framework scripts that can't be hosted here (e.g. a bare Next.js/React app shell), the import is refused before anything is persisted — this tool returns a non-throwing result { error: 'not_extractable', message, reasons } instead. Relay the reasons to the user and suggest pasting a static/exported HTML instead, or publishing directly from their site builder.",
+      "The resulting parent is a raw-HTML page: side pages created under it become `text` pages rendered inside the imported header/footer shell. To get structured side pages instead, run convert_landing_page_to_sections. Set `config.baseUrl` to the real public domain (canonical/OG/sitemap URLs derive from it).",
       "Example: import_landing_page_html({ url: 'https://example.com/pricing', name: 'Pricing' }).",
     ].join(" "),
     {
@@ -622,7 +623,10 @@ export function registerLpTools(server: McpServer) {
   // ── View landing page ─────────────────────────────────────────────────────
   server.tool(
     "view_landing_page",
-    "Fetch a landing page by slug. detail='full' (default) returns full data JSONB plus previewUrl (public GUI preview link) and webUrl (dashboard editor link); 'medium' returns summary + sectionKeys/sectionWordCounts + previewUrl + webUrl; 'short' returns id/slug/name/status. Section bodies and rendered HTML appear only at full.",
+    [
+      "Fetch a landing page by slug. detail='full' (default) returns full data JSONB plus previewUrl (public GUI preview link) and webUrl (dashboard editor link); 'medium' returns summary + sectionKeys/sectionWordCounts + previewUrl + webUrl; 'short' returns id/slug/name/status. Section bodies and rendered HTML appear only at full.",
+      "Includes `distribution`: 'hosted' (default, PostKing/universal-lp serves it) 'self_hosted' (the customer runs their own renderer against the public API) or 'external' (their own site serves it) — see set_landing_page_distribution.",
+    ].join(" "),
     {
       slug: z.string().describe("Landing page slug"),
       detail: detailParam("full"),
@@ -633,7 +637,7 @@ export function registerLpTools(server: McpServer) {
       const proj = {
         short: (row: LpDetail) => pick(row, ["id", "slug", "name", "status"]),
         medium: (row: LpDetail) => ({
-          ...pick(row, ["id", "slug", "name", "status", "updatedAt", "currentVersionId", "publishedVersionId", "webUrl", "previewUrl"]),
+          ...pick(row, ["id", "slug", "name", "status", "distribution", "updatedAt", "currentVersionId", "publishedVersionId", "webUrl", "previewUrl"]),
           sectionKeys: sectionKeys(row),
           sectionWordCounts: sectionWordCounts(row),
         }),
@@ -689,6 +693,32 @@ export function registerLpTools(server: McpServer) {
       if (sections?.length) body.sections = sections;
       if (language) body.language = language;
       const data = await api.post<Record<string, unknown>>(`/api/agent/v1/landing-pages/${slug}/generate`, body);
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    }
+  );
+
+  // ── Convert raw-HTML landing page to sections ─────────────────────────────
+  server.tool(
+    "convert_landing_page_to_sections",
+    [
+      "Converts an imported raw-HTML landing page (import_landing_page_html) to section-based so side pages can be structured JSON.",
+      "Keeps theme/nav/footer/domain; creates a new DRAFT version and regenerates hero/features/cta sections. The prior raw version stays restorable (restore_lp_version flips it back). The published version is NOT changed until you publish_landing_page.",
+      "Returns an operationId — poll with get_job (or GET .../generate/status) until completed, review, then publish_landing_page.",
+      "Also returns textSidePages ({slug, briefIds}): after publishing, re-run seo_generate_side_page (brief mode, existing briefIds) for each text side page.",
+      "Errors with 409 if the page is not raw HTML.",
+    ].join(" "),
+    {
+      slug: z.string().describe("Landing page slug (must be a raw-HTML page)"),
+      voiceProfileId: z.string().optional().describe("Voice profile ID"),
+      instructions: z.string().optional().describe("Extra guidance for the regeneration"),
+      language: languageParam("Regenerates the page in this language; omit to keep the page's current language."),
+    },
+    async ({ slug, voiceProfileId, instructions, language }) => {
+      const body: Record<string, unknown> = { regenerate: true };
+      if (voiceProfileId) body.voiceProfileId = voiceProfileId;
+      if (instructions) body.instructions = instructions;
+      if (language) body.language = language;
+      const data = await api.post<Record<string, unknown>>(`/api/agent/v1/landing-pages/${slug}/convert-to-sections`, body);
       return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
     }
   );
@@ -1022,10 +1052,89 @@ export function registerLpTools(server: McpServer) {
     }
   );
 
+  // ── Set distribution (hosted vs. self-hosted) ─────────────────────────────
+  server.tool(
+    "set_landing_page_distribution",
+    [
+      "Set whether a landing page is served by PostKing ('hosted', the default) or by the customer's OWN infrastructure ('self_hosted').",
+      "Self-hosted means the customer runs their own renderer against the public landing-pages API (GET /api/landing-pages/{slug}?host=<host>, GET /api/blog-posts?slug=<slug>, GET /api/blog-posts/{articleSlug}?slug=<slug>) instead of PostKing/universal-lp serving the page. A minimal, MIT-licensed example is https://github.com/bitsandtea/postking-selfhost — optional, not required; any custom build against those endpoints works the same.",
+      "Once set to self_hosted, localhost testing against this page works immediately, no domain needed. For a production host, add a Domain with hostingMode: 'self_hosted' (add_domain), verify it (verify_domain — TXT ownership only), then connect_landing_page_domain.",
+      "Also sets the page's public URL settings: siteBaseUrl (https origin the URLs are built on) and sidePagePattern (e.g. '/p/{slug}/'). distribution 'external' means your own site serves the content: no domain is connected (switching to external while one is connected 409s).",
+      "Mode-match rule: if a Domain is ALREADY connected to this page and its hostingMode disagrees with the new distribution value, this 409s asking you to disconnect that domain first — the two settings can never disagree.",
+    ].join(" "),
+    {
+      slug: z.string().describe("Landing page slug"),
+      distribution: z
+        .enum(["hosted", "self_hosted", "external"])
+        .optional()
+        .describe("'hosted' (default, PostKing/universal-lp serves it), 'self_hosted' (you run your own renderer against the public API) or 'external' (your own site serves it; PostKing only emits URLs from siteBaseUrl + sidePagePattern, no domain may be connected)."),
+      siteBaseUrl: z.string().nullable().optional().describe("https origin (optional path) the page's public URLs are built on, e.g. https://example.com. Overrides the connected-domain base. null clears."),
+      sidePagePattern: z.string().nullable().optional().describe("Side-page path pattern; must contain {slug} ({lang} optional), e.g. '/p/{slug}/'. Default '/{slug}'. null clears."),
+    },
+    async ({ slug, distribution, siteBaseUrl, sidePagePattern }) => {
+      const body: Record<string, unknown> = {};
+      if (distribution !== undefined) body.distribution = distribution;
+      if (siteBaseUrl !== undefined) body.siteBaseUrl = siteBaseUrl;
+      if (sidePagePattern !== undefined) body.sidePagePattern = sidePagePattern;
+      if (Object.keys(body).length === 0) {
+        return { content: [{ type: "text" as const, text: "No fields to update. Pass at least one of: distribution, siteBaseUrl, sidePagePattern." }] };
+      }
+      const data = await api.patch<Record<string, unknown>>(`/api/agent/v1/landing-pages/${slug}/distribution`, body);
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    }
+  );
+
+  // ── Connect a domain to a landing page ────────────────────────────────────
+  server.tool(
+    "connect_landing_page_domain",
+    [
+      "Attach an already-verified Domain to a landing page. The page must be published first (publish_landing_page); requires paid access.",
+      "Pass domainId (from list_domains), or domain (hostname string) as a fallback.",
+      "Mode-match rule: the Domain's hostingMode must match the page's distribution — 'postking' hostingMode only ever pairs with 'hosted' distribution, and 'self_hosted' only with 'self_hosted'. A mismatch returns a 409 whose message names which side to change; call set_landing_page_distribution or add a Domain with the matching hostingMode, then retry.",
+    ].join(" "),
+    {
+      slug: z.string().describe("Landing page slug"),
+      domainId: z.string().optional().describe("Verified Domain ID (from list_domains). Preferred over `domain`."),
+      domain: z.string().optional().describe("Domain hostname to connect, e.g. 'example.com' — fallback, looked up by name under this brand. Prefer `domainId`."),
+    },
+    async ({ slug, domainId, domain }) => {
+      if (!domainId && !domain) {
+        throw new Error("Provide domainId (preferred) or domain.");
+      }
+      try {
+        const data = await api.post<Record<string, unknown>>(`/api/agent/v1/landing-pages/${slug}/domain/connect`, {
+          domainId,
+          domain,
+        });
+        return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 409) {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({
+                  error: "distribution_mismatch",
+                  message:
+                    (err.message || "This domain's hostingMode doesn't match the page's distribution.") +
+                    " Call set_landing_page_distribution to switch the page's distribution to match this domain's hostingMode, or add_domain with a hostingMode that matches the page's current distribution, then retry connect_landing_page_domain.",
+                }),
+              },
+            ],
+          };
+        }
+        throw err;
+      }
+    }
+  );
+
   // ── Publish landing page ──────────────────────────────────────────────────
   server.tool(
     "publish_landing_page",
-    "Publish a landing page, making it publicly accessible at its URL.",
+    [
+      "Publish a landing page, making it publicly accessible at its URL.",
+      "For a page whose distribution is 'self_hosted' (set_landing_page_distribution), this makes the page's content available at the public API — the customer's own renderer, not PostKing/universal-lp, serves the actual public URL. See set_landing_page_distribution for the self-hosted setup (optional example: https://github.com/bitsandtea/postking-selfhost).",
+    ].join(" "),
     {
       slug: z.string().describe("Landing page slug"),
     },
@@ -1219,6 +1328,7 @@ export function registerLpTools(server: McpServer) {
       "  • freeform: pass `key` + `prompt` (+ optional `keywords`, `selectedSections`, `voiceProfileId`, `sidePageType`). Freeform now writes real section-level content (hero/features/showcase/faq/cta), not just metadata.",
       "  • brief: pass `key` + `brief` (structured outline) + optional `briefId` and `roadmapItemId`.",
       "  • spotlight (feature/service page): pass `key` + `prompt` + `sidePageType: \"spotlight\"` (+ optional `name`, `keywords`). Fixed schema — hero, a 3-6 step feature tour, 3-6 benefits, a stat/quote proof band and a CTA footer — with no testimonial carousel, pricing or showcase. Use it whenever the page is about ONE feature or service; `brief` and `selectedSections` are ignored for this type.",
+      "Raw-HTML parents: if the parent landing page is raw HTML (created via import_landing_page_html), landing-type output is stored as a single-HTML `text` page — structured landing sections need a section-based parent (run convert_landing_page_to_sections first); on raw parents use `sidePageType: \"custom\"` or `\"spotlight\"` for structure. The response includes `persistedType` and `downgradeReason` (when the requested type was downgraded) — relay them to the user.",
       "Poll `get_job` with the returned `operationId` until `state` is `completed` (or `failed`/`partially_failed`/`cancelled` on error); the generated page's sections will be populated once complete. The completed job's result includes previewUrl (browser-openable draft-preview link, always present) and liveUrl (browser-openable public link, present only when a custom domain is connected).",
     ].join(" "),
     {
@@ -1363,7 +1473,7 @@ export function registerLpTools(server: McpServer) {
   // ── View side page ────────────────────────────────────────────────────────
   server.tool(
     "view_side_page",
-    "View a side page including sections and rendered HTML. detail='full' (default) includes rendered HTML and full overrides (use this to read a section's typed shape before editing it with set_side_page_section); 'medium' gives summary + overrideSectionKeys (the section ids you can pass to set_side_page_section); 'short' gives id/slug/name/type/isPublished. Rendered HTML appears only at full. Every detail level includes previewUrl (browser-openable draft-preview link, always available) and liveUrl (browser-openable public link, present only when a custom domain is connected). medium/full also include currentVersionId (the draft) and publishedVersionId (the live version) — a mismatch means there are unpublished draft edits.",
+    "View a side page's DRAFT for editing: sections plus `rendered` (the merged section JSON, not HTML). Image slots hold asset ids, not URLs. To consume published, render-ready content (absolute image URLs, JSON-LD, canonical, contentHash) use export_side_page instead. detail='full' (default) includes `rendered` and full overrides (use this to read a section's typed shape before editing it with set_side_page_section); 'medium' gives summary + overrideSectionKeys (the section ids you can pass to set_side_page_section); 'short' gives id/slug/name/type/isPublished. `rendered` appears only at full. Every detail level includes previewUrl (browser-openable draft-preview link, always available) and liveUrl (browser-openable public link, present only when a custom domain is connected). medium/full also include currentVersionId (the draft) and publishedVersionId (the live version) — a mismatch means there are unpublished draft edits.",
     {
       slug: z.string().describe("Parent landing page slug"),
       sideKey: z
@@ -1422,7 +1532,10 @@ export function registerLpTools(server: McpServer) {
       "Every edit creates a new draft version (see list_side_page_versions / restore_side_page_version) — nothing here is " +
       "destructive, any write (including a bad title/htmlContent edit) can be undone by restoring a prior version. On a " +
       "published page, edits stay draft-only until set_side_page_state({published:true}) publishes them. When newKey triggers " +
-      "a reference rewrite, the response includes slugRewriteOperationId — poll it to confirm the cascade finished.",
+      "a reference rewrite, the response includes slugRewriteOperationId — poll it to confirm the cascade finished. " +
+      "Type conversion: `type` (\"landing\"|\"text\") converts the page; `overrides` (object) replaces the page content wholesale and is validated against the target type. " +
+      "Converting text→landing REQUIRES `overrides` with landing sections (hero, features, cta, faq…). Under a raw-HTML parent (import_landing_page_html) the page still renders inside the parent's raw shell. " +
+      "If `overrides` is passed it takes precedence over `title`/`htmlContent`.",
     {
       slug: z.string().describe("Parent landing page slug"),
       sideKey: z
@@ -1449,6 +1562,14 @@ export function registerLpTools(server: McpServer) {
         .describe(
           "When renaming via newKey, rewrite existing internal references (blog backlinks, internalLinks) to point at the new slug. Defaults to true; set false to skip the cascade."
         ),
+      type: z
+        .enum(["landing", "text"])
+        .optional()
+        .describe("Convert the side page to this type. text→landing requires `overrides` with landing sections (hero, features, cta, faq…)."),
+      overrides: z
+        .record(z.string(), z.unknown())
+        .optional()
+        .describe("Full page content, replaces existing overrides wholesale; validated against the target type (text: {title, htmlContent}; landing: section objects)."),
       title: z
         .string()
         .optional()
@@ -1462,7 +1583,7 @@ export function registerLpTools(server: McpServer) {
           "type:\"text\" pages only: new HTML body (part of the flat {title, htmlContent} content document). If `title` isn't also passed, the current title is fetched and preserved. Ignored for landing/comparison pages — use set_side_page_section there."
         ),
     },
-    async ({ slug, sideKey, instructions, name, newKey, updateReferences, title, htmlContent }) => {
+    async ({ slug, sideKey, instructions, name, newKey, updateReferences, type, overrides, title, htmlContent }) => {
       const body: Record<string, unknown> = {};
       if (instructions !== undefined) body.instructions = instructions;
       if (name !== undefined) body.name = name;
@@ -1470,7 +1591,9 @@ export function registerLpTools(server: McpServer) {
         body.slug = newKey;
         body.updateReferences = updateReferences !== undefined ? updateReferences : true;
       }
-      if (title !== undefined || htmlContent !== undefined) {
+      if (type !== undefined) body.type = type;
+      if (overrides !== undefined) body.overrides = overrides;
+      if (overrides === undefined && (title !== undefined || htmlContent !== undefined)) {
         // The underlying PATCH replaces `overrides` WHOLESALE (it does not
         // deep-merge) and text pages require both `title` and `htmlContent`
         // together (SidePageContentTextSchema) — so a caller passing only

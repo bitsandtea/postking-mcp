@@ -47,6 +47,7 @@ import { registerTrendsTools } from "./tools/trends.js";
 import { registerBillingTools } from "./tools/billing.js";
 import { registerSearchPerformanceTools } from "./tools/search-performance.js";
 import { registerBrandToolsTools } from "./tools/brand-tools.js";
+import { registerExportTools } from "./tools/export.js";
 import { registerPrompts } from "./prompts.js";
 
 // Both `src/server.ts` (via tsx) and the compiled `dist/server.js` sit one
@@ -212,6 +213,7 @@ This server also exposes guided prompts for common end-to-end flows — \`gettin
   registerBillingTools(server);
   registerSearchPerformanceTools(server);
   registerBrandToolsTools(server);
+  registerExportTools(server);
   registerPrompts(server);
 
   return server;
