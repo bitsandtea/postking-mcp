@@ -19,6 +19,40 @@ const opProjector: Projector<Record<string, unknown>> = {
   }),
 };
 
+/**
+ * Non-Operation pollUrls (LP generate/ai-edit status, side-page status) return
+ * the legacy shape `{ operationId, status, progress?, error?, result? }` —
+ * possibly nested under `operationStatus` (side-page status). Lift that into
+ * the Operation shape (`state`, `errors`) so done/summary/projectors work.
+ * Rows that already carry `state` pass through untouched.
+ */
+const LEGACY_STATUS_TO_STATE: Record<string, string> = {
+  pending: "pending",
+  processing: "running",
+  running: "running",
+  completed: "completed",
+  completed_with_errors: "partially_failed",
+  partially_failed: "partially_failed",
+  failed: "failed",
+  cancelled: "cancelled",
+};
+
+export function normalizeJobShape(raw: Record<string, unknown>): Record<string, unknown> {
+  let d = raw;
+  let nested = d.operationStatus;
+  if (typeof nested === "string") {
+    try { nested = JSON.parse(nested); } catch { nested = null; }
+  }
+  if (d.state === undefined && d.status === undefined && nested !== null && typeof nested === "object") {
+    d = { ...(nested as Record<string, unknown>), operationId: d.operationId };
+  }
+  if (d.state !== undefined || typeof d.status !== "string") return d;
+  const out: Record<string, unknown> = { ...d, state: LEGACY_STATUS_TO_STATE[d.status] ?? d.status };
+  if (out.errors === undefined && typeof d.error === "string" && d.error) out.errors = [d.error];
+  if (out.id === undefined && typeof d.operationId === "string") out.id = d.operationId;
+  return out;
+}
+
 export function derivedJobFields(d: Record<string, unknown>): { done: boolean; summary: string } {
   const DONE_STATES = new Set(["completed", "failed", "partially_failed", "cancelled"]);
   const state = String(d.state ?? "");
@@ -212,7 +246,8 @@ export function registerJobTools(server: McpServer) {
         }
       }
 
-      const projectJob = (dataRec: Record<string, unknown>): unknown => {
+      const projectJob = (rawRec: Record<string, unknown>): unknown => {
+        const dataRec = normalizeJobShape(rawRec);
         const base = detail === "full"
           ? { ...dataRec, ...derivedJobFields(dataRec) }
           : project(detail, dataRec, jobProjector);
@@ -228,9 +263,8 @@ export function registerJobTools(server: McpServer) {
       // ── Single-GET (default) ──────────────────────────────────────────────
       if (!wait) {
         const data = await api.get<any>(url);
-        const dataRec = data as Record<string, unknown>;
         return {
-          content: [{ type: "text" as const, text: JSON.stringify(projectJob(dataRec)) }],
+          content: [{ type: "text" as const, text: JSON.stringify(projectJob(data as Record<string, unknown>)) }],
         };
       }
 
@@ -245,7 +279,7 @@ export function registerJobTools(server: McpServer) {
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         const data = await api.get<any>(url);
         dataRec = data as Record<string, unknown>;
-        if (derivedJobFields(dataRec).done) {
+        if (derivedJobFields(normalizeJobShape(dataRec)).done) {
           return {
             content: [{ type: "text" as const, text: JSON.stringify(projectJob(dataRec)) }],
           };
@@ -256,7 +290,7 @@ export function registerJobTools(server: McpServer) {
 
       // Timeout — still running. Return the latest projection + a note (do not throw).
       const elapsed = Math.round((Date.now() - startedAt) / 1000);
-      const eta = etaFor(dataRec.kind as string | null | undefined);
+      const eta = etaFor(normalizeJobShape(dataRec).kind as string | null | undefined);
       const note = eta
         ? `Still running after ${elapsed}s (this kind usually takes ${eta}). Call get_job again with wait:true to keep waiting.`
         : `Still running after ${elapsed}s. Call get_job again with wait:true to keep waiting.`;

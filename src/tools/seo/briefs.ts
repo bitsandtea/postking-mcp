@@ -35,13 +35,35 @@ interface CompactBrief {
   approvedAt: string | null;
 }
 
+function asRecord(v: unknown): Record<string, unknown> | null {
+  return v != null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+}
+
+/** GET /seo/briefs/:id wraps the row as `{ brief }`; accept wrapped or bare rows. */
+export function unwrapBrief(raw: Record<string, unknown>): Record<string, unknown> {
+  return asRecord(raw.brief) ?? raw;
+}
+
+/** Cluster lives under roadmapItem.cluster in the API; top-level `cluster` is a fallback. */
+function briefCluster(b: Record<string, unknown>, roadmapItem: Record<string, unknown> | null): Record<string, unknown> | null {
+  return asRecord(roadmapItem?.cluster) ?? asRecord(b.cluster);
+}
+
+function briefSidePageUrl(b: Record<string, unknown>, briefData: Record<string, unknown> | null): string | null {
+  const v = b.sidePageUrl ?? briefData?.targetUrl;
+  return v != null ? String(v) : null;
+}
+
+function briefTitle(b: Record<string, unknown>, roadmapItem: Record<string, unknown> | null): string | null {
+  const v = b.title ?? roadmapItem?.title;
+  return v != null ? String(v) : null;
+}
+
 function projectBrief(b: Record<string, unknown>): CompactBrief {
   const roadmapItem = b.roadmapItem != null && typeof b.roadmapItem === "object"
     ? (b.roadmapItem as Record<string, unknown>)
     : null;
-  const cluster = b.cluster != null && typeof b.cluster === "object"
-    ? (b.cluster as Record<string, unknown>)
-    : null;
+  const cluster = briefCluster(b, roadmapItem);
   const briefData = b.briefData != null && typeof b.briefData === "object"
     ? (b.briefData as Record<string, unknown>)
     : null;
@@ -69,11 +91,11 @@ function projectBrief(b: Record<string, unknown>): CompactBrief {
     type: String(b.type ?? ""),
     status: String(b.status ?? ""),
     roadmapItemId: b.roadmapItemId != null ? String(b.roadmapItemId) : null,
-    title: roadmapItem?.title != null ? String(roadmapItem.title) : null,
-    clusterId: cluster?.id != null ? String(cluster.id) : null,
+    title: briefTitle(b, roadmapItem),
+    clusterId: cluster?.id != null ? String(cluster.id) : b.clusterId != null ? String(b.clusterId) : null,
     clusterName: cluster?.name != null ? String(cluster.name) : null,
     briefSummary,
-    sidePageUrl: b.sidePageUrl != null ? String(b.sidePageUrl) : null,
+    sidePageUrl: briefSidePageUrl(b, briefData),
     generationError: b.generationError != null ? String(b.generationError) : null,
     blogArticleId: b.blogArticleId != null ? String(b.blogArticleId) : null,
     generatedAt: b.generatedAt != null ? String(b.generatedAt) : null,
@@ -96,19 +118,21 @@ const briefListProj: Projector<Record<string, unknown>> = {
   medium: projectBrief,
 };
 
-const getBriefProj: Projector<Record<string, unknown>> = {
-  short: (b) => ({
-    id: String(b.id ?? ""),
-    type: String(b.type ?? ""),
-    status: String(b.status ?? ""),
-  }),
-  medium: (b) => {
+export const getBriefProj: Projector<Record<string, unknown>> = {
+  short: (raw) => {
+    const b = unwrapBrief(raw);
+    return {
+      id: String(b.id ?? ""),
+      type: String(b.type ?? ""),
+      status: String(b.status ?? ""),
+    };
+  },
+  medium: (raw) => {
+    const b = unwrapBrief(raw);
     const roadmapItem = b.roadmapItem != null && typeof b.roadmapItem === "object"
       ? (b.roadmapItem as Record<string, unknown>)
       : null;
-    const cluster = b.cluster != null && typeof b.cluster === "object"
-      ? (b.cluster as Record<string, unknown>)
-      : null;
+    const cluster = briefCluster(b, roadmapItem);
     const briefData = b.briefData != null && typeof b.briefData === "object"
       ? (b.briefData as Record<string, unknown>)
       : null;
@@ -131,10 +155,10 @@ const getBriefProj: Projector<Record<string, unknown>> = {
       id: String(b.id ?? ""),
       type: String(b.type ?? ""),
       status: String(b.status ?? ""),
-      title: roadmapItem?.title != null ? String(roadmapItem.title) : null,
+      title: briefTitle(b, roadmapItem),
       clusterName: cluster?.name != null ? String(cluster.name) : null,
       briefSummary,
-      sidePageUrl: b.sidePageUrl != null ? String(b.sidePageUrl) : null,
+      sidePageUrl: briefSidePageUrl(b, briefData),
     };
   },
 };

@@ -704,7 +704,7 @@ export function registerLpTools(server: McpServer) {
       "Converts an imported raw-HTML landing page (import_landing_page_html) to section-based so side pages can be structured JSON.",
       "Keeps theme/nav/footer/domain; creates a new DRAFT version and regenerates hero/features/cta sections. The prior raw version stays restorable (restore_lp_version flips it back). The published version is NOT changed until you publish_landing_page.",
       "Returns an operationId — poll with get_job (or GET .../generate/status) until completed, review, then publish_landing_page.",
-      "Also returns textSidePages ({slug, briefIds}): after publishing, re-run seo_generate_side_page (brief mode, existing briefIds) for each text side page.",
+      "Also returns textSidePages ({slug, briefIds}): once the conversion job completes, re-run seo_generate_side_page (brief mode, existing briefIds) for each text side page — side-page generation reads the parent's DRAFT, so no publish is needed first. Publish the parent (publish_landing_page) for the side pages to appear in public exports / list_content_changes.",
       "Errors with 409 if the page is not raw HTML.",
     ].join(" "),
     {

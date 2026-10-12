@@ -440,6 +440,7 @@ export function registerBlogTools(server: McpServer) {
         "Re-runs the article-writer pipeline against an EXISTING BlogArticle and overwrites its body in place, instead of creating a duplicate.",
         "Use this when seo_write_article or generate_blog_post returned a cannibalization-guard 409 (or a seo_check_cannibalization preflight returned decision='refresh') naming a `targetArticleId` — pass that id as `blogId` here.",
         "Async — returns `{ operationId, status }`. Poll get_job (or get_blog_status) with the returned id until state is 'completed' (or 'failed'/'partially_failed'/'cancelled' on error), then get_blog_article to read the refreshed content.",
+        "Optionally pass voiceProfileId (from list_voices) to rewrite the refreshed article in a saved voice.",
         ...(eta ? [`Typically takes ${eta}.`] : []),
       ].join(" ");
     })(),
@@ -448,14 +449,16 @@ export function registerBlogTools(server: McpServer) {
       briefId: z.string().optional().describe("SeoBrief ID to drive the refresh from, if one applies"),
       topic: z.string().optional().describe("Updated topic/working title to refresh toward"),
       instructions: z.string().optional().describe("Free-text instructions for what should change in the refresh"),
+      voiceProfileId: z.string().optional().describe("Voice profile ID (from list_voices) to rewrite the article in"),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ blogId, briefId, topic, instructions, brandId }) => {
+    async ({ blogId, briefId, topic, instructions, voiceProfileId, brandId }) => {
       const id = requireBrandId(brandId);
       const body: Record<string, unknown> = {};
       if (briefId !== undefined) body.briefId = briefId;
       if (topic !== undefined) body.topic = topic;
       if (instructions !== undefined) body.instructions = instructions;
+      if (voiceProfileId !== undefined) body.voiceProfileId = voiceProfileId;
       const data = await api.post<Record<string, unknown>>(
         `/api/agent/v1/brands/${id}/blogs/${blogId}/refresh`,
         body
