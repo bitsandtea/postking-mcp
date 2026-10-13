@@ -1,6 +1,7 @@
 import { config, oauthConfig, getTokenWithSource, notLoggedInMessage } from "./config.js";
 import { deleteToken } from "./auth.js";
 import { log } from "./log.js";
+import { insufficientCreditsCostLine } from "./credits-message.js";
 
 export interface AgentCreditPack {
   sku: string;
@@ -158,6 +159,7 @@ async function handleResponse<T>(
     if (res.status === 402) {
       if (envelope?.code === "INSUFFICIENT_CREDITS") {
         let richMessage: string;
+        const costLine = insufficientCreditsCostLine(envelope.details);
         if (envelope.packs && envelope.packs.length > 0) {
           const packLines = envelope.packs
             .map((p) => `  • ${p.sku}: $${p.priceUsd} → ${p.credits} credits`)
@@ -185,7 +187,7 @@ async function handleResponse<T>(
             "Alternatively, show subscription options via billing_list_tiers / billing_subscribe.",
           ].join("\n");
         }
-        throw new ApiError(402, richMessage, envelope);
+        throw new ApiError(402, costLine ? `${costLine}\n\n${richMessage}` : richMessage, envelope);
       }
       if (
         envelope?.code === "TRIAL_EXPIRED" ||
