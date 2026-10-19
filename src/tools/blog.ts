@@ -140,6 +140,7 @@ export function registerBlogTools(server: McpServer) {
           articlePattern: p.articlePattern ?? null,
           categoryPattern: p.categoryPattern ?? null,
           uncategorizedSegment: p.uncategorizedSegment ?? null,
+          trailingSlash: p.trailingSlash ?? (typeof p.articlePattern === "string" ? p.articlePattern.endsWith("/") : false),
           layout: p.layout,
           articleCount: (p._count as Record<string, unknown>)?.blogArticles ?? null,
         }),
@@ -205,9 +206,10 @@ export function registerBlogTools(server: McpServer) {
       articlePattern: z.string().nullable().optional().describe("Article path pattern; tokens {slug} (required), {category}, {lang}. E.g. '/blog/{category}/{slug}/'. Trailing slash follows the pattern. Default '{pathPrefix}/{slug}'. null clears."),
       categoryPattern: z.string().nullable().optional().describe("Category hub path pattern with {category}, e.g. '/blog/{category}/'. Must not be able to match the same URL as articlePattern. Default derived from articlePattern. null clears."),
       uncategorizedSegment: z.string().nullable().optional().describe("Path segment substituted for {category} on articles with no category. Default 'uncategorized'. null clears."),
+      trailingSlash: z.boolean().optional().describe("Convenience toggle: true makes article and category URLs end with \"/\", false removes it (default off, slashless). Rewrites the stored articlePattern (and categoryPattern when set); with no articlePattern, true materializes '{pathPrefix}/{slug}/'. Combine with articlePattern to set both at once."),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ title, description, layout, languageCode, hostingMode, siteBaseUrl, articlePattern, categoryPattern, uncategorizedSegment, brandId }) => {
+    async ({ title, description, layout, languageCode, hostingMode, siteBaseUrl, articlePattern, categoryPattern, uncategorizedSegment, trailingSlash, brandId }) => {
       const id = requireBrandId(brandId);
       const data = await api.post<any>(`/api/agent/v1/brands/${id}/blogs`, {
         title,
@@ -221,9 +223,10 @@ export function registerBlogTools(server: McpServer) {
         articlePattern,
         categoryPattern,
         uncategorizedSegment,
+        trailingSlash,
       });
       return {
-        content: [{ type: "text" as const, text: JSON.stringify({ id: data.id, title: data.title, languageCode: data.languageCode ?? null, hostingMode: data.hostingMode ?? "postking", siteBaseUrl: data.siteBaseUrl ?? null, articlePattern: data.articlePattern ?? null, categoryPattern: data.categoryPattern ?? null }, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify({ id: data.id, title: data.title, languageCode: data.languageCode ?? null, hostingMode: data.hostingMode ?? "postking", siteBaseUrl: data.siteBaseUrl ?? null, articlePattern: data.articlePattern ?? null, categoryPattern: data.categoryPattern ?? null, trailingSlash: data.trailingSlash ?? false }, null, 2) }],
       };
     }
   );
@@ -248,7 +251,7 @@ export function registerBlogTools(server: McpServer) {
 
   server.tool(
     "update_publication",
-    "Update an existing blog publication's metadata — title, description, domain/routing config, layout, public URL settings (siteBaseUrl, articlePattern like '/blog/{category}/{slug}/', categoryPattern, uncategorizedSegment; hostingMode 'external' for headless sites that serve content themselves), or CTA configuration. Only the fields you pass are changed (partial update). Distinct from create_publication (which creates a new one). publicationId comes from list_publications or list_blogs.",
+    "Update an existing blog publication's metadata — title, description, domain/routing config, layout, public URL settings (siteBaseUrl, articlePattern like '/blog/{category}/{slug}/', categoryPattern, uncategorizedSegment, trailingSlash toggle; hostingMode 'external' for headless sites that serve content themselves), or CTA configuration. Only the fields you pass are changed (partial update). Distinct from create_publication (which creates a new one). publicationId comes from list_publications or list_blogs.",
     {
       publicationId: z.string().describe("Blog publication ID (from list_publications or list_blogs)"),
       title: z.string().optional(),
@@ -265,6 +268,7 @@ export function registerBlogTools(server: McpServer) {
       articlePattern: z.string().nullable().optional().describe("Article path pattern; tokens {slug} (required), {category}, {lang}. E.g. '/blog/{category}/{slug}/'. Trailing slash follows the pattern. Default '{pathPrefix}/{slug}'. null clears."),
       categoryPattern: z.string().nullable().optional().describe("Category hub path pattern with {category}, e.g. '/blog/{category}/'. Must not be able to match the same URL as articlePattern. Default derived from articlePattern. null clears."),
       uncategorizedSegment: z.string().nullable().optional().describe("Path segment substituted for {category} on articles with no category. Default 'uncategorized'. null clears."),
+      trailingSlash: z.boolean().optional().describe("Convenience toggle: true makes article and category URLs end with \"/\", false removes it (default off, slashless). Rewrites the stored articlePattern (and categoryPattern when set); with no articlePattern, true materializes '{pathPrefix}/{slug}/'. Combine with articlePattern to set both at once."),
       redirectLegacyBlogPath: z
         .boolean()
         .optional()
@@ -281,7 +285,7 @@ export function registerBlogTools(server: McpServer) {
         .describe("Full-replace ordered list (max 24) of hand-curated CTA link destinations the generator rotates through — for publications whose real conversion pages aren't PostKing side pages (e.g. externally-hosted/synced blogs). Pass null or [] to clear the pool, which puts the publication back on automatic side-page matching."),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ publicationId, title, description, domainId, routingType, pathPrefix, layout, hostingMode, siteBaseUrl, articlePattern, categoryPattern, uncategorizedSegment, redirectLegacyBlogPath, ctaSettings, ctaDestinations, brandId }) => {
+    async ({ publicationId, title, description, domainId, routingType, pathPrefix, layout, hostingMode, siteBaseUrl, articlePattern, categoryPattern, uncategorizedSegment, trailingSlash, redirectLegacyBlogPath, ctaSettings, ctaDestinations, brandId }) => {
       const id = requireBrandId(brandId);
       const body: Record<string, unknown> = {};
       if (title !== undefined) body.title = title;
@@ -295,18 +299,19 @@ export function registerBlogTools(server: McpServer) {
       if (articlePattern !== undefined) body.articlePattern = articlePattern;
       if (categoryPattern !== undefined) body.categoryPattern = categoryPattern;
       if (uncategorizedSegment !== undefined) body.uncategorizedSegment = uncategorizedSegment;
+      if (trailingSlash !== undefined) body.trailingSlash = trailingSlash;
       if (redirectLegacyBlogPath !== undefined) body.redirectLegacyBlogPath = redirectLegacyBlogPath;
       if (ctaSettings !== undefined) body.ctaSettings = ctaSettings;
       if (ctaDestinations !== undefined) body.ctaDestinations = ctaDestinations;
       if (Object.keys(body).length === 0) {
         return {
-          content: [{ type: "text" as const, text: "No fields to update. Pass at least one of: title, description, domainId, routingType, pathPrefix, layout, hostingMode, siteBaseUrl, articlePattern, categoryPattern, uncategorizedSegment, redirectLegacyBlogPath, ctaSettings, ctaDestinations." }],
+          content: [{ type: "text" as const, text: "No fields to update. Pass at least one of: title, description, domainId, routingType, pathPrefix, layout, hostingMode, siteBaseUrl, articlePattern, categoryPattern, uncategorizedSegment, trailingSlash, redirectLegacyBlogPath, ctaSettings, ctaDestinations." }],
         };
       }
       const data = await api.patch<any>(`/api/agent/v1/brands/${id}/publications/${publicationId}`, body);
       const pub = data?.publication ?? data;
       return {
-        content: [{ type: "text" as const, text: JSON.stringify({ id: pub?.id ?? publicationId, title: pub?.title, description: pub?.description, redirectLegacyBlogPath: pub?.redirectLegacyBlogPath ?? null, ctaSettings: pub?.ctaSettings ?? null, ctaDestinations: pub?.ctaDestinations ?? null, hostingMode: pub?.hostingMode ?? null, siteBaseUrl: pub?.siteBaseUrl ?? null, articlePattern: pub?.articlePattern ?? null, categoryPattern: pub?.categoryPattern ?? null, uncategorizedSegment: pub?.uncategorizedSegment ?? null, updated: Object.keys(body) }, null, 2) }],
+        content: [{ type: "text" as const, text: JSON.stringify({ id: pub?.id ?? publicationId, title: pub?.title, description: pub?.description, redirectLegacyBlogPath: pub?.redirectLegacyBlogPath ?? null, ctaSettings: pub?.ctaSettings ?? null, ctaDestinations: pub?.ctaDestinations ?? null, hostingMode: pub?.hostingMode ?? null, siteBaseUrl: pub?.siteBaseUrl ?? null, articlePattern: pub?.articlePattern ?? null, categoryPattern: pub?.categoryPattern ?? null, uncategorizedSegment: pub?.uncategorizedSegment ?? null, trailingSlash: pub?.trailingSlash ?? (pub?.articlePattern ? String(pub.articlePattern).endsWith("/") : false), updated: Object.keys(body) }, null, 2) }],
       };
     }
   );
@@ -1006,7 +1011,7 @@ export function registerBlogTools(server: McpServer) {
   // ── List publications ─────────────────────────────────────────────────────
   server.tool(
     "list_publications",
-    "List all blog publications (the containers that blog articles live under). detail='short' returns id+name+languageCode+publicUrl; detail='medium' adds pathPrefix, hostingMode and the public URL settings (siteBaseUrl, articlePattern, categoryPattern, uncategorizedSegment) plus the computed publicUrl (index) and exampleArticleUrl; detail='full' returns raw rows. On a brand publishing in more than one language (see get_brand_languages), languageCode is how you tell same-brand publications apart. Distinct from list_publishing_connections which lists external platforms like WordPress.",
+    "List all blog publications (the containers that blog articles live under). detail='short' returns id+name+languageCode+publicUrl; detail='medium' adds pathPrefix, hostingMode and the public URL settings (siteBaseUrl, articlePattern, categoryPattern, uncategorizedSegment, trailingSlash) plus the computed publicUrl (index) and exampleArticleUrl; detail='full' returns raw rows. On a brand publishing in more than one language (see get_brand_languages), languageCode is how you tell same-brand publications apart. Distinct from list_publishing_connections which lists external platforms like WordPress.",
     {
       detail: detailParam("short"),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
@@ -1030,6 +1035,7 @@ export function registerBlogTools(server: McpServer) {
           articlePattern: p.articlePattern ?? null,
           categoryPattern: p.categoryPattern ?? null,
           uncategorizedSegment: p.uncategorizedSegment ?? null,
+          trailingSlash: p.trailingSlash ?? (typeof p.articlePattern === "string" ? p.articlePattern.endsWith("/") : false),
           publicUrl: p.publicUrl ?? null,
           exampleArticleUrl: p.exampleArticleUrl ?? null,
           articleCount: (p._count as Record<string, unknown>)?.blogArticles ?? null,
