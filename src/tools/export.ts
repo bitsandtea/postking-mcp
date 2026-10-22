@@ -93,7 +93,7 @@ export function registerExportTools(server: McpServer) {
 
   server.tool(
     "export_side_page",
-    "Sync step 2. Render-ready PUBLISHED side page: typed content, resolved assets[] with absolute fileUrl, slotMap, navigation, siteMetadata, canonicalUrl, breadcrumb, schemaGraph (JSON-LD @graph: Organization, WebSite, WebPage, BreadcrumbList, FAQPage, comparison ItemList), plus meta (contentHash, updatedAt, publishedAt, publishedVersionId, path, assetMode). meta.assetMode "client" (page distribution 'external') means asset keys (assets, slotMap, logo/OG images, slot refs) are deliberately omitted — the site supplies its own. Full payload, never truncated. Nested keys: features/a or features~a.",
+    "Sync step 2. Render-ready PUBLISHED side page: typed content, resolved assets[] with absolute fileUrl, slotMap, navigation, siteMetadata, canonicalUrl, breadcrumb, schemaGraph (JSON-LD @graph: Organization, WebSite, WebPage, BreadcrumbList, FAQPage, comparison ItemList), plus meta (contentHash, updatedAt, publishedAt, publishedVersionId, path, assetMode). meta.assetMode 'client' (page distribution 'external') means asset keys (assets, slotMap, logo/OG images, slot refs) are deliberately omitted — the site supplies its own. Full payload, never truncated. Nested keys: features/a or features~a.",
     {
       landingPageSlug: z.string().describe("Parent landing page slug (rows from list_content_changes carry it as parentSlug)."),
       sideKey: z.string().describe("Side page key/slug (row.slug)."),
