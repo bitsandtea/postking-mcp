@@ -118,6 +118,12 @@ const briefListProj: Projector<Record<string, unknown>> = {
   medium: projectBrief,
 };
 
+/** Compact a BriefTruthRefStatus for medium detail (drops the long snapshot/hash). */
+function compactTruth(t: unknown): Record<string, unknown> {
+  const r = asRecord(t) ?? {};
+  return { truthId: r.truthId, name: r.name, reason: r.reason, status: r.status };
+}
+
 export const getBriefProj: Projector<Record<string, unknown>> = {
   short: (raw) => {
     const b = unwrapBrief(raw);
@@ -159,6 +165,8 @@ export const getBriefProj: Projector<Record<string, unknown>> = {
       clusterName: cluster?.name != null ? String(cluster.name) : null,
       briefSummary,
       sidePageUrl: briefSidePageUrl(b, briefData),
+      truths: Array.isArray(raw.truths) ? raw.truths.map(compactTruth) : [],
+      truthConflicts: Array.isArray(raw.truthConflicts) ? raw.truthConflicts : [],
     };
   },
 };
@@ -248,7 +256,8 @@ export function registerSeoBriefTools(server: McpServer) {
     "seo_get_brief",
     [
       "Fetch a single SeoBrief by id, including its briefData outline, status, roadmap item, and cluster.",
-      "Returns full detail by default (complete brief incl briefData). Use detail=\"medium\" for {id, type, status, title, clusterName, briefSummary, sidePageUrl} or detail=\"short\" for {id, type, status}.",
+      "Returns full detail by default (complete brief incl briefData). Use detail=\"medium\" for {id, type, status, title, clusterName, briefSummary, sidePageUrl, truths, truthConflicts} or detail=\"short\" for {id, type, status}.",
+      "`truths` lists the brand truths this brief says the page will be written from: [{truthId, name, reason, status}] (full detail adds slug, contentHash, snapshot). status `current` = unchanged; `changed` = the truth was edited since the brief was resolved (regenerate the page to pick it up, or re-resolve with seo_resolve_brief_truths); `deleted` = the truth no longer exists. `truthConflicts` flags truths that contradict each other.",
       "Use to inspect a brief before refining it with seo_edit_brief or approving it with seo_approve_briefs.",
     ].join(" "),
     {
@@ -353,6 +362,7 @@ export function registerSeoBriefTools(server: McpServer) {
       "Pass `briefData` (the full replacement JSON for the brief outline — H2s, FAQs, keyword targets, etc.) and/or `status` ('approved' | 'rejected').",
       "Approving via this tool fires L4 article/comparison generation immediately and returns { brief, operationId } — prefer seo_approve_briefs for the canonical approval step.",
       "Typical refinement loop: seo_get_brief → mutate briefData locally → seo_edit_brief with the new briefData (status omitted) → seo_approve_briefs.",
+      "To change which brand truths the page is written from, pass `truthIds: { add?: string[], remove?: string[] }` ON ITS OWN (not with briefData or status). Added ids must be existing, non-deleted truths of this brand (brand_truth_list); they are stored with reason \"Added manually\". Returns { brief, truths, truthConflicts }.",
     ].join(" "),
     {
       briefId: z.string().describe("Brief ID from seo_list_briefs"),
@@ -382,6 +392,13 @@ export function registerSeoBriefTools(server: McpServer) {
         .enum(["current", "published"])
         .optional()
         .describe("Landing-brief approval: which parent LP draft to extend from."),
+      truthIds: z
+        .object({
+          add: z.array(z.string().min(1)).max(50).optional().describe("Brand truth ids to add to the brief"),
+          remove: z.array(z.string().min(1)).max(50).optional().describe("Brand truth ids to remove from the brief"),
+        })
+        .optional()
+        .describe("Add/remove brand truths the page will be written from. Send alone — not with briefData or status."),
       verify: z
         .boolean()
         .optional()
@@ -392,7 +409,7 @@ export function registerSeoBriefTools(server: McpServer) {
         ),
       brandId: brandOpt,
     },
-    async ({ briefId, briefData, status, generateHeroImage, voiceProfileId, attachedAssetId, parentSource, verify, brandId }) => {
+    async ({ briefId, briefData, status, generateHeroImage, voiceProfileId, attachedAssetId, parentSource, truthIds, verify, brandId }) => {
       const id = requireBrandId(brandId);
       const body: Record<string, unknown> = {};
       if (briefData !== undefined) body.briefData = briefData;
@@ -401,6 +418,7 @@ export function registerSeoBriefTools(server: McpServer) {
       if (voiceProfileId !== undefined) body.voiceProfileId = voiceProfileId;
       if (attachedAssetId !== undefined) body.attachedAssetId = attachedAssetId;
       if (parentSource !== undefined) body.parentSource = parentSource;
+      if (truthIds !== undefined) body.truthIds = truthIds;
       if (verify !== undefined) body.verify = verify;
       const data = await api.patch<unknown>(
         `/api/agent/v1/brands/${id}/seo/briefs/${briefId}`,
@@ -467,6 +485,28 @@ export function registerSeoBriefTools(server: McpServer) {
       const data = await api.post<unknown>(
         `/api/agent/v1/brands/${id}/seo/briefs/${briefId}/regenerate`,
         body
+      );
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    }
+  );
+
+  // ── 6g. Re-resolve the brand truths a brief is written from ──────────────
+  server.tool(
+    "seo_resolve_brief_truths",
+    [
+      "Re-resolves which brand truths a brief's page will be written from, and stores the result on the brief. Synchronous — returns in a few seconds; no operation to poll.",
+      "A brief stores the brand truths (facts, audience truths, negative space) chosen for that page, each with a short reason. Use this after editing brand truths, or when the stored set looks wrong or stale. Manual additions/removals made with seo_edit_brief `truthIds` are replaced by the fresh selection.",
+      "Response: { truths: [{truthId, slug, name, reason, contentHash, snapshot, status}], truthConflicts: [{truthIds, note}], resolvedAt }. status `current` = unchanged; `changed` = the truth was edited since the brief was resolved (regenerate the page to pick it up); `deleted` = the truth no longer exists.",
+    ].join(" "),
+    {
+      briefId: z.string().describe("Brief ID from seo_list_briefs"),
+      brandId: brandOpt,
+    },
+    async ({ briefId, brandId }) => {
+      const id = requireBrandId(brandId);
+      const data = await api.post<unknown>(
+        `/api/agent/v1/brands/${id}/seo/briefs/${briefId}/resolve-truths`,
+        {}
       );
       return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
     }

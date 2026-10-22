@@ -29,6 +29,17 @@ describe("getBriefProj on the wrapped API response", () => {
     expect(getBriefProj.medium(wrapped)).toEqual({
       id: "b1", type: "landing", status: "drafted", title: "Hub",
       clusterName: "Cluster A", briefSummary: "outline present", sidePageUrl: "/for-x",
+      truths: [], truthConflicts: [],
     });
+  });
+  it("medium includes compact truths + conflicts", () => {
+    const withTruths = {
+      ...wrapped,
+      truths: [{ truthId: "t1", slug: "s", name: "N", reason: "r", contentHash: "h", snapshot: "x", status: "changed" }],
+      truthConflicts: [{ truthIds: ["t1", "t2"], note: "n" }],
+    };
+    const out = getBriefProj.medium(withTruths) as Record<string, unknown>;
+    expect(out.truths).toEqual([{ truthId: "t1", name: "N", reason: "r", status: "changed" }]);
+    expect(out.truthConflicts).toEqual([{ truthIds: ["t1", "t2"], note: "n" }]);
   });
 });

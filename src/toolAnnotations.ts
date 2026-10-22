@@ -111,6 +111,7 @@ const OPEN_WORLD_EXACT = new Set([
   "import_blog_articles",
   "check_ai_content",
   "trends_list",
+  "enrich_brand_website_links",
 ]);
 const OPEN_WORLD_PREFIXES = ["publish_", "competitor_probe"];
 

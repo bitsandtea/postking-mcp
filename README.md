@@ -216,6 +216,7 @@ _Canonical flow: `seo_add_seeds` → `seo_generate_keywords` → `seo_categorize
 | `seo_edit_brief` | Edit a brief's structured outline or approve/reject it |
 | `seo_approve_briefs` | Bulk-approve briefs and auto-fire article generation |
 | `seo_regenerate_brief` | Re-run brief generation for a single brief |
+| `seo_resolve_brief_truths` | Re-resolve the brand truths a brief's page is written from |
 | `seo_list_results` | List generated results (blog articles, side pages, comparisons) from the SEO pipeline |
 | `seo_write_article` | Manual path: draft a blog article from a roadmap item (use only when not going through `seo_approve_briefs`) |
 | `seo_gap` | Find keyword / topic gaps vs. existing content |

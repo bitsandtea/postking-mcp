@@ -16,6 +16,7 @@ import { log, redactForLog } from "./log.js";
 import { annotationsFor } from "./toolAnnotations.js";
 import { registerAuthTools } from "./tools/auth.js";
 import { registerBrandTools } from "./tools/brand.js";
+import { registerWebsiteLinksTools } from "./tools/website-links.js";
 import { registerPostTools } from "./tools/posts.js";
 import { registerRepurposeTools } from "./tools/repurpose.js";
 import { registerTextTools } from "./tools/text.js";
@@ -182,6 +183,7 @@ This server also exposes guided prompts for common end-to-end flows — \`gettin
   // explain that model and how to reconnect instead of erroring cryptically.
   registerAuthTools(server);
   registerBrandTools(server);
+  registerWebsiteLinksTools(server);
   registerPostTools(server);
   registerRepurposeTools(server);
   registerTextTools(server);
