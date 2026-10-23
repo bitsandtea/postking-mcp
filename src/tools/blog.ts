@@ -974,7 +974,7 @@ export function registerBlogTools(server: McpServer) {
   // ── Create blog author ────────────────────────────────────────────────────
   server.tool(
     "create_blog_author",
-    "Create a new author for blog articles. Returns an authorId that can be used in generate_blog_post and update_blog_article. Only firstName/lastName are required — pass the bio/social fields too so bylines aren't name-only.",
+    "Create a new author for blog articles (a default avatar is assigned if none is passed; use generate_blog_author for an AI-written persona). Returns an authorId that can be used in generate_blog_post and update_blog_article. Only firstName/lastName are required — pass the bio/social fields too so bylines aren't name-only.",
     {
       firstName: z.string().describe("Author first name"),
       lastName: z.string().describe("Author last name"),
@@ -1002,6 +1002,62 @@ export function registerBlogTools(server: McpServer) {
         authorWebsite: website,
         authorAvatar: avatar,
       });
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+      };
+    }
+  );
+
+  // ── Update blog author ────────────────────────────────────────────────────
+  server.tool(
+    "update_blog_author",
+    "Update an existing blog author (partial: only the fields you pass change, everything else is left intact). Pass an empty string to clear an optional field; names cannot be cleared. Use list_blog_authors to find the authorId.",
+    {
+      authorId: z.string().describe("Author ID (from list_blog_authors or create_blog_author)"),
+      firstName: z.string().optional().describe("Author first name"),
+      lastName: z.string().optional().describe("Author last name"),
+      email: z.string().optional().describe("Author email address"),
+      url: z.string().optional().describe("Author's personal/portfolio URL (byline link)."),
+      about: z.string().optional().describe("Short author bio shown on their byline/archive page."),
+      linkedin: z.string().optional().describe("LinkedIn profile URL."),
+      twitter: z.string().optional().describe("Twitter/X profile URL."),
+      youtube: z.string().optional().describe("YouTube channel URL."),
+      website: z.string().optional().describe("Author's website URL (distinct from the personal/portfolio `url` field)."),
+      avatar: z.string().optional().describe("Avatar image URL for the author's byline."),
+      brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
+    },
+    async ({ authorId, firstName, lastName, email, url, about, linkedin, twitter, youtube, website, avatar, brandId }) => {
+      const id = requireBrandId(brandId);
+      const data = await api.patch<any>(`/api/agent/v1/brands/${id}/authors/${authorId}`, {
+        authorFirstName: firstName,
+        authorLastName: lastName,
+        authorEmail: email,
+        authorUrl: url,
+        authorAbout: about,
+        authorLinkedin: linkedin,
+        authorTwitter: twitter,
+        authorYoutube: youtube,
+        authorWebsite: website,
+        authorAvatar: avatar,
+      });
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+      };
+    }
+  );
+
+  // ── Generate blog author ──────────────────────────────────────────────────
+  server.tool(
+    "generate_blog_author",
+    "Generate a plausible domain-expert author (first name, last name, bio, and a bundled avatar) grounded in the brand's info, and save it as a new author. Returns the created author with its authorId. Never invents website/social links — add those afterwards with update_blog_author. Free. Pass save=false to preview without saving.",
+    {
+      language: z.string().optional().describe("Language code for the bio (e.g. 'en', 'cs'). Defaults to the brand's content language."),
+      save: z.boolean().optional().describe("Default true: save the generated author. false returns the unsaved preview only."),
+      brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
+    },
+    async ({ language, save, brandId }) => {
+      const id = requireBrandId(brandId);
+      const data = await api.post<any>(`/api/agent/v1/brands/${id}/authors/generate`, { language, save });
       return {
         content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
       };
