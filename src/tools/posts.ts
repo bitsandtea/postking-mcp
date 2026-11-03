@@ -504,6 +504,37 @@ export function registerPostTools(server: McpServer) {
     }
   );
 
+  // ── Update post text ──────────────────────────────────────────────────────
+  server.tool(
+    "update_post",
+    [
+      "Replace a post's text. Pass the full new text; it overwrites the current text and is what gets published.",
+      "Works on drafts and scheduled posts, not on already-posted ones. Visuals, schedule and account stay as they are.",
+      "On a multi-variation post, only the post's text changes: the `variations` list in get_post keeps the originally generated versions.",
+    ].join(" "),
+    {
+      postId: z.string().describe("Post ID to update"),
+      content: z.string().min(1).describe("The full new post text"),
+    },
+    async ({ postId, content }) => {
+      const data = await api.patch<Record<string, unknown>>(`/api/agent/v1/posts/${postId}`, { content });
+      const d = data && typeof data === "object" ? data as Record<string, unknown> : {};
+      const inner = (d.post && typeof d.post === "object" ? d.post : d) as Record<string, unknown>;
+      const confirmation: Record<string, unknown> = {
+        postId: (inner.id as string | undefined) ?? postId,
+        status: inner.status,
+        content: inner.content,
+      };
+      if (inner.scheduledAt !== undefined) confirmation.scheduledAt = inner.scheduledAt;
+      else if (inner.postAt !== undefined) confirmation.scheduledAt = inner.postAt;
+      const webUrl = d.webUrl ?? inner.webUrl;
+      if (webUrl !== undefined) confirmation.webUrl = webUrl;
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(confirmation) }],
+      };
+    }
+  );
+
   // ── Schedule post (alias: approve with time) ──────────────────────────────
   server.tool(
     "schedule_post",

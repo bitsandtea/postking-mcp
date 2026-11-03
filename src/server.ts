@@ -39,6 +39,7 @@ import { registerLpTools } from "./tools/lp.js";
 import { registerBlockTools } from "./tools/blocks.js";
 import { registerLinkTools } from "./tools/links.js";
 import { registerRedditTools } from "./tools/reddit.js";
+import { registerSocialArticleTools } from "./tools/social-articles.js";
 import { registerStorylineTools } from "./tools/storylines.js";
 import { registerCompetitorTools } from "./tools/competitors.js";
 import { registerKnowledgeTools } from "./tools/knowledge.js";
@@ -206,6 +207,7 @@ This server also exposes guided prompts for common end-to-end flows — \`gettin
   registerBlockTools(server);
   registerLinkTools(server);
   registerRedditTools(server);
+  registerSocialArticleTools(server);
   registerStorylineTools(server);
   registerCompetitorTools(server);
   registerKnowledgeTools(server);

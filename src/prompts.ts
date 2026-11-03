@@ -156,6 +156,7 @@ What content do you want to repurpose? Give me a URL or paste your text.`,
 
 **Reschedule**
 - \`reschedule_post\` — move a scheduled post to a new time
+- \`update_post\` — replace a draft or scheduled post's text
 
 **Delete**
 - \`delete_post\` — removes a post regardless of status (draft, scheduled, or posted)

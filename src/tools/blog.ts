@@ -251,7 +251,7 @@ export function registerBlogTools(server: McpServer) {
 
   server.tool(
     "update_publication",
-    "Update an existing blog publication's metadata — title, description, domain/routing config, layout, public URL settings (siteBaseUrl, articlePattern like '/blog/{category}/{slug}/', categoryPattern, uncategorizedSegment, trailingSlash toggle; hostingMode 'external' for headless sites that serve content themselves), or CTA configuration. Only the fields you pass are changed (partial update). Distinct from create_publication (which creates a new one). publicationId comes from list_publications or list_blogs.",
+    "Update an existing blog publication's metadata — title, description, domain/routing config, layout, public URL settings (siteBaseUrl, articlePattern like '/blog/{category}/{slug}/', categoryPattern, uncategorizedSegment, trailingSlash toggle; hostingMode 'external' for headless sites that serve content themselves), CTA configuration, or the publication's default author (defaultAuthorId). Only the fields you pass are changed (partial update). Distinct from create_publication (which creates a new one). publicationId comes from list_publications or list_blogs.",
     {
       publicationId: z.string().describe("Blog publication ID (from list_publications or list_blogs)"),
       title: z.string().optional(),
@@ -283,9 +283,10 @@ export function registerBlogTools(server: McpServer) {
         .nullable()
         .optional()
         .describe("Full-replace ordered list (max 24) of hand-curated CTA link destinations the generator rotates through — for publications whose real conversion pages aren't PostKing side pages (e.g. externally-hosted/synced blogs). Pass null or [] to clear the pool, which puts the publication back on automatic side-page matching."),
+      defaultAuthorId: z.string().nullable().optional().describe("Default author for new articles in this publication (from list_blog_authors; active author of the brand). null clears it back to the brand default. Same as set_default_blog_author with publicationId."),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ publicationId, title, description, domainId, routingType, pathPrefix, layout, hostingMode, siteBaseUrl, articlePattern, categoryPattern, uncategorizedSegment, trailingSlash, redirectLegacyBlogPath, ctaSettings, ctaDestinations, brandId }) => {
+    async ({ publicationId, title, description, domainId, routingType, pathPrefix, layout, hostingMode, siteBaseUrl, articlePattern, categoryPattern, uncategorizedSegment, trailingSlash, redirectLegacyBlogPath, ctaSettings, ctaDestinations, defaultAuthorId, brandId }) => {
       const id = requireBrandId(brandId);
       const body: Record<string, unknown> = {};
       if (title !== undefined) body.title = title;
@@ -303,9 +304,10 @@ export function registerBlogTools(server: McpServer) {
       if (redirectLegacyBlogPath !== undefined) body.redirectLegacyBlogPath = redirectLegacyBlogPath;
       if (ctaSettings !== undefined) body.ctaSettings = ctaSettings;
       if (ctaDestinations !== undefined) body.ctaDestinations = ctaDestinations;
+      if (defaultAuthorId !== undefined) body.defaultAuthorId = defaultAuthorId;
       if (Object.keys(body).length === 0) {
         return {
-          content: [{ type: "text" as const, text: "No fields to update. Pass at least one of: title, description, domainId, routingType, pathPrefix, layout, hostingMode, siteBaseUrl, articlePattern, categoryPattern, uncategorizedSegment, trailingSlash, redirectLegacyBlogPath, ctaSettings, ctaDestinations." }],
+          content: [{ type: "text" as const, text: "No fields to update. Pass at least one of: title, description, domainId, routingType, pathPrefix, layout, hostingMode, siteBaseUrl, articlePattern, categoryPattern, uncategorizedSegment, trailingSlash, redirectLegacyBlogPath, ctaSettings, ctaDestinations, defaultAuthorId." }],
         };
       }
       const data = await api.patch<any>(`/api/agent/v1/brands/${id}/publications/${publicationId}`, body);
@@ -363,7 +365,7 @@ export function registerBlogTools(server: McpServer) {
     [
       "Generate a full AI blog article. Requires a publicationId (from list_blogs or create_publication).",
       "The publication you choose determines the article's LANGUAGE and its public URL (path/domain) — on a brand with more than one publication (check list_publications / get_brand_languages), don't pick one blindly. If the article ends up filed under the wrong publication, update_blog_article can move it after the fact via its publicationId param.",
-      "Pass a voiceProfileId to write in a specific person's style (IDs from list_voices).",
+      "Pass a voiceProfileId to write in a specific person's style (IDs from list_voices). Pass authorId to set the byline; otherwise the publication default author, then the brand default author (see set_default_blog_author), then the oldest active author is used.",
       "Returns an articleId + operationId; generation is async — poll get_blog_status until completed, then get_blog_article. Use update_blog_article to edit, or publish_blog_article to push to external platforms.",
       "To make it live on your PostKing blog, call update_blog_article with status: 'published'.",
       "Cannibalization guard: this write is checked server-side before drafting. Optionally preflight with seo_check_cannibalization first. On a 409 response here (or a preflight decision of 'refresh'), call refresh_blog_article with the guard's `targetArticleId` as `blogId` INSTEAD of retrying this tool. On decision 'blocked', an in-flight brief already covers this keyword (`conflictingBriefId`) — wait for it, don't force. Only pass forceCannibalization: true when the USER has explicitly said they want a duplicate/second article anyway — never decide this yourself. A success response may carry an optional `cannibalizationGuard` field when a guard outcome was already stamped on the brief.",
@@ -382,6 +384,7 @@ export function registerBlogTools(server: McpServer) {
       selectedAssetId: z.string().optional().describe("ID of the brand asset to use for the header image"),
       skipBrandContext: z.boolean().optional().describe("Omit brand context from the generation prompt when true"),
       language: languageParam("Applies to this article only; the brand's standing language is set with set_brand_content_language."),
+      authorId: z.string().optional().describe("Author for this article (from list_blog_authors; must be an active author of the brand). Omit to use the publication's default author, then the brand default (set_default_blog_author), then the oldest active author."),
       forceCannibalization: z
         .boolean()
         .optional()
@@ -391,7 +394,7 @@ export function registerBlogTools(server: McpServer) {
         ),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ publicationId, topic, voiceProfileId, targetLength, primaryKeywords, secondaryKeywords, readabilityTarget, generateAiImage, imageVariationCount, attachVisualAsset, selectedAssetId, skipBrandContext, language, forceCannibalization, brandId }) => {
+    async ({ publicationId, topic, voiceProfileId, targetLength, primaryKeywords, secondaryKeywords, readabilityTarget, generateAiImage, imageVariationCount, attachVisualAsset, selectedAssetId, skipBrandContext, language, authorId, forceCannibalization, brandId }) => {
       const id = requireBrandId(brandId);
       try {
         const data = await api.post<any>(`/api/agent/v1/brands/${id}/blogs/generate`, {
@@ -410,6 +413,7 @@ export function registerBlogTools(server: McpServer) {
           // Dropped from the JSON body when undefined, so "no override" stays
           // distinguishable from an explicit "en" server-side.
           language,
+          authorId,
           forceCannibalization,
           assignAsset: false,
         });
@@ -475,6 +479,48 @@ export function registerBlogTools(server: McpServer) {
             text: JSON.stringify({
               ...data,
               note: "Async refresh started. Poll get_job(operationId) until state is 'completed' (or 'failed'/'partially_failed'/'cancelled'), then get_blog_article to read the refreshed content.",
+            }, null, 2),
+          },
+        ],
+      };
+    }
+  );
+
+  // ── Enrich an existing blog article (audit stats, re-research, targeted edits) ──
+  server.tool(
+    "enrich_blog_article",
+    [
+      "Audits an EXISTING blog article's statistics, re-researches its keyword with the current research steps, and proposes targeted edits with a before/after scorecard. It does not rewrite the article.",
+      "What it checks per stat: is the number on the cited page, does the source label match the URL, is there a year, is it a real finding (not a study size or a date), and does the cited page itself credit another source. Edits only replace/remove failed stats, fix labels and years, cite primaries, reword unreplicated claims honestly, and may add one short analysis callout from measured SERP data. Every number in an edit must already be in the original paragraph or in the verified research; others are rejected.",
+      "It also reads the page's synced search performance and the brand audience, classifies the queries bringing people to the page as ICP buyer / ICP research / off-ICP, and returns a verdict: enrich (mostly ICP intent), reframe (adjacent topic, wrong angle: bigger edits aimed at the ICP) or retire (mostly off-ICP, no realistic angle: a recommendation to unpublish with a 301 or 410, never applied). Search numbers are used only for analysis and never written into the article. Optional `angle` (short target direction) steers the research and the rewrite; optional `instructions` steer the edit (tone, product pages, must-cover points); `verdict` overrides the computed one. The run also researches each H2 section, upgrades secondary stats to their primary page, and mines the searched sources, so the rewrite adds new verified stats and sources (see `enrichment` in the result). DRY RUN by default (apply=false): changes nothing and returns the proposal. Set apply=true only after the user has reviewed a dry run; it then overwrites the article body in place (no version history).",
+      "Async — returns `{ operationId, status }`. Poll get_job(operationId) until state is 'completed'; the job `result` holds `icp` (verdict, rationale, impression shares by class), `performance` (baseline + diagnoses), `suggestions` (title / meta description, never applied), `edits` (blockId, before, after, reason), `rejectedEdits`, `scorecard.before/after`, `enrichedMarkdown`, `research`, `skipped`, `costUsd`, and (when apply=true) `applied`/`appliedEdits`/`unappliedEdits`. Typically a few minutes.",
+    ].join(" "),
+    {
+      blogId: z.string().describe("Existing BlogArticle ID to enrich"),
+      apply: z.boolean().optional().default(false).describe("false (default) = dry run, returns the proposal only. true = also write the accepted edits into the article body."),
+      keyword: z.string().optional().describe("Keyword to re-research. Defaults to the article's primary keyword, else its title."),
+      instructions: z.string().optional().describe("Free-text editorial direction for the rewrite (angle, tone, which product pages to point to). Highest priority; also an allowed source of product numbers and links."),
+      verdict: z.enum(["enrich", "reframe"]).optional().describe("Override the computed ICP verdict. Omit to let the article's search-query mix decide (enrich / reframe / retire)."),
+      angle: z.string().optional().describe("Short target direction (e.g. 'free SEO tools for SaaS founders instead of cracked software'). Steers the research (per-section queries) and the rewrite; with no verdict given it defaults to reframe."),
+      voiceId: z.string().optional().describe("Saved voice profile id (list_voices). After the edits are final, the edited paragraphs are rewritten in this voice; numbers, links and unsupported claims the voice changes are reverted per block, and invented first-person anecdotes are stripped."),
+      brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
+    },
+    async ({ blogId, apply, keyword, instructions, verdict, voiceId, angle, brandId }) => {
+      const id = requireBrandId(brandId);
+      const body: Record<string, unknown> = { apply: apply ?? false };
+      if (keyword !== undefined) body.keyword = keyword;
+      if (instructions !== undefined) body.instructions = instructions;
+      if (verdict !== undefined) body.verdict = verdict;
+      if (voiceId !== undefined) body.voiceId = voiceId;
+      if (angle !== undefined) body.angle = angle;
+      const data = await api.post<Record<string, unknown>>(`/api/agent/v1/brands/${id}/blogs/${blogId}/enrich`, body);
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: JSON.stringify({
+              ...data,
+              note: "Async enrich started. Poll get_job(operationId) until state is 'completed' (or 'failed'/'cancelled'); the proposal (edits, scorecard, enrichedMarkdown) is in the job result. " + (apply ? "apply=true: accepted edits are written to the article when the job completes." : "Dry run: the article is unchanged."),
             }, null, 2),
           },
         ],
@@ -746,7 +792,7 @@ export function registerBlogTools(server: McpServer) {
   // ── List authors ──────────────────────────────────────────────────────────
   server.tool(
     "list_blog_authors",
-    "List all blog authors for the active brand. Returns id+name by default (short); use detail='medium' for email/social links. Author IDs can be passed to generate_blog_post or update_blog_article.",
+    "List all blog authors for the active brand. Returns id+name+isBrandDefault by default (short); use detail='medium' for email/social links and the publications that default to the author (defaultForPublicationIds). Author IDs can be passed to generate_blog_post, seo_write_article or update_blog_article; change defaults with set_default_blog_author.",
     {
       detail: detailParam("short"),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
@@ -756,13 +802,15 @@ export function registerBlogTools(server: McpServer) {
       const data = await api.get<Record<string, unknown>>(`/api/agent/v1/brands/${id}/authors`);
       const rawAuthors = (Array.isArray((data as any)?.authors) ? (data as any).authors : []) as Record<string, unknown>[];
       const proj: Projector<Record<string, unknown>> = {
-        short: (a) => ({ id: a.id, name: `${a.authorFirstName} ${a.authorLastName}`.trim() }),
+        short: (a) => ({ id: a.id, name: `${a.authorFirstName} ${a.authorLastName}`.trim(), isBrandDefault: a.isBrandDefault === true }),
         medium: (a) => ({
           id: a.id,
           name: `${a.authorFirstName} ${a.authorLastName}`.trim(),
           email: a.authorEmail,
           linkedin: a.authorLinkedin,
           twitter: a.authorTwitter,
+          isBrandDefault: a.isBrandDefault === true,
+          defaultForPublicationIds: a.defaultForPublicationIds ?? [],
         }),
       };
       const result = { count: rawAuthors.length, detail, authors: projectList(detail, rawAuthors, proj) };
@@ -1064,6 +1112,27 @@ export function registerBlogTools(server: McpServer) {
     }
   );
 
+  // ── Set default blog author ───────────────────────────────────────────────
+  server.tool(
+    "set_default_blog_author",
+    "Set (or clear) the default author for NEW blog articles. Without publicationId it sets the brand-wide default; with publicationId it sets that publication's default, which wins over the brand default. Resolution for a new article: explicit authorId > publication default > brand default > oldest active author. The author must be an active author of the brand (list_blog_authors). Pass authorId: null to clear. Existing articles are not changed (use update_blog_article with authorId).",
+    {
+      authorId: z.string().nullable().describe("Author ID (from list_blog_authors), or null to clear the default"),
+      publicationId: z.string().optional().describe("Publication ID (from list_publications). Omit to set the brand-wide default."),
+      brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
+    },
+    async ({ authorId, publicationId, brandId }) => {
+      const id = requireBrandId(brandId);
+      const data = await api.put<any>(`/api/agent/v1/brands/${id}/authors/default`, {
+        authorId,
+        ...(publicationId !== undefined ? { publicationId } : {}),
+      });
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
+      };
+    }
+  );
+
   // ── List publications ─────────────────────────────────────────────────────
   server.tool(
     "list_publications",
@@ -1094,6 +1163,7 @@ export function registerBlogTools(server: McpServer) {
           trailingSlash: p.trailingSlash ?? (typeof p.articlePattern === "string" ? p.articlePattern.endsWith("/") : false),
           publicUrl: p.publicUrl ?? null,
           exampleArticleUrl: p.exampleArticleUrl ?? null,
+          defaultAuthorId: p.defaultAuthorId ?? null,
           articleCount: (p._count as Record<string, unknown>)?.blogArticles ?? null,
         }),
       };

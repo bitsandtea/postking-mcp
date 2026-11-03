@@ -54,7 +54,7 @@ export function registerSearchPerformanceTools(server: McpServer) {
       "Pick which slices to return with `sections` (default [\"summary\", \"analytics\"] — GA4 is the headline gap this tool used to miss entirely): \"summary\" = per-provider Search Console totals (never includes a google_analytics row — GA4 has no clicks/impressions/position concept, see below); \"queries\" = top search queries; \"pages\" = top landing pages; \"timeseries\" = clicks/impressions over time, bucketed by `granularity` and combined across providers into columnar {dates,clicks,impressions} arrays; \"analytics\" = the GA4 readout (sessions, engagement, revenue, AI-referral traffic, channel breakdown); \"funnel\" = the experimental Seen-to-Clicked-to-Visited-to-Engaged-to-Converted funnel (null unless both a search-console AND a GA connection are active); \"content\" = per-content-asset SEO+GA4 rollup (topContentDegraded is surfaced when the server failed to join content assets this call). The response echoes `availableSections`.",
       "`provider` filters \"summary\"/\"timeseries\" to one connected source. Passing `provider: \"google_analytics\"` returns an empty (correctly so) `summary` — GA4 rows never appear there — and automatically adds the \"analytics\" section so you still get real numbers back; a `note` explains this when it happens.",
       "`limit` (default 25, max 200) caps every list-shaped section: queries/pages/content rows, and (at detail=\"medium\"/\"full\") the analytics section's channels/aiReferrals.bySource/aiReferrals.topLandedPages arrays. `detail` controls verbosity: short = headline scalars only, no timeseries; medium = adds capped breakdowns + timeseries downsampled to weekly buckets; full = the raw API shape, timeseries capped to the most recent `limit` points instead of bucketed.",
-      "Requires at least one connected search source (see `search_sources`) — an unconnected brand returns an empty summary, not an error.",
+      "For a single page's queries, trend and citations use `search_page_performance`. Requires at least one connected search source (see `search_sources`) — an unconnected brand returns an empty summary, not an error.",
     ].join(" "),
     {
       days: DAYS.optional().default(90).describe(DAYS_DESC),
@@ -239,6 +239,69 @@ export function registerSearchPerformanceTools(server: McpServer) {
       if (truncated) {
         result.note = `Showing ${sliced.length} of ${rows.length} worklist items. Raise \`limit\` (max 200) to see the rest.`;
       }
+      return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+    }
+  );
+
+  // ── search_page_journey ──────────────────────────────────────────────
+  server.tool(
+    "search_page_journey",
+    [
+      "What visitors do on one page after they land (PostKing's \"After they land\" panel): how long they stay, how far down they read, which section they leave in, and which buttons they click. Returns plain-language `suggestions` first (what to change on the page), then a compact `summary` (visits, avgSeconds, readHalfwayPct, clicksPer100Visits, timeOnPagePct), per-`sections` reach and drop-off (reachedPct, leftHerePct, goneSoFarPct, clickedPer100Visits), per-`ctas` click rates, and `pages` (the other tracked pages you can inspect).",
+      "Pass `host` + `path` (as listed in `pages`) for a specific page; omit both for the most-visited page. `days` is 1-365 (default 28). Free.",
+      "Use it after a landing-page change to see whether visitors behave differently, and before editing a page to see where to focus. Pages served by PostKing are tracked automatically. If the site is hosted elsewhere and nothing is tracked yet, `install` returns the tracking snippet and a brief for whoever builds the site.",
+      "`limit` (default 15, max 50) caps the sections, ctas and pages lists.",
+    ].join(" "),
+    {
+      host: z.string().optional().describe("Host of the page, as listed in `pages`. Omit for the most-visited page."),
+      path: z.string().optional().describe('Path of the page, e.g. "/pricing". Omit for the most-visited page.'),
+      days: z.number().int().min(1).max(365).optional().default(28).describe("Lookback window in days (1-365). Default 28."),
+      limit: z.number().int().min(1).max(50).optional().default(15).describe("Max rows in each of sections, ctas and pages (default 15, max 50)."),
+      brandId: brandOpt,
+    },
+    async ({ host, path, days, limit, brandId }) => {
+      const id = requireBrandId(brandId);
+      const qs = new URLSearchParams();
+      qs.set("days", String(days));
+      if (host) qs.set("host", host);
+      if (path) qs.set("path", path);
+      const data = await api.get<unknown>(`/api/agent/v1/brands/${id}/search-performance/page-journey?${qs.toString()}`);
+      const result: Record<string, unknown> = { ...asObj(data) };
+      const totals: Record<string, number> = {};
+      for (const key of ["sections", "ctas", "pages"] as const) {
+        const rows = asRows(result[key]);
+        if (rows.length > limit) {
+          result[key] = rows.slice(0, limit);
+          totals[`${key}Total`] = rows.length;
+        }
+      }
+      if (Object.keys(totals).length > 0) {
+        Object.assign(result, totals, { truncated: true });
+      }
+      result.dashboardUrl = brandDashboardUrl(id, "search_performance");
+      return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+    }
+  );
+
+  // ── search_page_performance ──────────────────────────────────────────
+  server.tool(
+    "search_page_performance",
+    [
+      "Search performance for ONE page URL (an article, landing page or side page): per-provider `totals` (clicks, impressions, ctr, position) from Google Search Console and Bing, the top `queries` it gets impressions for (Google Search Console only; clicks, impressions, ctr, position per query), a weekly `timeseries` ({dates, clicks, impressions, position} columnar arrays), `ga4` landing-page engagement (sessions, engagementRate, avgEngagementTime in seconds, keyEvents, aiReferralSessions), and `bingAiCitations` (Copilot citation snapshots for that page).",
+      "Pass the page's full `url`; http/https, www, trailing slash and tracking params are matched either way. Sections that are not stored for the page come back null, and `notes` says why (no connection, page not in the synced top pages, no AI-citation import). Bing grounding queries are not stored per page, so `bingAiCitations.groundingQueries` is always null; use `search_ai_citations` for site-wide ones. Reads already-synced data only. Free.",
+      "Use it before refreshing an article to see which queries it ranks for and where it sits, whether impressions are trending up or down, and whether AI assistants cite it. Use `search_performance` for site-wide numbers. `days` is 7, 28, 90, 180 or 480 (default 90); `limit` caps `queries` (default 50, max 200).",
+    ].join(" "),
+    {
+      url: z.string().min(1).describe("Full URL of the page, e.g. https://example.com/blog/my-article"),
+      days: DAYS.optional().default(90).describe(DAYS_DESC),
+      limit: z.number().int().min(1).max(200).optional().default(50).describe("Max queries returned, top by impressions (default 50, max 200)."),
+      brandId: brandOpt,
+    },
+    async ({ url, days, limit, brandId }) => {
+      const id = requireBrandId(brandId);
+      const qs = new URLSearchParams({ url, days: String(days), limit: String(limit) });
+      const data = await api.get<unknown>(`/api/agent/v1/brands/${id}/search-performance/page?${qs.toString()}`);
+      const result: Record<string, unknown> = { ...asObj(data), dashboardUrl: brandDashboardUrl(id, "search_performance") };
       return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
     }
   );

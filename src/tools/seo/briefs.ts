@@ -555,7 +555,7 @@ export function registerSeoBriefTools(server: McpServer) {
       `Typically takes ${etaFor("seo_article_generate")}.`,
       "Precondition: the brief for this roadmap item must be in status `approved`. If the brief is still `drafted` or `pending_review`, review with `seo_list_briefs` / `seo_get_brief`, refine with `seo_edit_brief`, then approve with `seo_approve_briefs` (which will auto-generate).",
       "Returns an articleId that can be reviewed, edited, or published.",
-      "generateHeroImage, attachedAssetId, verify, and language only apply to article (blog) briefs — for comparison/landing-type roadmap items the server silently ignores all four and generates the page through the comparison/landing pipeline instead.",
+      "generateHeroImage, attachedAssetId, verify, language, and authorId only apply to article (blog) briefs — for comparison/landing-type roadmap items the server silently ignores all five and generates the page through the comparison/landing pipeline instead.",
       "Cannibalization guard: this write is checked server-side before drafting. Optionally preflight with seo_check_cannibalization first. On a 409 response here (or a preflight decision of 'refresh'), call refresh_blog_article with the guard's `targetArticleId` as `blogId` INSTEAD of retrying this tool. On decision 'blocked', an in-flight brief already covers this keyword (`conflictingBriefId`) — wait for it, don't force. Only pass forceCannibalization: true when the USER has explicitly said they want a duplicate/second article anyway — never decide this yourself. A success response may carry an optional `cannibalizationGuard` field when a guard outcome was already stamped on the brief.",
     ].join(" "),
     {
@@ -590,9 +590,13 @@ export function registerSeoBriefTools(server: McpServer) {
           "Bypass the cannibalization guard and write a new article even if it duplicates an existing one. " +
             "Only set this when the USER has explicitly said they want a duplicate/second article anyway — never decide this on your own initiative."
         ),
+      authorId: z
+        .string()
+        .optional()
+        .describe("Author for this article (from list_blog_authors; must be an active author of the brand). Omit to use the publication default, then the brand default (set_default_blog_author), then the oldest active author. Article-type briefs only."),
       brandId: brandOpt,
     },
-    async ({ roadmapItemId, voiceProfileId, generateHeroImage, attachedAssetId, verify, language, forceCannibalization, brandId }) => {
+    async ({ roadmapItemId, voiceProfileId, generateHeroImage, attachedAssetId, verify, language, forceCannibalization, authorId, brandId }) => {
       const id = requireBrandId(brandId);
       const body: Record<string, unknown> = {};
       if (voiceProfileId !== undefined) body.voiceProfileId = voiceProfileId;
@@ -601,6 +605,7 @@ export function registerSeoBriefTools(server: McpServer) {
       if (verify !== undefined) body.verify = verify;
       if (language !== undefined) body.language = language;
       if (forceCannibalization !== undefined) body.forceCannibalization = forceCannibalization;
+      if (authorId !== undefined) body.authorId = authorId;
       try {
         const data = await api.post<unknown>(
           `/api/agent/v1/brands/${id}/seo/roadmap/${roadmapItemId}/write`,
