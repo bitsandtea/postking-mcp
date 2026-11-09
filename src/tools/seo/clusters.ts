@@ -29,6 +29,15 @@ interface CompactCluster {
   description: string | null;
   productFit: string | null;
   relevanceScore: number | null;
+  /** Real search demand: tag proven_demand | covered | new, observed impressions, best position/page. */
+  demand?: {
+    tag: string;
+    impressions: number;
+    bestPosition: number | null;
+    bestPage: string | null;
+    queryCount: number;
+    topQueries: { query: string; impressions: number; position: number }[];
+  };
 }
 
 function projectCluster(c: Record<string, unknown>): CompactCluster {
@@ -37,6 +46,7 @@ function projectCluster(c: Record<string, unknown>): CompactCluster {
   const keywordCount = keywordsMeta.length > 0 ? keywordsMeta.length : keywords.length;
   const topKeywords = (keywords as unknown[]).slice(0, 8).filter((k): k is string => typeof k === "string");
   const clusterMeta = c.clusterMeta != null && typeof c.clusterMeta === "object" ? (c.clusterMeta as Record<string, unknown>) : null;
+  const demand = c.demand != null && typeof c.demand === "object" ? (c.demand as Record<string, unknown>) : null;
   return {
     id: String(c.id ?? ""),
     name: String(c.name ?? ""),
@@ -49,6 +59,18 @@ function projectCluster(c: Record<string, unknown>): CompactCluster {
     firstBriefId: c.firstBriefId != null ? String(c.firstBriefId) : null,
     description: truncate(c.description, 200),
     productFit: clusterMeta != null && typeof clusterMeta.productFit === "string" ? clusterMeta.productFit : null,
+    ...(demand && typeof demand.tag === "string"
+      ? {
+          demand: {
+            tag: demand.tag,
+            impressions: typeof demand.impressions === "number" ? demand.impressions : 0,
+            bestPosition: typeof demand.bestPosition === "number" ? demand.bestPosition : null,
+            bestPage: typeof demand.bestPage === "string" ? demand.bestPage : null,
+            queryCount: typeof demand.queryCount === "number" ? demand.queryCount : 0,
+            topQueries: Array.isArray(demand.topQueries) ? (demand.topQueries as { query: string; impressions: number; position: number }[]).slice(0, 5) : [],
+          },
+        }
+      : {}),
     relevanceScore: clusterMeta != null && typeof clusterMeta.relevanceScore === "number" ? clusterMeta.relevanceScore : null,
   };
 }
@@ -301,7 +323,8 @@ export function registerSeoClusterTools(server: McpServer) {
     [
       "Step 5. List clusters so the agent can pick one (or several) to approve before brief and roadmap generation.",
       "Returns short detail by default: {id, name, status} per cluster.",
-      "Use detail=\"medium\" for the full compact summary (pillarKeyword, briefGenerationStatus, briefCount, keywordCount, topKeywords, firstBriefId, description, productFit, relevanceScore) or detail=\"full\" for raw cluster objects.",
+      "Use detail=\"medium\" for the full compact summary (pillarKeyword, briefGenerationStatus, briefCount, keywordCount, topKeywords, firstBriefId, description, productFit, relevanceScore, demand) or detail=\"full\" for raw cluster objects.",
+      "demand (when search data is connected): tag proven_demand (real impressions on the cluster's keywords) | covered (a page of ours already ranks top 3) | new (no data yet), plus impressions, bestPosition, bestPage and topQueries. Prefer proven_demand clusters; skip covered ones.",
       "Full keyword detail (keywordsMeta, contentMix, briefAssignments) is intentionally omitted at short/medium to keep context small — use cluster IDs with approve/reject tools directly.",
       "Supports server-side filtering: status (CSV of pending_review/approved/rejected), productFit (core/adjacent/out_of_scope), archetype (competitor), origin (CSV of pipeline/manual), q (text search over name/description/pillarKeyword).",
       `Multilingual brands: pass \`language\` (${LANGUAGE_CODE_LIST_TEXT}) to filter to one language's clusters; omit to see every configured language's clusters mixed together.`,

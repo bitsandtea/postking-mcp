@@ -33,6 +33,24 @@ interface CompactBrief {
   blogArticleId: string | null;
   generatedAt: string | null;
   approvedAt: string | null;
+  /** "refresh" = rewrites an existing article (briefData.kind); null for normal briefs. */
+  kind: string | null;
+  /** Refresh briefs: the page being rewritten. */
+  refreshPageUrl?: string;
+}
+
+/** briefData.kind === "refresh" -> "refresh". */
+function briefKind(briefData: Record<string, unknown> | null): string | null {
+  return typeof briefData?.kind === "string" ? briefData.kind : null;
+}
+
+/** Refresh brief edit plan: [{action: rewrite|add|keep|remove, text}]. */
+function briefChanges(briefData: Record<string, unknown> | null): { action: string; text: string }[] {
+  if (!Array.isArray(briefData?.changes)) return [];
+  return (briefData!.changes as unknown[])
+    .map((c) => asRecord(c))
+    .filter((c): c is Record<string, unknown> => c !== null)
+    .map((c) => ({ action: String(c.action ?? ""), text: String(c.text ?? "") }));
 }
 
 function asRecord(v: unknown): Record<string, unknown> | null {
@@ -69,7 +87,10 @@ function projectBrief(b: Record<string, unknown>): CompactBrief {
     : null;
 
   let briefSummary: string | null = null;
-  if (briefData) {
+  const kind = briefKind(briefData);
+  if (kind === "refresh") {
+    briefSummary = `Refresh: ${String(briefData?.pageTitle ?? briefData?.pageUrl ?? "existing page")} (${briefChanges(briefData).length} changes)`;
+  } else if (briefData) {
     const bdTitle = briefData.title != null ? String(briefData.title) : null;
     const sections = Array.isArray(briefData.sections)
       ? briefData.sections
@@ -100,6 +121,8 @@ function projectBrief(b: Record<string, unknown>): CompactBrief {
     blogArticleId: b.blogArticleId != null ? String(b.blogArticleId) : null,
     generatedAt: b.generatedAt != null ? String(b.generatedAt) : null,
     approvedAt: b.approvedAt != null ? String(b.approvedAt) : null,
+    kind,
+    ...(kind === "refresh" && typeof briefData?.pageUrl === "string" ? { refreshPageUrl: briefData.pageUrl } : {}),
   };
 }
 
@@ -113,6 +136,7 @@ const briefListProj: Projector<Record<string, unknown>> = {
       type: String(b.type ?? ""),
       status: String(b.status ?? ""),
       title: roadmapItem?.title != null ? String(roadmapItem.title) : null,
+      kind: briefKind(asRecord(b.briefData)),
     };
   },
   medium: projectBrief,
@@ -143,7 +167,10 @@ export const getBriefProj: Projector<Record<string, unknown>> = {
       ? (b.briefData as Record<string, unknown>)
       : null;
     let briefSummary: string | null = null;
-    if (briefData) {
+    const kind = briefKind(briefData);
+    if (kind === "refresh") {
+      briefSummary = `Refresh: ${String(briefData?.pageTitle ?? briefData?.pageUrl ?? "existing page")} (${briefChanges(briefData).length} changes)`;
+    } else if (briefData) {
       const bdTitle = briefData.title != null ? String(briefData.title) : null;
       const sections = Array.isArray(briefData.sections) ? briefData.sections
         : Array.isArray(briefData.h2s) ? briefData.h2s
@@ -165,6 +192,10 @@ export const getBriefProj: Projector<Record<string, unknown>> = {
       clusterName: cluster?.name != null ? String(cluster.name) : null,
       briefSummary,
       sidePageUrl: briefSidePageUrl(b, briefData),
+      kind,
+      ...(kind === "refresh"
+        ? { refreshPageUrl: briefData?.pageUrl ?? null, changes: briefChanges(briefData) }
+        : {}),
       truths: Array.isArray(raw.truths) ? raw.truths.map(compactTruth) : [],
       truthConflicts: Array.isArray(raw.truthConflicts) ? raw.truthConflicts : [],
     };
@@ -178,7 +209,8 @@ export function registerSeoBriefTools(server: McpServer) {
     [
       "Returns ALL briefs across EVERY status by default — do NOT add a status filter unless the user explicitly asks. `statusBreakdown` gives the per-status counts (match these to the dashboard's brief count). NOTE: briefs whose generation is still in-flight may not appear here yet — check `list_operations` / `get_job` for in-progress generation.",
       "Returns short detail by default: {id, type, status, title} per brief.",
-      "Use detail=\"medium\" for compact summary (clusterId, clusterName, briefSummary, sidePageUrl, generationError, blogArticleId, generatedAt, approvedAt) or detail=\"full\" for raw briefs including briefData outline.",
+      "Briefs with kind=\"refresh\" rewrite an existing page (refreshPageUrl) instead of writing a new article.",
+      "Use detail=\"medium\" for compact summary (kind, clusterId, clusterName, briefSummary, sidePageUrl, generationError, blogArticleId, generatedAt, approvedAt) or detail=\"full\" for raw briefs including briefData outline.",
       "To inspect a single brief's full outline, call seo_get_brief with detail=\"full\".",
       "Filters: status (CSV — e.g. 'pending_review,approved'), type (CSV — e.g. 'blog,comparison,landing'), clusterId, roadmapItemId, q (cluster-name fuzzy match), limit (default 50, max 200), cursor.",
       `Multilingual brands: pass \`language\` to scope to briefs whose roadmap item is in ONE of the brand's languages (${LANGUAGE_CODE_LIST_TEXT}). Omitting it returns briefs in EVERY language mixed together — always pass it once a brand has more than one configured language, otherwise counts and titles will look wrong for that language.`,
@@ -256,7 +288,7 @@ export function registerSeoBriefTools(server: McpServer) {
     "seo_get_brief",
     [
       "Fetch a single SeoBrief by id, including its briefData outline, status, roadmap item, and cluster.",
-      "Returns full detail by default (complete brief incl briefData). Use detail=\"medium\" for {id, type, status, title, clusterName, briefSummary, sidePageUrl, truths, truthConflicts} or detail=\"short\" for {id, type, status}.",
+      "Returns full detail by default (complete brief incl briefData). Use detail=\"medium\" for {id, type, status, title, clusterName, briefSummary, sidePageUrl, kind, truths, truthConflicts; refresh briefs add refreshPageUrl + changes[{action, text}]} or detail=\"short\" for {id, type, status}.",
       "`truths` lists the brand truths this brief says the page will be written from: [{truthId, name, reason, status}] (full detail adds slug, contentHash, snapshot). status `current` = unchanged; `changed` = the truth was edited since the brief was resolved (regenerate the page to pick it up, or re-resolve with seo_resolve_brief_truths); `deleted` = the truth no longer exists. `truthConflicts` flags truths that contradict each other.",
       "Use to inspect a brief before refining it with seo_edit_brief or approving it with seo_approve_briefs.",
     ].join(" "),
@@ -435,6 +467,7 @@ export function registerSeoBriefTools(server: McpServer) {
       "Approves one or more SeoBriefs and AUTO-fires L4 article/comparison generation immediately — do NOT call seo_write_article after this.",
       `Typically takes ${etaFor("seo_article_generate")}.`,
       "After approval, poll each returned operationId with get_job until state is `completed` (or `failed`/`partially_failed`/`cancelled` on error). A brief in status `writing` means generation is already in progress — poll the existing operation, do not re-submit.",
+      "A REFRESH brief (kind=\"refresh\", from a refresh roadmap item) does not write a new article: approving it REWRITES the existing article in place, following briefData.changes (rewrite/add/keep/remove). Check seo_get_brief first and confirm with the user. (seo_write_article does NOT work on refresh briefs: 400 not_supported_for_refresh.)",
       "Body: briefIds (array, max 200).",
       "Response: { approved, failed: [{briefId, reason}], operationIds, operations: [{briefId, operationId, type}] }.",
     ].join(" "),

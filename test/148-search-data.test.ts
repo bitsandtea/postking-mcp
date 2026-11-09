@@ -62,3 +62,47 @@ describe("148 search-data tools", () => {
     expect(api.patch).toHaveBeenCalledWith("/api/agent/v1/brands/b1/seo/roadmap/r1", { action: "pin" });
   });
 });
+
+import { registerSeoBriefTools } from "../src/tools/seo/briefs.js";
+import { registerSeoClusterTools } from "../src/tools/seo/clusters.js";
+
+describe("148 wave 3: brief queue", () => {
+  beforeEach(() => Object.values(api).forEach((m) => m.mockReset()));
+
+  it("seo_roadmap_create_brief POSTs the brief route", async () => {
+    api.post.mockResolvedValue({ briefId: "br1", operationId: "op1", outcome: "started" });
+    const res = await tool(registerSeoRoadmapTools, "seo_roadmap_create_brief").handler({ brandId: "b1", itemId: "r1" });
+    expect(api.post.mock.calls[0][0]).toBe("/api/agent/v1/brands/b1/seo/roadmap/r1/brief");
+    expect(JSON.parse(res.content[0].text).outcome).toBe("started");
+  });
+
+  it("seo_list_roadmap projects brief", async () => {
+    api.get.mockResolvedValue({ items: [{ id: "r1", title: "T", status: "suggested", brief: { briefId: "br1", status: "pending_review", operationId: null, error: null } }] });
+    const res = await tool(registerSeoRoadmapTools, "seo_list_roadmap").handler({ brandId: "b1", detail: "medium" });
+    expect(JSON.parse(res.content[0].text).items[0].brief).toEqual({ briefId: "br1", status: "pending_review", operationId: null, error: null });
+  });
+
+  it("seo_get_brief surfaces kind refresh and the change plan", async () => {
+    api.get.mockResolvedValue({ brief: { id: "br1", type: "blog", status: "pending_review", briefData: { kind: "refresh", pageUrl: "/blog/x", pageTitle: "X", changes: [{ action: "add", text: "Answer Q" }] } } });
+    const res = await tool(registerSeoBriefTools, "seo_get_brief").handler({ brandId: "b1", briefId: "br1", detail: "medium" });
+    const out = JSON.parse(res.content[0].text);
+    expect(out).toMatchObject({ kind: "refresh", refreshPageUrl: "/blog/x", changes: [{ action: "add", text: "Answer Q" }] });
+    expect(out.briefSummary).toBe("Refresh: X (1 changes)");
+  });
+
+  it("seo_list_briefs medium flags refresh briefs", async () => {
+    api.get.mockResolvedValue({ briefs: [{ id: "br1", type: "blog", status: "pending_review", briefData: { kind: "refresh", pageUrl: "/blog/x" } }, { id: "br2", type: "blog", status: "approved" }] });
+    const res = await tool(registerSeoBriefTools, "seo_list_briefs").handler({ brandId: "b1", detail: "medium" });
+    const briefs = JSON.parse(res.content[0].text).briefs;
+    expect(briefs[0]).toMatchObject({ kind: "refresh", refreshPageUrl: "/blog/x" });
+    expect(briefs[1].kind).toBeNull();
+  });
+
+  it("seo_list_clusters medium includes demand", async () => {
+    api.get.mockResolvedValue({ clusters: [{ id: "c1", name: "C", status: "approved", demand: { tag: "proven_demand", impressions: 900, bestPosition: 5, bestPage: "/blog/x", queryCount: 3, topQueries: [{ query: "q", impressions: 500, position: 5 }] } }, { id: "c2", name: "D", status: "approved" }] });
+    const res = await tool(registerSeoClusterTools, "seo_list_clusters").handler({ brandId: "b1", detail: "medium" });
+    const cl = JSON.parse(res.content[0].text).clusters;
+    expect(cl[0].demand).toMatchObject({ tag: "proven_demand", impressions: 900, bestPage: "/blog/x" });
+    expect(cl[1].demand).toBeUndefined();
+  });
+});

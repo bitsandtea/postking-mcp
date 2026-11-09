@@ -28,6 +28,8 @@ interface CompactRoadmapItem {
   refreshPageUrl?: string;
   hiddenReason?: string;
   userOverride?: Record<string, unknown>;
+  /** Brief queue state: none = no brief yet (seo_roadmap_create_brief). */
+  brief?: { briefId: string | null; status: string; operationId: string | null; error: string | null };
 }
 
 function asObj(v: unknown): Record<string, unknown> | null {
@@ -43,6 +45,7 @@ function projectRoadmapItem(item: Record<string, unknown>): CompactRoadmapItem {
   const evidence = asObj(meta?.searchEvidence);
   const refresh = asObj(meta?.refresh);
   const override = asObj(meta?.userOverride);
+  const briefState = asObj(item.brief);
   const num = (v: unknown) => (typeof v === "number" ? v : null);
   return {
     id: String(item.id ?? ""),
@@ -58,6 +61,16 @@ function projectRoadmapItem(item: Record<string, unknown>): CompactRoadmapItem {
     ...(typeof refresh?.pageUrl === "string" ? { refreshPageUrl: refresh.pageUrl } : {}),
     ...(typeof meta?.hiddenReason === "string" ? { hiddenReason: meta.hiddenReason } : {}),
     ...(override ? { userOverride: override } : {}),
+    ...(briefState
+      ? {
+          brief: {
+            briefId: briefState.briefId != null ? String(briefState.briefId) : null,
+            status: String(briefState.status ?? "none"),
+            operationId: briefState.operationId != null ? String(briefState.operationId) : null,
+            error: briefState.error != null ? String(briefState.error) : null,
+          },
+        }
+      : {}),
   };
 }
 
@@ -137,7 +150,7 @@ export function registerSeoRoadmapTools(server: McpServer) {
       "Ignored (hidden) items are left out unless you pass status=\"ignored\" - use that to see what the search-data reconcile hid as already covered, or what was dismissed (hiddenReason says why; call seo_roadmap_edit action=restore to bring one back).",
       "type=\"refresh\" lists items that rewrite an EXISTING page that ranks poorly for real search queries (they overwrite that article in place).",
       "Returns short detail by default: {id, title, status} per item.",
-      "Use detail=\"medium\" for the compact summary (type, priority, primaryKeywords, clusterId, and when present searchEvidence, refreshPageUrl, hiddenReason, userOverride) or detail=\"full\" for raw objects (metadata.searchEvidence, metadata.refresh with queries + answerQuestions, metadata.hiddenReason, metadata.userOverride).",
+      "Use detail=\"medium\" for the compact summary (type, priority, primaryKeywords, clusterId, brief {briefId, status, operationId, error}, and when present searchEvidence, refreshPageUrl, hiddenReason, userOverride) or detail=\"full\" for raw objects (metadata.searchEvidence, metadata.refresh with queries + answerQuestions, metadata.hiddenReason, metadata.userOverride).",
       "Call seo_roadmap_get with detail=\"full\" for a single item's complete detail.",
     ].join(" "),
     {
@@ -212,7 +225,7 @@ export function registerSeoRoadmapTools(server: McpServer) {
       "Edit a roadmap item's status or override the search-data reconcile. Pass EITHER `action` (a shortcut) OR `status` directly — the server requires at least one.",
       "`action` shortcuts: \"ignore\" (dismiss the suggestion, status -> ignored, stamps ignoredAt), \"restore\" (ONLY for hidden/ignored items: returns 409 on any other status, so completed work is never reopened; status -> suggested, clears ignoredAt; if the reconcile had hidden it as already covered it also stays visible on later reconcile runs), \"start\" (status -> in_progress, clears ignoredAt/completedAt), \"complete\" (status -> completed, stamps completedAt).",
       "Sticky overrides the weekly reconcile always respects: \"pin\" (suggested items only: the reconcile will not re-rank it), \"unpin\" (let it re-rank again), \"remove\" (hide it and never re-create it - use for a keyword or topic the user does not want).",
-      "\"start\" on a type=\"refresh\" item REWRITES the existing article it points at in place (blog articles only; side-page refresh is not available yet) using the real search queries as the brief. It returns an operationId: poll get_job until completed. Confirm with the user before starting one; use seo_check_cannibalization / get_blog_article first if unsure which page it targets (metadata.refresh.pageUrl). Returns 409 already_running if a refresh of that page is in flight.",
+      "\"start\" on a type=\"refresh\" item now CREATES A REFRESH BRIEF (it does not rewrite anything yet): same as seo_roadmap_create_brief. Poll get_job on the returned operationId, review the brief with seo_get_brief (kind=\"refresh\", changes[]), then approve it with seo_approve_briefs - THAT approval rewrites the existing article in place (blog articles only). Confirm with the user before approving.",
       "There is no title or priority field on this endpoint — the roadmap item's title and priority cannot be edited via this tool (or the underlying server route at all).",
     ].join(" "),
     {
@@ -236,6 +249,27 @@ export function registerSeoRoadmapTools(server: McpServer) {
         `/api/agent/v1/brands/${id}/seo/roadmap/${itemId}`,
         body
       );
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    }
+  );
+
+  // ── Roadmap item — create brief ───────────────────────────────────────────
+  server.tool(
+    "seo_roadmap_create_brief",
+    [
+      "Create the brief for ONE roadmap item (the Plan tab's \"Create brief\" button). Idempotent: if the item already has a brief it returns outcome \"exists\" with that briefId. If the item's last brief FAILED (brief.status \"failed\", brief.error says why), calling this again retries it (outcome \"started\").",
+      "For a normal item this drafts a new-article brief. For a type=\"refresh\" item it drafts a REFRESH brief for the existing page (kind=\"refresh\", with a proposed changes[] edit plan).",
+      "Returns {briefId, operationId, outcome: \"started\" | \"exists\"}. When started, poll get_job(operationId) until completed, then read it with seo_get_brief and (optionally) refine it with seo_edit_brief.",
+      "Nothing is written or rewritten until the brief is approved with seo_approve_briefs. Approving a refresh brief overwrites the existing article in place - confirm with the user first.",
+      "Find items with seo_list_roadmap (brief.status \"none\" = no brief yet).",
+    ].join(" "),
+    {
+      itemId: z.string().describe("Roadmap item ID from seo_list_roadmap"),
+      brandId: brandOpt,
+    },
+    async ({ itemId, brandId }) => {
+      const id = requireBrandId(brandId);
+      const data = await api.post<unknown>(`/api/agent/v1/brands/${id}/seo/roadmap/${itemId}/brief`, {});
       return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
     }
   );

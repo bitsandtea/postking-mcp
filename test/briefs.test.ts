@@ -28,7 +28,7 @@ describe("getBriefProj on the wrapped API response", () => {
   it("medium", () => {
     expect(getBriefProj.medium(wrapped)).toEqual({
       id: "b1", type: "landing", status: "drafted", title: "Hub",
-      clusterName: "Cluster A", briefSummary: "outline present", sidePageUrl: "/for-x",
+      clusterName: "Cluster A", briefSummary: "outline present", sidePageUrl: "/for-x", kind: null,
       truths: [], truthConflicts: [],
     });
   });
