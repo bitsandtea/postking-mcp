@@ -100,6 +100,8 @@ _Available on stdio/local transport only. Remote HTTP transport authenticates vi
 | `onboard_brand` | Crawl a website and auto-generate a brand profile + 10 themes (step 1 of website onboarding) |
 | `set_brand_mediums` | Save the list of platforms the brand publishes on (step 2 of onboarding) |
 | `get_brand_mediums` | Read which publishing platforms a brand posts to |
+| `get_business_type` | Read what the brand sells (software, product, local business, service) for structured data |
+| `set_business_type` | Set the business type (or `reset: true` to re-detect) |
 | `get_brand_content_language` | Read the language a brand's AI-generated content is written in, plus the supported set |
 | `set_brand_content_language` | Set the generation language for all future content — `en`, `es`, `pt-BR`, `de`, `fr`, `cs` |
 | `get_onboarding_status` | Poll background audience analysis + theme generation (step 3 of onboarding) |
@@ -183,6 +185,8 @@ _Reddit is a repurpose-to-Reddit workflow, not a scheduled publishing medium. Fl
 | `import_blog_articles` | Import from RSS feed or Blogger URL |
 | `list_blog_authors` | List blog authors |
 | `create_blog_author` | Create a new blog author |
+| `get_side_page_author_defaults` | Read who is credited as author on comparison / feature side pages |
+| `set_side_page_author_defaults` | Set the per-kind side-page author (author id, `"none"`, or null = blog default) |
 | `list_blog_categories` | List categories for a publication |
 | `create_blog_category` | Create a new category |
 | `get_seo_roadmap` | View SEO / GEO topic suggestions and completion stats |
@@ -209,7 +213,9 @@ _Canonical flow: `seo_add_seeds` → `seo_generate_keywords` → `seo_categorize
 | `seo_generate_roadmap` | Turn one or more clusters into a prioritized content roadmap |
 | `seo_list_roadmap` | List roadmap items (blog topics queued for writing) |
 | `seo_roadmap_get` | Fetch a single roadmap item |
-| `seo_roadmap_edit` | Edit a roadmap item's title, status, or priority |
+| `seo_roadmap_edit` | Change a roadmap item's status, or restore / pin / unpin / remove it; `start` on a refresh item rewrites its page |
+| `seo_search_data_status` | Search Console / Bing connected? Last roadmap reconcile + refresh / hidden counts |
+| `seo_search_data_reconcile` | Re-run the search-data roadmap reconcile now (async) |
 | `seo_roadmap_delete` | Permanently delete a roadmap item |
 | `seo_roadmap_stats` | Roadmap completion stats |
 | `seo_list_briefs` | List content briefs across all clusters and statuses |
@@ -250,7 +256,7 @@ _Canonical flow: `seo_add_seeds` → `seo_generate_keywords` → `seo_categorize
 | `list_side_pages` | List side pages attached to a landing page |
 | `generate_side_page` | AI-generate a side page under a parent landing page (async; poll via `get_job`) |
 | `view_side_page` | View a side page including sections and rendered HTML |
-| `edit_side_page` | Update the instructions or metadata of a side page |
+| `edit_side_page` | Update the instructions, metadata or author (`authorId`/`hideAuthor`) of a side page |
 | `set_side_page_section` | Update the content of a specific section within a side page |
 | `set_side_page_state` | Publish or unpublish a side page |
 | `delete_side_page` | Delete a side page |

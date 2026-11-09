@@ -82,20 +82,21 @@ export function registerBlogTools(server: McpServer) {
   // ── List publications & articles ──────────────────────────────────────────
   server.tool(
     "list_blogs",
-    "LIST tool. Even detail='full' OMITS article bodies (kept bounded) — to read an article's content, call get_blog_article. The number of rows is controlled by `limit` (default 50, max 200), NOT by `detail`; for a 'full list' of titles, raise `limit` and keep detail='short'. On a brand publishing in more than one language (see get_brand_languages), publications and articles both carry `languageCode` — check it before generating into a publication, since two publications with the same brand can differ only by language.",
+    "LIST tool. Even detail='full' OMITS article bodies (kept bounded) — to read an article's content, call get_blog_article. The number of rows is controlled by `limit` (default 50, max 200), NOT by `detail`; for a 'full list' of titles, raise `limit` and keep detail='short', and page past 200 with `offset`. On a brand publishing in more than one language (see get_brand_languages), publications and articles both carry `languageCode` — check it before generating into a publication, since two publications with the same brand can differ only by language.",
     {
       status: z.enum(["draft", "published"]).optional().describe("Filter articles by status"),
       updatedSince: z.string().optional().describe("ISO-8601 timestamp; only articles updated at or after this. For incremental sync prefer list_content_changes."),
       detail: detailParam("short"),
       limit: z.number().int().min(1).max(200).default(50),
+      offset: z.number().int().min(0).default(0).describe("Articles to skip, for paging (pair with limit)"),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ status, updatedSince, detail, limit, brandId }) => {
+    async ({ status, updatedSince, detail, limit, offset, brandId }) => {
       const id = requireBrandId(brandId);
       // Filters, paging and body omission are applied server-side. An older backend
       // ignores the params and returns everything; the client-side logic below
       // then does the same work (detected by the absence of `pagination`).
-      const qs = new URLSearchParams({ limit: String(limit), includeBody: detail === "full" ? "true" : "false" });
+      const qs = new URLSearchParams({ limit: String(limit), offset: String(offset), includeBody: detail === "full" ? "true" : "false" });
       if (status) qs.set("status", status);
       if (updatedSince) qs.set("updatedSince", updatedSince);
       const data = await api.get<Record<string, unknown>>(`/api/agent/v1/brands/${id}/blogs?${qs.toString()}`);
@@ -122,9 +123,9 @@ export function registerBlogTools(server: McpServer) {
           (sinceMs === null || Number.isNaN(sinceMs) || Date.parse(String(a.updatedAt ?? "")) >= sinceMs)
       );
       const total = typeof serverPage?.total === "number" ? serverPage.total : filteredArticles.length;
-      filteredArticles = filteredArticles.slice(0, limit);
+      filteredArticles = serverPage ? filteredArticles.slice(0, limit) : filteredArticles.slice(offset, offset + limit);
       const count = filteredArticles.length;
-      const truncated = total > count;
+      const truncated = total > offset + count;
 
       const pubProj: Projector<Record<string, unknown>> = {
         short: (p) => ({ id: p.id, name: p.title, languageCode: p.languageCode ?? null, hostingMode: p.hostingMode ?? null, siteBaseUrl: p.siteBaseUrl ?? null }),
@@ -166,6 +167,7 @@ export function registerBlogTools(server: McpServer) {
       const result: Record<string, unknown> = {
         count,
         total,
+        offset,
         truncated,
         statusBreakdown,
         detail,
@@ -173,7 +175,7 @@ export function registerBlogTools(server: McpServer) {
         articles: detail === "full" ? filteredArticles.map(stripHeavy) : projectList(detail, filteredArticles, artProj),
       };
       if (truncated) {
-        result.note = `Showing ${count} of ${total} articles. Pass a higher limit or status filter to see the rest.`;
+        result.note = `Showing ${count} of ${total} articles from offset ${offset}. Pass offset=${offset + count} for the next page, or a status filter to narrow the list.`;
       }
       return {
         content: [{ type: "text" as const, text: JSON.stringify(result) }],
@@ -1133,6 +1135,41 @@ export function registerBlogTools(server: McpServer) {
     }
   );
 
+  // ── Side-page author defaults ─────────────────────────────────────────────
+  server.tool(
+    "get_side_page_author_defaults",
+    "Read who is credited as author on the brand's side pages, per kind: `comparison` (comparison pages) and `feature` (feature/spotlight and other long-form side pages). Each value is a BlogAuthor id, \"none\" (no author; the brand is credited), or null (follow the blog default author, see set_default_blog_author). A page can override its kind's default via edit_side_page authorId/hideAuthor.",
+    {
+      brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
+    },
+    async ({ brandId }) => {
+      const id = requireBrandId(brandId);
+      const data = await api.get<any>(`/api/agent/v1/brands/${id}/authors/side-page-defaults`);
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    }
+  );
+
+  server.tool(
+    "set_side_page_author_defaults",
+    "Set who is credited as author on the brand's side pages, per kind. Values: a BlogAuthor id (from list_blog_authors; must be an active author of the brand), \"none\" (show no author; the brand is credited instead), or null (follow the blog default author). Omit a kind to leave it unchanged. Applies to pages that have no author set of their own.",
+    {
+      comparison: z.string().nullable().optional().describe("Comparison pages: author id, \"none\", or null to follow the blog default author."),
+      feature: z.string().nullable().optional().describe("Feature/spotlight and other long-form side pages: author id, \"none\", or null to follow the blog default author."),
+      brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
+    },
+    async ({ comparison, feature, brandId }) => {
+      const id = requireBrandId(brandId);
+      const body: Record<string, unknown> = {};
+      if (comparison !== undefined) body.comparison = comparison;
+      if (feature !== undefined) body.feature = feature;
+      if (Object.keys(body).length === 0) {
+        return { content: [{ type: "text" as const, text: "No fields to update. Pass at least one of: comparison, feature." }] };
+      }
+      const data = await api.put<any>(`/api/agent/v1/brands/${id}/authors/side-page-defaults`, body);
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    }
+  );
+
   // ── List publications ─────────────────────────────────────────────────────
   server.tool(
     "list_publications",
@@ -1179,13 +1216,21 @@ export function registerBlogTools(server: McpServer) {
     "get_seo_roadmap",
     "View the SEO / GEO content roadmap — suggested blog topics, keywords, and completion status. detail='short' returns stats only; detail='medium' adds slim item list (id+title+status+keyword); detail='full' (default) returns raw response.",
     {
-      status: z.enum(["suggested", "in_progress", "completed", "ignored"]).optional().describe("Filter by status"),
+      status: z.enum(["suggested", "in_progress", "completed", "ignored"]).optional().describe("Filter by status. Omit for everything except ignored (hidden) items."),
+      type: z.enum(["blog_article", "side_page", "tool", "refresh"]).optional().describe("Filter by item type; \"refresh\" = rewrite of an existing page"),
+      priority: z.enum(["high", "medium", "low"]).optional().describe("Filter by priority"),
+      clusterId: z.string().optional().describe("Filter to one cluster ID"),
       detail: detailParam("full"),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ status, detail, brandId }) => {
+    async ({ status, type, priority, clusterId, detail, brandId }) => {
       const id = requireBrandId(brandId);
-      const qs = status ? `?status=${status}` : "";
+      const params = new URLSearchParams();
+      if (status) params.set("status", status);
+      if (type) params.set("type", type);
+      if (priority) params.set("priority", priority);
+      if (clusterId) params.set("clusterId", clusterId);
+      const qs = params.toString() ? `?${params.toString()}` : "";
       const data = await api.get<Record<string, unknown>>(`/api/agent/v1/brands/${id}/seo/roadmap${qs}`);
       let result: unknown;
       if (detail === "short") {

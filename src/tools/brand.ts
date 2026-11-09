@@ -667,4 +667,60 @@ export function registerBrandTools(server: McpServer) {
       };
     }
   );
+
+  // ── Business type (schema.org offering) ───────────────────────────────────
+  server.tool(
+    "get_business_type",
+    "Read the brand's business type — what it sells, used for structured data (schema.org) on its pages. Returns { offering } with kind (software | product | local_business | service | none), optional schemaType (e.g. SoftwareApplication, HairSalon, ProfessionalService), optional applicationCategory (software only), and source (\"auto\" = detected from the site, \"user\" = set explicitly and never overwritten). offering is null when nothing has been detected yet.",
+    {
+      brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
+    },
+    async ({ brandId }) => {
+      const id = requireBrandId(brandId);
+      const data = await api.get<unknown>(`/api/agent/v1/brands/${id}/schema-offering`);
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    }
+  );
+
+  server.tool(
+    "set_business_type",
+    "Set the brand's business type — what it sells, used for structured data (schema.org) on its pages. Saved as the user's choice and never overwritten by auto-detection. Pass `kind` (software, product, local_business = customers visit a location, service = delivered by people, none) and optionally a specific `schemaType` valid for that kind (e.g. HairSalon, Dentist, Restaurant for local_business; ProfessionalService, LegalService for service; WebApplication for software); omit it for the kind's default. An unknown schemaType is rejected with the allowed list. Or pass reset: true (alone) to drop the saved choice and re-detect from the site.",
+    {
+      kind: z.enum(["software", "product", "local_business", "service", "none"]).optional().describe("What the business sells. Required unless reset is true."),
+      schemaType: z.string().optional().describe("Specific schema.org subtype for the kind, e.g. HairSalon (local_business), LegalService (service), WebApplication (software). Omit for the kind's default."),
+      applicationCategory: z
+        .enum([
+          "BusinessApplication",
+          "SecurityApplication",
+          "DeveloperApplication",
+          "DesignApplication",
+          "EducationalApplication",
+          "FinanceApplication",
+          "HealthApplication",
+          "MultimediaApplication",
+          "CommunicationApplication",
+          "UtilitiesApplication",
+        ])
+        .optional()
+        .describe("Software only: the application category."),
+      reset: z.boolean().optional().describe("true = drop the saved choice and auto-detect again. Send alone, without kind/schemaType/applicationCategory."),
+      brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
+    },
+    async ({ kind, schemaType, applicationCategory, reset, brandId }) => {
+      const id = requireBrandId(brandId);
+      let body: Record<string, unknown>;
+      if (reset) {
+        body = { reset: true };
+      } else {
+        if (!kind) {
+          return { content: [{ type: "text" as const, text: "Pass either kind or reset: true." }] };
+        }
+        body = { kind };
+        if (schemaType !== undefined) body.schemaType = schemaType;
+        if (applicationCategory !== undefined) body.applicationCategory = applicationCategory;
+      }
+      const data = await api.put<unknown>(`/api/agent/v1/brands/${id}/schema-offering`, body);
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    }
+  );
 }

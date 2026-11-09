@@ -583,9 +583,10 @@ export function registerPostTools(server: McpServer) {
         .describe("'now' (default, publishes immediately), 'scheduled' (requires scheduledAt), or 'queue' (save as draft)"),
       scheduledAt: z.string().datetime().optional().describe("Future ISO 8601 UTC datetime, required when postType is 'scheduled'"),
       timezone: z.string().optional().describe("User timezone, e.g. 'America/New_York'"),
+      postingAccountId: z.string().optional().describe("X account to reply from, when the brand has more than one (id from check_social_accounts). Omit to use the brand's default."),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
     },
-    async ({ replyTo, content, postType, scheduledAt, timezone, brandId }) => {
+    async ({ replyTo, content, postType, scheduledAt, timezone, postingAccountId, brandId }) => {
       const id = requireBrandId(brandId);
       const data = await api.post<Record<string, unknown>>(`/api/agent/v1/brands/${id}/posts/x-reply`, {
         replyTo,
@@ -593,6 +594,7 @@ export function registerPostTools(server: McpServer) {
         postType,
         scheduledAt,
         userTimezone: timezone,
+        postingAccountId,
       });
       const d = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
       const inner = (d.post && typeof d.post === "object" ? d.post : d) as Record<string, unknown>;

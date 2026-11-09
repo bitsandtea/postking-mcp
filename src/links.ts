@@ -6,6 +6,7 @@ export type DashboardSection =
   | "seo_competitors"
   | "seo_keywords"
   | "seo_clusters"
+  | "seo_plan"
   | "seo_briefs"
   | "seo_results"
   | "posts"
@@ -28,6 +29,8 @@ const SECTION_PATHS: Record<DashboardSection, string> = {
   seo_competitors: "/seo?tab=competitors",
   seo_keywords: "/seo?tab=keywords",
   seo_clusters: "/seo?tab=clusters",
+  // The Plan tab is read from the URL hash by SeoWorkspaceClient (not ?tab=).
+  seo_plan: "/seo#plan",
   seo_briefs: "/seo?tab=briefs",
   seo_results: "/seo?tab=results",
   posts: "/posts",

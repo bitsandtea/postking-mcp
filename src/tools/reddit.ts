@@ -223,9 +223,10 @@ export function registerRedditTools(server: McpServer) {
       angle: z.string().optional().describe("Angle/framing for the post, e.g. 'educational', 'story' (default: 'educational')"),
       length: z.enum(["short", "medium", "long"]).optional().describe("Target post length"),
       variations: z.number().int().min(1).max(3).optional().describe("Number of variations to generate (default 1, max 3)"),
+      founderContext: z.string().max(4000).optional().describe("Real first-person facts to draw on (founder story, numbers, a case study). Without it the post is written as an observation, how-to or question, never a first-person story."),
       brandId: brandOpt,
     },
-    async ({ subreddit, subreddits, voiceId, sourcePostId, sourceContent, sourceTitle, angle, length, variations, brandId }) => {
+    async ({ subreddit, subreddits, voiceId, sourcePostId, sourceContent, sourceTitle, angle, length, variations, founderContext, brandId }) => {
       const id = requireBrandId(brandId);
       if (subreddit === undefined && subreddits === undefined) {
         throw new Error("Provide either `subreddit` (single) or `subreddits` (fan-out to one draft per subreddit).");
@@ -240,6 +241,7 @@ export function registerRedditTools(server: McpServer) {
       if (angle !== undefined) body.angle = angle;
       if (length !== undefined) body.length = length;
       if (variations !== undefined) body.variations = variations;
+      if (founderContext !== undefined) body.founderContext = founderContext;
 
       // The rewrite route creates a Post (not an Operation) and returns { jobId }.
       // It also returns `subredditNotice` (only when the target subreddit

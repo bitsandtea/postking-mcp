@@ -1539,7 +1539,8 @@ export function registerLpTools(server: McpServer) {
       "a reference rewrite, the response includes slugRewriteOperationId — poll it to confirm the cascade finished. " +
       "Type conversion: `type` (\"landing\"|\"text\") converts the page; `overrides` (object) replaces the page content wholesale and is validated against the target type. " +
       "Converting text→landing REQUIRES `overrides` with landing sections (hero, features, cta, faq…). Under a raw-HTML parent (import_landing_page_html) the page still renders inside the parent's raw shell. " +
-      "If `overrides` is passed it takes precedence over `title`/`htmlContent`.",
+      "If `overrides` is passed it takes precedence over `title`/`htmlContent`. " +
+      "Author: `authorId` (BlogAuthor id, or null to fall back to the brand default) and `hideAuthor` (true = no author shown, the brand is credited) set who is credited on this page.",
     {
       slug: z.string().describe("Parent landing page slug"),
       sideKey: z
@@ -1586,9 +1587,20 @@ export function registerLpTools(server: McpServer) {
         .describe(
           "type:\"text\" pages only: new HTML body (part of the flat {title, htmlContent} content document). If `title` isn't also passed, the current title is fetched and preserved. Ignored for landing/comparison pages — use set_side_page_section there."
         ),
+      authorId: z
+        .string()
+        .nullable()
+        .optional()
+        .describe("BlogAuthor id from list_blog_authors to show as the page's author; null = use the brand default (see set_side_page_author_defaults)."),
+      hideAuthor: z
+        .boolean()
+        .optional()
+        .describe("true = show no author; the brand is credited instead."),
     },
-    async ({ slug, sideKey, instructions, name, newKey, updateReferences, type, overrides, title, htmlContent }) => {
+    async ({ slug, sideKey, instructions, name, newKey, updateReferences, type, overrides, title, htmlContent, authorId, hideAuthor }) => {
       const body: Record<string, unknown> = {};
+      if (authorId !== undefined) body.authorId = authorId;
+      if (hideAuthor !== undefined) body.hideAuthor = hideAuthor;
       if (instructions !== undefined) body.instructions = instructions;
       if (name !== undefined) body.name = name;
       if (newKey !== undefined) {

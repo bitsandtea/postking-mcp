@@ -19,22 +19,45 @@ interface CompactRoadmapItem {
   id: string;
   title: string;
   status: string;
-  priority: number | null;
+  type: string | null;
+  priority: string | number | null;
   primaryKeywords: string[];
   clusterId: string | null;
+  /** 148 search-data fields — present only when the item has them. */
+  searchEvidence?: { impressions: number | null; position: number | null; bucket: string | null };
+  refreshPageUrl?: string;
+  hiddenReason?: string;
+  userOverride?: Record<string, unknown>;
+}
+
+function asObj(v: unknown): Record<string, unknown> | null {
+  return v != null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
 }
 
 function projectRoadmapItem(item: Record<string, unknown>): CompactRoadmapItem {
   const primaryKeywords = Array.isArray(item.primaryKeywords)
     ? (item.primaryKeywords as unknown[]).filter((k): k is string => typeof k === "string").slice(0, 5)
     : [];
+  const cluster = asObj(item.cluster);
+  const meta = asObj(item.metadata);
+  const evidence = asObj(meta?.searchEvidence);
+  const refresh = asObj(meta?.refresh);
+  const override = asObj(meta?.userOverride);
+  const num = (v: unknown) => (typeof v === "number" ? v : null);
   return {
     id: String(item.id ?? ""),
     title: String(item.title ?? ""),
     status: String(item.status ?? ""),
-    priority: typeof item.priority === "number" ? item.priority : null,
+    type: typeof item.itemType === "string" ? item.itemType : typeof item.type === "string" ? item.type : null,
+    priority: typeof item.priority === "string" || typeof item.priority === "number" ? item.priority : null,
     primaryKeywords,
-    clusterId: item.clusterId != null ? String(item.clusterId) : null,
+    clusterId: item.clusterId != null ? String(item.clusterId) : cluster?.id != null ? String(cluster.id) : null,
+    ...(evidence
+      ? { searchEvidence: { impressions: num(evidence.impressions), position: num(evidence.position), bucket: typeof evidence.bucket === "string" ? evidence.bucket : null } }
+      : {}),
+    ...(typeof refresh?.pageUrl === "string" ? { refreshPageUrl: refresh.pageUrl } : {}),
+    ...(typeof meta?.hiddenReason === "string" ? { hiddenReason: meta.hiddenReason } : {}),
+    ...(override ? { userOverride: override } : {}),
   };
 }
 
@@ -111,21 +134,35 @@ export function registerSeoRoadmapTools(server: McpServer) {
     "seo_list_roadmap",
     [
       "List roadmap items (blog topics queued for writing).",
+      "Ignored (hidden) items are left out unless you pass status=\"ignored\" - use that to see what the search-data reconcile hid as already covered, or what was dismissed (hiddenReason says why; call seo_roadmap_edit action=restore to bring one back).",
+      "type=\"refresh\" lists items that rewrite an EXISTING page that ranks poorly for real search queries (they overwrite that article in place).",
       "Returns short detail by default: {id, title, status} per item.",
-      "Use detail=\"medium\" for the compact summary (priority, primaryKeywords, clusterId) or detail=\"full\" for raw objects.",
+      "Use detail=\"medium\" for the compact summary (type, priority, primaryKeywords, clusterId, and when present searchEvidence, refreshPageUrl, hiddenReason, userOverride) or detail=\"full\" for raw objects (metadata.searchEvidence, metadata.refresh with queries + answerQuestions, metadata.hiddenReason, metadata.userOverride).",
       "Call seo_roadmap_get with detail=\"full\" for a single item's complete detail.",
     ].join(" "),
     {
       status: z
         .enum(["suggested", "in_progress", "completed", "ignored"])
         .optional()
-        .describe("Filter by status"),
+        .describe("Filter by status. Omit for everything except ignored items."),
+      type: z
+        .enum(["blog_article", "side_page", "tool", "refresh"])
+        .optional()
+        .describe("Filter by item type. \"refresh\" = rewrite of an existing page."),
+      priority: z.enum(["high", "medium", "low"]).optional().describe("Filter by priority"),
+      clusterId: z.string().optional().describe("Filter to one cluster ID from seo_list_clusters"),
       detail: detailParam("short"),
       brandId: brandOpt,
     },
-    async ({ status, detail, brandId }) => {
+    async ({ status, type, priority, clusterId, detail, brandId }) => {
       const id = requireBrandId(brandId);
-      const qs = status ? `?status=${status}` : "";
+      const params = new URLSearchParams();
+      if (status) params.set("status", status);
+      if (type) params.set("type", type);
+      if (priority) params.set("priority", priority);
+      if (clusterId) params.set("clusterId", clusterId);
+      const query = params.toString();
+      const qs = query ? `?${query}` : "";
       const data = await api.get<unknown>(
         `/api/agent/v1/brands/${id}/seo/roadmap${qs}`
       );
@@ -172,16 +209,18 @@ export function registerSeoRoadmapTools(server: McpServer) {
   server.tool(
     "seo_roadmap_edit",
     [
-      "Edit a roadmap item's status. Pass EITHER `action` (a shortcut) OR `status` directly — the server requires at least one.",
-      "`action` shortcuts: \"ignore\" (dismiss the suggestion, status -> ignored, stamps ignoredAt), \"restore\" (bring an ignored item back, status -> suggested, clears ignoredAt), \"start\" (status -> in_progress, clears ignoredAt/completedAt), \"complete\" (status -> completed, stamps completedAt).",
+      "Edit a roadmap item's status or override the search-data reconcile. Pass EITHER `action` (a shortcut) OR `status` directly — the server requires at least one.",
+      "`action` shortcuts: \"ignore\" (dismiss the suggestion, status -> ignored, stamps ignoredAt), \"restore\" (ONLY for hidden/ignored items: returns 409 on any other status, so completed work is never reopened; status -> suggested, clears ignoredAt; if the reconcile had hidden it as already covered it also stays visible on later reconcile runs), \"start\" (status -> in_progress, clears ignoredAt/completedAt), \"complete\" (status -> completed, stamps completedAt).",
+      "Sticky overrides the weekly reconcile always respects: \"pin\" (suggested items only: the reconcile will not re-rank it), \"unpin\" (let it re-rank again), \"remove\" (hide it and never re-create it - use for a keyword or topic the user does not want).",
+      "\"start\" on a type=\"refresh\" item REWRITES the existing article it points at in place (blog articles only; side-page refresh is not available yet) using the real search queries as the brief. It returns an operationId: poll get_job until completed. Confirm with the user before starting one; use seo_check_cannibalization / get_blog_article first if unsure which page it targets (metadata.refresh.pageUrl). Returns 409 already_running if a refresh of that page is in flight.",
       "There is no title or priority field on this endpoint — the roadmap item's title and priority cannot be edited via this tool (or the underlying server route at all).",
     ].join(" "),
     {
       itemId: z.string().describe("Roadmap item ID from seo_list_roadmap"),
       action: z
-        .enum(["ignore", "restore", "start", "complete"])
+        .enum(["ignore", "restore", "start", "complete", "pin", "unpin", "remove"])
         .optional()
-        .describe("Shortcut status transition: ignore -> ignored, restore -> suggested, start -> in_progress, complete -> completed."),
+        .describe("Shortcut: ignore -> ignored, restore -> suggested (hidden/ignored items only, else 409; stays visible), start -> in_progress (a refresh item: rewrites its page, returns operationId), complete -> completed, pin/unpin -> freeze/unfreeze the item's rank, remove -> hide permanently."),
       status: z
         .enum(["suggested", "in_progress", "completed", "ignored"])
         .optional()

@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerSeoKeywordTools } from "./keywords.js";
 import { registerSeoClusterTools } from "./clusters.js";
 import { registerSeoRoadmapTools } from "./roadmap.js";
+import { registerSeoSearchDataTools } from "./search-data.js";
 import { registerSeoBriefTools } from "./briefs.js";
 import { registerSeoResultsTools } from "./results.js";
 import { registerSeoSidePageTools } from "./side-pages.js";
@@ -41,6 +42,9 @@ import { registerSeoPublicationTargetTools } from "./publication-targets.js";
  * blog.ts), seo_cannibalization_report (audit already-published near-dupes,
  * results.ts).
  *
+ * Search-data roadmap (feature 148): seo_search_data_status / seo_search_data_reconcile
+ * (search-data.ts) — real queries re-rank the roadmap and add `refresh` items.
+ *
  * Multilingual market config (feature 96/104/110) — prerequisite for a
  * language-scoped step 2: seo_get_market_settings / seo_set_market_settings
  * (market-settings.ts).
@@ -58,6 +62,7 @@ export function registerSeoTools(server: McpServer) {
   registerSeoKeywordTools(server);
   registerSeoClusterTools(server);
   registerSeoRoadmapTools(server);
+  registerSeoSearchDataTools(server);
   registerSeoBriefTools(server);
   registerSeoResultsTools(server);
   registerSeoSidePageTools(server);

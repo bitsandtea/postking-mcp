@@ -85,7 +85,7 @@ export function buildPasteKit(article: Record<string, unknown>) {
       `Open the ${platform === "x" ? "X Articles" : "LinkedIn article"} editor.`,
       "Paste the title, subtitle and body (bodyMarkdown has [Image N] markers where images go).",
       "Upload the cover image, then upload each inline image at its [Image N] marker (download from the URLs). Slots with \"no image yet\" need generate_social_article_image(s) first, or skip them.",
-      "Publish, then share the teaserPost.",
+      "Publish, then share the teaserPost. On X the teaserPost is the caption for the article (max 256 characters).",
       "Call update_social_article with publishedUrl set to the live URL.",
     ],
   };
@@ -257,7 +257,7 @@ export function registerSocialArticleTools(server: McpServer) {
       title: z.string().min(1).optional(),
       subtitle: z.string().nullable().optional(),
       bodyHtml: z.string().optional().describe('Allowed tags only: h2, h3, p, strong, em, ul, ol, li, blockquote, a, br. Keep image placeholders as <p data-image-marker="N"></p>. Anything else is stripped.'),
-      teaserPost: z.string().nullable().optional(),
+      teaserPost: z.string().nullable().optional().describe("Companion post to share the article. On X articles this is the caption posted with the article (max 256 characters, plain text)."),
       targetKeyword: z.string().nullable().optional(),
       publishedUrl: z.string().url().nullable().optional().describe("Live URL after pasting the article into LinkedIn / X. Setting it marks the article published."),
       status: z.enum(["draft", "ready", "published"]).optional(),
