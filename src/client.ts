@@ -1,4 +1,5 @@
 import { config, oauthConfig, getTokenWithSource, notLoggedInMessage } from "./config.js";
+import { PendingEmailConfirmation, isPendingAccepted } from "./pendingConfirmation.js";
 import { deleteToken } from "./auth.js";
 import { log } from "./log.js";
 import { insufficientCreditsCostLine } from "./credits-message.js";
@@ -218,7 +219,13 @@ async function handleResponse<T>(
   log("api", "← " + method + " " + path + " " + res.status + " (" + ms + "ms)");
 
   if (res.status === 204) return {} as T;
-  return res.json() as Promise<T>;
+  const data = (await res.json()) as unknown;
+  if (res.status === 202 && isPendingAccepted(data)) {
+    // Email-confirmed delete: nothing deleted yet. Surfaced as a normal tool
+    // result by the wrapper in server.ts, never as an error.
+    throw new PendingEmailConfirmation(data);
+  }
+  return data as T;
 }
 
 async function request<T>(

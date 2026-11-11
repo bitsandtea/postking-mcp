@@ -30,6 +30,13 @@ import { registerBlogCtaTools } from "./tools/blog-ctas.js";
 import { registerSeoTools } from "./tools/seo/index.js";
 import { registerKeyTools } from "./tools/keys.js";
 import { registerJobTools } from "./tools/jobs.js";
+import { registerPendingActionTools } from "./tools/pending-actions.js";
+import {
+  EMAIL_CONFIRMED_DELETE_TOOLS,
+  EMAIL_CONFIRMED_DESCRIPTION_SUFFIX,
+  PendingEmailConfirmation,
+  pendingToolText,
+} from "./pendingConfirmation.js";
 import { registerWeeklyScheduleTools } from "./tools/weekly-schedule.js";
 import { registerVisualTools } from "./tools/visuals.js";
 import { registerVisualsPostTools } from "./tools/visuals-post.js";
@@ -150,6 +157,10 @@ This server also exposes guided prompts for common end-to-end flows — \`gettin
 
     const mergedAnnotations: ToolAnnotations = { ...annotationsFor(name), ...(callSiteAnnotations ?? {}) };
 
+    if (description !== undefined && EMAIL_CONFIRMED_DELETE_TOOLS.has(name)) {
+      description += EMAIL_CONFIRMED_DESCRIPTION_SUFFIX;
+    }
+
     const newArgs: unknown[] = [name];
     if (description !== undefined) newArgs.push(description);
     if (schema !== undefined) newArgs.push(schema);
@@ -166,6 +177,11 @@ This server also exposes guided prompts for common end-to-end flows — \`gettin
           log("tool", "← " + name + " (" + ms + "ms)");
           return result;
         } catch (err) {
+          if (err instanceof PendingEmailConfirmation) {
+            // 202 from an email-confirmed delete: success-with-pending, not an error.
+            log("tool", "⏳ " + name + " (" + (Date.now() - start) + "ms) pending email confirmation");
+            return { content: [{ type: "text" as const, text: pendingToolText(err.pending) }] };
+          }
           const ms = Date.now() - start;
           log("tool", "✗ " + name + " (" + ms + "ms)", { error: err instanceof Error ? err.message : String(err) });
           throw err;
@@ -198,6 +214,7 @@ This server also exposes guided prompts for common end-to-end flows — \`gettin
   registerSeoTools(server);
   registerKeyTools(server);
   registerJobTools(server);
+  registerPendingActionTools(server);
   registerWeeklyScheduleTools(server);
   registerVisualTools(server);
   registerVisualsPostTools(server);
