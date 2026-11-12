@@ -442,6 +442,12 @@ _Canonical flow: `search_sources` (is a connector even live?) → `search_perfor
 | `search_ai_visibility` | Deep AI Dive (GEO) visibility readout — mention/citation coverage vs. competitors across AI answer engines (Google AI Overview, ChatGPT, Perplexity, Claude), by topic. Requires PRO+ tier |
 | `search_ai_citations` | Bing "AI Performance" citation readout — daily citation counts plus the latest grounding-query and cited-page snapshots from an imported CSV export |
 | `search_worklist` | Ranked "do this next" SEO + GEO worklist synthesized from the tools above |
+| `ai_visibility_run` | Start a Deep AI Dive run on the saved config. Costs real credits, PRO+, one manual run per month; refusals (tier_upgrade_required / running / no_config / monthly_limit) return as `{ started: false, refusal }` |
+| `ai_visibility_run_status` | Poll the Deep AI Dive run (pending / processing / completed / failed + progress) |
+| `ai_visibility_topics_list` | List probe topics with `selected` (asked in the next run) |
+| `ai_visibility_topic_add` | Add a custom topic to the menu (PRO+, free; use `ai_visibility_topic_include` to put it into the next run) |
+| `ai_visibility_topic_include` | Put menu topics into the next run: drafts questions for only those topics in the background (platform LLM spend), then they show `selected` |
+| `ai_visibility_topic_remove` | Remove a topic from future runs; past results and citations are kept |
 
 ### Dashboard
 | Tool | Description |

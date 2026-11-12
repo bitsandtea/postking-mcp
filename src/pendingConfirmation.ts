@@ -47,8 +47,8 @@ export function pendingToolText(p: PendingActionAccepted): string {
   ].join("\n");
 }
 
-/** Tools whose server route is email-confirmed for API-key callers (whole landing page; there is no MCP tool for brand delete). */
-export const EMAIL_CONFIRMED_DELETE_TOOLS = new Set(["delete_landing_page"]);
+/** Tools whose server route is email-confirmed for API-key callers (whole landing page, blog/publication, domain; no MCP tool exists for brand delete). */
+export const EMAIL_CONFIRMED_DELETE_TOOLS = new Set(["delete_landing_page", "delete_publication", "delete_domain"]);
 
 export const EMAIL_CONFIRMED_DESCRIPTION_SUFFIX =
   " Needs email confirmation: this call does NOT delete yet. It emails the account owner a confirm link and returns status pending_email_confirmation (with a pendingActionId). The delete runs only after the link is clicked. Do not retry; use get_pending_action to check the outcome.";

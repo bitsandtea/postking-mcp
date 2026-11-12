@@ -50,6 +50,7 @@ const EXPLICIT_HINTS: Record<string, Hints> = {
   revoke_api_key: DESTRUCTIVE,
   disconnect_social_account: DESTRUCTIVE,
   remove_brand_language: DESTRUCTIVE,
+  ai_visibility_topic_remove: DESTRUCTIVE,
   reddit_remove_from_pool: DESTRUCTIVE,
   cancel_post: DESTRUCTIVE,
   cancel_job: DESTRUCTIVE,

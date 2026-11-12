@@ -103,5 +103,9 @@ send_telegram "✅ *PostKing MCP deployed successfully*
 Branch: \`${GIT_BRANCH}\`
 Commit: \`${GIT_COMMIT}\`
 Time: ${DEPLOY_END}"
-echo "✅ Deployment completed successfully! Showing logs:"
-pm2 logs "$PM2_NAME"
+echo "✅ Deployment completed successfully!"
+# deploy-all.sh sets DEPLOY_NO_LOGS so the next repo can deploy.
+if [ -z "$DEPLOY_NO_LOGS" ]; then
+    pm2 logs "$PM2_NAME"
+fi
+
