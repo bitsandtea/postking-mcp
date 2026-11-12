@@ -56,6 +56,7 @@ import { registerTrendsTools } from "./tools/trends.js";
 import { registerBillingTools } from "./tools/billing.js";
 import { registerSearchPerformanceTools } from "./tools/search-performance.js";
 import { registerAiVisibilityProbeTools } from "./tools/ai-visibility-probe.js";
+import { registerReplyDraftTools } from "./tools/reply-drafts.js";
 import { registerBrandToolsTools } from "./tools/brand-tools.js";
 import { registerExportTools } from "./tools/export.js";
 import { registerPrompts } from "./prompts.js";
@@ -235,6 +236,7 @@ This server also exposes guided prompts for common end-to-end flows — \`gettin
   registerBillingTools(server);
   registerSearchPerformanceTools(server);
   registerAiVisibilityProbeTools(server);
+  registerReplyDraftTools(server);
   registerBrandToolsTools(server);
   registerExportTools(server);
   registerPrompts(server);

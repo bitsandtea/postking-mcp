@@ -8,9 +8,9 @@ The official [Model Context Protocol](https://modelcontextprotocol.io) server fo
 
 Connect Claude (Desktop, Cursor, or any MCP client) to your PostKing account and manage your entire content operation through conversation — generate posts, schedule them, repurpose URLs into social content, write and publish blog articles, generate landing pages and side pages, run SEO / GEO research and drafting, manage your asset library and weekly posting schedule, handle domains and API keys, and more.
 
-The server exposes **291 tools across 33 modules** — full parity with the `postking-cli`.
+The server exposes **294 tools across 34 modules** — full parity with the `postking-cli`.
 
-> **Transport note:** All 291 tools are registered on both transports, including on the remote HTTP transport (`mcp.postking.app`). The 4 authentication tools (`login_start`, `login_complete`, `logout`, `whoami`) stay registered there too — they just explain the OAuth bearer-token model instead of running a device-code flow, since that transport is already authenticated before any tool call happens.
+> **Transport note:** All 294 tools are registered on both transports, including on the remote HTTP transport (`mcp.postking.app`). The 4 authentication tools (`login_start`, `login_complete`, `logout`, `whoami`) stay registered there too — they just explain the OAuth bearer-token model instead of running a device-code flow, since that transport is already authenticated before any tool call happens.
 
 ---
 
@@ -448,6 +448,15 @@ _Canonical flow: `search_sources` (is a connector even live?) → `search_perfor
 | `ai_visibility_topic_add` | Add a custom topic to the menu (PRO+, free; use `ai_visibility_topic_include` to put it into the next run) |
 | `ai_visibility_topic_include` | Put menu topics into the next run: drafts questions for only those topics in the background (platform LLM spend), then they show `selected` |
 | `ai_visibility_topic_remove` | Remove a topic from future runs; past results and citations are kept |
+
+### Reply drafts
+_Canonical flow: `reply_draft_create` (Reddit thread or Quora question + text) → the PostKing Chrome extension (logged in, same brand selected) fills the box in the user's browser within about a minute → the user reviews and posts it themselves → `reply_drafts_list` to track. Nothing is ever submitted automatically; max 10 drafts per brand per day. Marking a draft filled/done is the extension's job, so there is no tool for it._
+
+| Tool | Description |
+|------|-------------|
+| `reply_draft_create` | Queue a reply draft (`platform` reddit/quora, `threadUrl`, `body`). Queues a draft. The PostKing extension fills it in the user's browser. The user posts it |
+| `reply_drafts_list` | List reply drafts, oldest first; optional `status` (single or array) and `limit` |
+| `reply_draft_cancel` | Cancel a reply draft (status becomes cancelled) |
 
 ### Dashboard
 | Tool | Description |

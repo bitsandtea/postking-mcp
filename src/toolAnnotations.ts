@@ -54,6 +54,7 @@ const EXPLICIT_HINTS: Record<string, Hints> = {
   reddit_remove_from_pool: DESTRUCTIVE,
   cancel_post: DESTRUCTIVE,
   cancel_job: DESTRUCTIVE,
+  reply_draft_cancel: DESTRUCTIVE,
   clear_post_visual: DESTRUCTIVE,
   seo_bulk_delete_keywords: DESTRUCTIVE,
   logout: DESTRUCTIVE,
