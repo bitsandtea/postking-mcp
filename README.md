@@ -450,11 +450,11 @@ _Canonical flow: `search_sources` (is a connector even live?) → `search_perfor
 | `ai_visibility_topic_remove` | Remove a topic from future runs; past results and citations are kept |
 
 ### Reply drafts
-_Canonical flow: `reply_draft_create` (Reddit thread or Quora question + text) → the PostKing Chrome extension (logged in, same brand selected) fills the box in the user's browser within about a minute → the user reviews and posts it themselves → `reply_drafts_list` to track. Nothing is ever submitted automatically; max 10 drafts per brand per day. Marking a draft filled/done is the extension's job, so there is no tool for it._
+_Canonical flow: `reply_draft_create` (Reddit thread or Quora question + text) → the PostKing Chrome extension (logged in, same brand selected) fills the box in the user's browser within about a minute → the user reviews and posts it themselves → `reply_drafts_list` to track. Nothing is ever submitted automatically; max 10 drafts per brand per day. Pass `humanize: true` to run PostKing's anti-slop + humanizer pass on the body before it is stored (stored text is the cleaned version, markdown kept, free; on failure nothing is stored; result includes `humanized`). Marking a draft filled/done is the extension's job, so there is no tool for it._
 
 | Tool | Description |
 |------|-------------|
-| `reply_draft_create` | Queue a reply draft (`platform` reddit/quora, `threadUrl`, `body`). Queues a draft. The PostKing extension fills it in the user's browser. The user posts it |
+| `reply_draft_create` | Queue a reply draft (`platform` reddit/quora, `threadUrl`, `body`, optional `humanize`). Queues a draft. The PostKing extension fills it in the user's browser. The user posts it |
 | `reply_drafts_list` | List reply drafts, oldest first; optional `status` (single or array) and `limit` |
 | `reply_draft_cancel` | Cancel a reply draft (status becomes cancelled) |
 

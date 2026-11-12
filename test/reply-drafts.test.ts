@@ -40,8 +40,26 @@ describe("reply draft tools", () => {
   it("create: POSTs platform/threadUrl/body to the brand route", async () => {
     api.post.mockResolvedValue({ draft });
     const args = { platform: "reddit", threadUrl: "https://www.reddit.com/r/x/comments/abc/t/", body: "hi" };
-    expect(await run("reply_draft_create", args)).toMatchObject({ queued: true, draft });
+    expect(await run("reply_draft_create", args)).toMatchObject({ queued: true, humanized: false, draft });
     expect(api.post).toHaveBeenCalledWith("/api/agent/v1/brands/b1/reply-drafts", args);
+  });
+
+  it("create: humanize=true is sent and humanized is surfaced", async () => {
+    api.post.mockResolvedValue({ draft, humanized: true });
+    const args = { platform: "reddit", threadUrl: "https://www.reddit.com/r/x/comments/abc/t/", body: "hi" };
+    expect(await run("reply_draft_create", { ...args, humanize: true })).toMatchObject({ humanized: true, draft });
+    expect(api.post).toHaveBeenCalledWith("/api/agent/v1/brands/b1/reply-drafts", { ...args, humanize: true });
+  });
+
+  it("create: humanize=false is not sent", async () => {
+    api.post.mockResolvedValue({ draft, humanized: false });
+    const args = { platform: "reddit", threadUrl: "https://www.reddit.com/r/x/comments/abc/t/", body: "hi" };
+    await run("reply_draft_create", { ...args, humanize: false });
+    expect(api.post).toHaveBeenCalledWith("/api/agent/v1/brands/b1/reply-drafts", args);
+  });
+
+  it("create: description documents humanize", () => {
+    expect(descriptions.get("reply_draft_create")).toContain("anti-slop + humanizer pass");
   });
 
   it("create: 429 surfaces the server message", async () => {

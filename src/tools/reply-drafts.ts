@@ -26,19 +26,31 @@ export function registerReplyDraftTools(server: McpServer) {
       "Queue a reply for a Reddit thread (comment) or a Quora question (answer). Needs the PostKing Chrome extension installed and logged in with this brand selected; it checks for queued drafts about once a minute, opens the thread, and fills the comment/answer box. Nothing is ever submitted automatically: the user reviews the text and clicks Comment/Post themselves.",
       "Max 10 drafts per brand per day (11th is refused with a 429).",
       "threadUrl: Reddit must be a thread URL like https://www.reddit.com/r/<sub>/comments/<id>/…; Quora must be a question URL like https://www.quora.com/<question-slug> (not a profile, space, topic or /answer/ link). platform must match the URL. body is 1-10,000 characters.",
-      "Returns { draft } with status 'queued'. Track it with reply_drafts_list (queued → filled once the extension has filled the box, → done when the user marks it posted, or failed with an error such as 'Thread is archived').",
+      "humanize (boolean, default false): runs PostKing's anti-slop + humanizer pass on the body before it's stored; the stored text is the cleaned version. Markdown (lists, bold, links, code) is kept; if the pass fails nothing is stored. Free.",
+      "Returns { draft, humanized } with status 'queued'. Track it with reply_drafts_list (queued → filled once the extension has filled the box, → done when the user marks it posted, or failed with an error such as 'Thread is archived').",
     ].join(" "),
     {
       platform: z.enum(["reddit", "quora"]).describe("Where the reply goes. Must match threadUrl."),
       threadUrl: z.string().min(1).describe("Reddit thread URL (/r/<sub>/comments/<id>/…) or Quora question URL."),
       body: z.string().min(1).max(10000).describe("The reply text (markdown for Reddit), 1-10,000 characters."),
+      humanize: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe("Run PostKing's anti-slop + humanizer pass on the body before it's stored. The stored text is the cleaned version."),
       brandId: brandOpt,
     },
-    async ({ platform, threadUrl, body, brandId }) => {
+    async ({ platform, threadUrl, body, humanize, brandId }) => {
       const id = requireBrandId(brandId);
-      const data = await api.post<{ draft?: unknown }>(`/api/agent/v1/brands/${id}/reply-drafts`, { platform, threadUrl, body });
+      const data = await api.post<{ draft?: unknown; humanized?: boolean }>(`/api/agent/v1/brands/${id}/reply-drafts`, {
+        platform,
+        threadUrl,
+        body,
+        ...(humanize ? { humanize: true } : {}),
+      });
       return json({
         queued: true,
+        humanized: data?.humanized ?? false,
         draft: data?.draft ?? null,
         next: "The extension fills it within about a minute if Chrome is open. The user then reviews and posts it. Check progress with reply_drafts_list.",
       });
