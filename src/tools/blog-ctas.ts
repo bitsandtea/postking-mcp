@@ -167,6 +167,7 @@ export function registerBlogCtaTools(server: McpServer) {
       "Pass only the fields you want to change; omitted fields keep their current value. Changing `anchor` is validated against the article's OTHER CTAs first (at most one `end` anchor, unique `after_h2` indices) and fails with a clear error before any write.",
       "Passing `url` or `sidePageId` clears this CTA's `destinationId` (it can no longer be attributed to the publication's manual CTA pool once retargeted).",
       "Returns the article's full resulting ctas[] so you can confirm the edit alongside every other CTA's state.",
+      "Calls the PostKing Agent API (`GET then PATCH /api/agent/v1/brands/{brandId}/blogs/{articleId}`); API reference: https://try.postking.app/api/agent/v1/openapi.json, docs: https://docs.postking.app/blogs-seo/publications-and-articles.",
     ].join(" "),
     {
       articleId: z.string().describe("Blog article ID"),
@@ -261,6 +262,7 @@ export function registerBlogCtaTools(server: McpServer) {
       "Append a NEW CTA to a blog article, leaving every existing CTA untouched.",
       "Anchor defaults to { type: \"end\" } (the article's end-of-content CTA) if omitted. The anchor is validated against the article's EXISTING CTAs before writing — at most one `end` anchor per article, and each `after_h2` index may host only one CTA — so a colliding anchor fails immediately with a clear error instead of a server 400.",
       "Returns the new CTA's id plus the article's full resulting ctas[].",
+      "Calls the PostKing Agent API (`GET then PATCH /api/agent/v1/brands/{brandId}/blogs/{articleId}`); API reference: https://try.postking.app/api/agent/v1/openapi.json, docs: https://docs.postking.app/blogs-seo/publications-and-articles.",
     ].join(" "),
     {
       articleId: z.string().describe("Blog article ID"),

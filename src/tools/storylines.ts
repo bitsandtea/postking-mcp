@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { jsonObject } from "../jsonValue.js";
 import { api } from "../client.js";
 import { requireBrandId } from "../state.js";
 import { detailParam, project, projectList, truncate, type Projector } from "../detail.js";
@@ -413,7 +414,7 @@ export function registerStorylineTools(server: McpServer) {
       description: z.string().min(1).describe("What this piece of content should achieve or cover"),
       targetDate: z.string().optional().describe("Target publish date (ISO 8601)"),
       automatable: z.boolean().optional().describe("Whether PostKing can auto-generate this item (defaults to server-side logic)"),
-      config: z.record(z.string(), z.unknown()).describe("Channel/type-specific configuration — pass {} if none"),
+      config: jsonObject.describe("Channel/type-specific configuration — pass {} if none"),
       brandId: brandOpt,
     },
     async ({ storylineId, channel, type, title, description, targetDate, automatable, config, brandId }) => {
@@ -440,7 +441,7 @@ export function registerStorylineTools(server: McpServer) {
       title: z.string().optional().describe("New title for the line item"),
       description: z.string().optional().describe("New description for the line item"),
       targetDate: z.string().optional().describe("New target publish date (ISO 8601)"),
-      config: z.record(z.string(), z.unknown()).optional().describe("Replacement channel/type-specific configuration"),
+      config: jsonObject.optional().describe("Replacement channel/type-specific configuration"),
       brandId: brandOpt,
     },
     async ({ storylineId, itemId, selected, title, description, targetDate, config, brandId }) => {

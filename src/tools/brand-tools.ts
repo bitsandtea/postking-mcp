@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { jsonValue, jsonObject } from "../jsonValue.js";
 import { api } from "../client.js";
 import { requireBrandId } from "../state.js";
 import { detailParam, project, projectList, truncate, type Projector } from "../detail.js";
@@ -568,8 +569,8 @@ export function registerBrandToolsTools(server: McpServer) {
     ].join(" "),
     {
       toolId: z.string().describe("Tool ID to preview."),
-      sampleResponse: z.unknown().optional().describe("A sample of the client endpoint's JSON response, used to render resultTemplate/handoffUrl. Falls back to the tool's stored sampleOutput when omitted."),
-      sampleInputs: z.record(z.string(), z.unknown()).optional().describe("Sample visitor form values, for {{input.<key>}} placeholders. Defaults to {}."),
+      sampleResponse: jsonValue.optional().describe("A sample of the client endpoint's JSON response, used to render resultTemplate/handoffUrl. Falls back to the tool's stored sampleOutput when omitted."),
+      sampleInputs: jsonObject.optional().describe("Sample visitor form values, for {{input.<key>}} placeholders. Defaults to {}."),
       brandId: brandOpt,
     },
     async ({ toolId, sampleResponse, sampleInputs, brandId }) => {

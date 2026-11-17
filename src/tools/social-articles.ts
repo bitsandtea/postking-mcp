@@ -45,16 +45,6 @@ export function bodyHtmlToMarkdown(html: string): string {
   return out.replace(/\n{3,}/g, "\n\n").trim();
 }
 
-/** Compact image-slot view of an article (one marker, or all slots when omitted). */
-function imageSummary(article: unknown, marker?: number) {
-  const a = asRecord(article);
-  const cover = (a.coverImage ?? null) as Img;
-  const inline = (Array.isArray(a.inlineImages) ? a.inlineImages : []) as NonNullable<Img>[];
-  const slots = [cover ? { ...cover, marker: 0 } : null, ...inline].filter((i): i is NonNullable<Img> => !!i);
-  const picked = marker === undefined ? slots : slots.filter((i) => i.marker === marker);
-  return { articleId: a.id ?? null, images: picked.map((i) => ({ marker: i.marker, url: i.url ?? null, alt: i.alt, prompt: i.prompt ?? null })) };
-}
-
 const asRecord = (v: unknown): Record<string, unknown> =>
   v != null && typeof v === "object" ? (v as Record<string, unknown>) : {};
 
@@ -84,7 +74,7 @@ export function buildPasteKit(article: Record<string, unknown>) {
     steps: [
       `Open the ${platform === "x" ? "X Articles" : "LinkedIn article"} editor.`,
       "Paste the title, subtitle and body (bodyMarkdown has [Image N] markers where images go).",
-      "Upload the cover image, then upload each inline image at its [Image N] marker (download from the URLs). Slots with \"no image yet\" need generate_social_article_image(s) first, or skip them.",
+      "Upload the cover image, then upload each inline image at its [Image N] marker (download from the URLs). Slots with \"no image yet\" can be generated in the PostKing dashboard, filled with a brand asset via update_social_article, or skipped.",
       "Publish, then share the teaserPost. On X the teaserPost is the caption for the article (max 256 characters).",
       "Call update_social_article with publishedUrl set to the live URL.",
     ],
@@ -114,7 +104,7 @@ export function registerSocialArticleTools(server: McpServer) {
       "LinkedIn: 1,200-2,500 words, first-person expert voice, keyword-front-loaded title (it becomes the Pulse URL slug). Pulse articles are indexed by Google and cited by AI answer engines, so this is an SEO/GEO play. X: 800-2,000 words, punchy short paragraphs, hook title, reach-oriented (not reliably indexed).",
       "Source: pass `topic`, or `seoBriefId` (its keyword and outline guide the piece), or `sourceBlogArticleId`. A blog article is RESEARCH INPUT ONLY (facts, citations) — the article is written fresh with a different angle and structure, never a rewrite of the blog. Never paste a blog verbatim into LinkedIn: it can outrank the brand's own blog.",
       "There is NO publishing API. The result is a paste kit: get_social_article returns title, subtitle, body (HTML and markdown with [Image N] markers), cover and inline image URLs, and a teaser post. The user pastes it into the LinkedIn/X editor themselves, then you call update_social_article with `publishedUrl`.",
-      "Credit cost: 25 credits, text only. Images are separate: after reviewing the text, offer the user image generation (generate_social_article_image per slot, or generate_social_article_images for all empty slots, 30 credits each), or picking existing brand assets via update_social_article (coverImage / inlineImages, free). Ask before spending credits on images.",
+      "Credit cost: 25 credits, text only. Images are not generated through this tool: users can generate images in the PostKing dashboard, or pick existing brand assets via update_social_article (coverImage / inlineImages, free).",
       "Async — returns { articleId, operationId }. Poll get_job(operationId, wait: true) until state is 'completed', then call get_social_article.",
     ].join(" "),
     {
@@ -143,44 +133,6 @@ export function registerSocialArticleTools(server: McpServer) {
           }, null, 2),
         }],
       };
-    }
-  );
-
-  // ── Generate one image slot ───────────────────────────────────────────────
-  server.tool(
-    "generate_social_article_image",
-    [
-      "Generate (or regenerate) ONE image of a LinkedIn/X article: marker 0 is the cover, 1..N are the inline images at the [Image N] placeholders. 30 credits per call.",
-      "Optional `prompt` gives creative direction; omit it to use the slot's stored prompt. Synchronous. Returns the updated image slot; call get_social_article for the full kit.",
-    ].join(" "),
-    {
-      articleId: z.string().describe("Social article ID"),
-      marker: z.number().int().min(0).describe("0 = cover, 1..N = inline image marker"),
-      prompt: z.string().optional().describe("Optional creative direction for the new image."),
-      brandId: brandOpt,
-    },
-    async ({ articleId, marker, prompt, brandId }) => {
-      const id = requireBrandId(brandId);
-      const data = await api.post<any>(`/api/agent/v1/brands/${id}/social-articles/${articleId}/images/${marker}/regenerate`, { prompt });
-      return { content: [{ type: "text" as const, text: JSON.stringify(imageSummary(data?.article, marker), null, 2) }] };
-    }
-  );
-
-  // ── Generate all empty image slots ────────────────────────────────────────
-  server.tool(
-    "generate_social_article_images",
-    [
-      "Generate every EMPTY image slot of a LinkedIn/X article (cover + inline) in one call, 30 credits per image. Confirm the cost with the user first (count the slots with url null in get_social_article).",
-      "Slots that already have an image are left alone. Returns the resulting slots.",
-    ].join(" "),
-    {
-      articleId: z.string().describe("Social article ID"),
-      brandId: brandOpt,
-    },
-    async ({ articleId, brandId }) => {
-      const id = requireBrandId(brandId);
-      const data = await api.post<any>(`/api/agent/v1/brands/${id}/social-articles/${articleId}/images/generate-all`, {});
-      return { content: [{ type: "text" as const, text: JSON.stringify(imageSummary(data?.article), null, 2) }] };
     }
   );
 
@@ -250,7 +202,7 @@ export function registerSocialArticleTools(server: McpServer) {
       "Edit a LinkedIn/X article, or record that it was published.",
       "After the user pastes the article into LinkedIn/X, call this with `publishedUrl` — setting it marks the article published (feeds the AI-visibility probe and the teaser post).",
       "bodyHtml allows only h2, h3, p, strong, em, ul, ol, li, blockquote, a, br; keep image placeholders as <p data-image-marker=\"N\"></p>. coverImage swaps the cover for a brand asset (null clears it); inlineImages replaces the full inline list and every marker must exist as a placeholder in bodyHtml.",
-      "Editing is free. Empty image slots can be filled with a brand asset here, or generated with generate_social_article_image(s).",
+      "Editing is free. Empty image slots can be filled with a brand asset here, or users can generate images in the PostKing dashboard.",
     ].join(" "),
     {
       articleId: z.string().describe("Social article ID"),

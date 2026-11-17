@@ -31,7 +31,7 @@ export function registerLinkTools(server: McpServer) {
     "dashboard_link",
     [
       "Return a clickable browser link to a PostKing dashboard page.",
-      "ALWAYS use this instead of guessing dashboard URLs.",
+      "Returns the correct dashboard URL, so there is no need to construct one by hand.",
       "The SEO roadmap / content plan is section 'seo_briefs' (or 'seo' for the overview) — there is NO '/seo/roadmap' page.",
     ].join(" "),
     {

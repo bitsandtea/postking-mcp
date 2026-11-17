@@ -6,8 +6,8 @@ import { api } from "../client.js";
  * Billing tools — credit top-ups + subscription.
  *
  * Canonical agent flow (see `provision-and-pay` skill):
- *   One-off:      billing_list_packs → billing_topup → synchronous charge on card on file → announce receipt (done, no poll)
- *   Subscription: billing_list_tiers → billing_subscribe → (human/Link) → billing_wallet (verify credits)
+ *   One-off:      billing_list_packs → billing_topup → user pays via Checkout link in browser → billing_wallet (verify credits)
+ *   Subscription: billing_list_tiers → billing_subscribe → (user pays via Checkout link) → billing_wallet (verify credits)
  */
 
 export function registerBillingTools(server: McpServer) {
@@ -31,15 +31,10 @@ export function registerBillingTools(server: McpServer) {
   server.tool(
     "billing_topup",
     [
-      "Top up credits by charging the account's card on file (Stripe off-session). Prefers the headless path — no checkout link required.",
-      "IMPORTANT: Only call this tool after the USER has explicitly chosen a specific pack — it triggers a real charge.",
-      "To show the user their options first, call billing_list_packs and present the results; do NOT pick a pack on the user's behalf.",
-      "The response is ONE OF two shapes:",
-      "(1) Headless success (default when a card is on file): { status: 'paid', paymentIntentId, amountUsd, credits, balance, packSku, cardLast4/receiptUrl when available }.",
-      "When you receive status === 'paid', the payment has already completed and the credits are in the wallet NOW.",
-      "Announce to the user: payment ID, last-4 card digits, credits added, and new balance. You are DONE — do NOT call billing_wallet to poll.",
-      "(2) Checkout fallback (only when there is no card on file): { checkoutUrl, sessionId, amountUsd, credits, packSku }.",
-      "When you receive checkoutUrl, hand that link to the user so they can complete payment in their browser.",
+      "Start a one-off credit top-up. This never charges a card: it returns a Stripe Checkout link that the USER opens and pays in their own browser.",
+      "Only call this after the user has explicitly chosen a specific pack. To show the options first, call billing_list_packs and present the results; do not pick a pack on the user's behalf.",
+      "Returns { status: 'checkout_required', checkoutUrl, sessionId, amountUsd, credits, packSku }. Give the checkoutUrl to the user to complete payment; credits are added only after they pay.",
+      "After the user says they have paid, call billing_wallet to confirm the new balance.",
       "Valid skus: agent_4 ($4 / 160 credits), agent_5 ($5 / 220 credits), agent_25 ($25 / 1200 credits), agent_50 ($50 / 2600 credits).",
     ].join(" "),
     {
@@ -59,8 +54,7 @@ export function registerBillingTools(server: McpServer) {
     [
       "Fetch the user's credit balance and recent usage entries.",
       "Returns { credits, recent } where recent is the last ~10 usage rows.",
-      "Poll this to confirm a top-up landed ONLY after a billing_topup CHECKOUT result (one that returned a checkoutUrl), until credits rise.",
-      "Do NOT poll after a status:'paid' headless top-up — those credits are already applied and the new balance is in the topup response.",
+      "After a billing_topup or billing_subscribe checkout link has been paid by the user, check this to confirm the credits landed (credits rise once Stripe confirms payment; allow a few seconds).",
     ].join(" "),
     {},
     async () => {
@@ -88,10 +82,10 @@ export function registerBillingTools(server: McpServer) {
   server.tool(
     "billing_subscribe",
     [
-      "Create a Stripe Checkout session for a PostKing subscription.",
+      "Create a Stripe Checkout session for a PostKing subscription. This never charges a card: the user opens the returned link and pays in their own browser.",
       "Returns { checkoutUrl, sessionId, tier, interval, amountUsd }.",
       "Subscription credits refill User.credits each billing period.",
-      "The subscription Checkout is best completed by a human; the Link virtual card covers the first invoice only (renewals need a durable payment method).",
+      "After the user completes checkout, billing_wallet shows the refilled credits.",
     ].join(" "),
     {
       tier: z

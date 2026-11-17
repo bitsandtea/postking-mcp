@@ -1024,7 +1024,7 @@ export function registerBlogTools(server: McpServer) {
   // ── Create blog author ────────────────────────────────────────────────────
   server.tool(
     "create_blog_author",
-    "Create a new author for blog articles (a default avatar is assigned if none is passed; use generate_blog_author for an AI-written persona). Returns an authorId that can be used in generate_blog_post and update_blog_article. Only firstName/lastName are required — pass the bio/social fields too so bylines aren't name-only.",
+    "Create a new author for blog articles (a default avatar is assigned if none is passed; use generate_blog_author for an AI-written persona). Returns an authorId that can be used in generate_blog_post and update_blog_article. Only firstName/lastName are required — pass the bio/social fields too so bylines aren't name-only. Calls the PostKing Agent API (`POST /api/agent/v1/brands/{brandId}/authors`); API reference: https://try.postking.app/api/agent/v1/openapi.json, docs: https://docs.postking.app/blogs-seo/publications-and-articles.",
     {
       firstName: z.string().describe("Author first name"),
       lastName: z.string().describe("Author last name"),
@@ -1061,7 +1061,7 @@ export function registerBlogTools(server: McpServer) {
   // ── Update blog author ────────────────────────────────────────────────────
   server.tool(
     "update_blog_author",
-    "Update an existing blog author (partial: only the fields you pass change, everything else is left intact). Pass an empty string to clear an optional field; names cannot be cleared. Use list_blog_authors to find the authorId.",
+    "Update an existing blog author (partial: only the fields you pass change, everything else is left intact). Pass an empty string to clear an optional field; names cannot be cleared. Use list_blog_authors to find the authorId. Calls the PostKing Agent API (`PATCH /api/agent/v1/brands/{brandId}/authors/{authorId}`); API reference: https://try.postking.app/api/agent/v1/openapi.json, docs: https://docs.postking.app/blogs-seo/publications-and-articles.",
     {
       authorId: z.string().describe("Author ID (from list_blog_authors or create_blog_author)"),
       firstName: z.string().optional().describe("Author first name"),

@@ -282,6 +282,7 @@ export function registerVisualsPostTools(server: McpServer) {
     [
       "Edit a single carousel card on a post by its 1-based index.",
       "Provide title and/or body to update. Set rerender=true to regenerate the visual asset.",
+      "Calls the PostKing Agent API (`GET and PATCH /api/agent/v1/posts/{postId}/cards`); API reference: https://try.postking.app/api/agent/v1/openapi.json, docs: https://docs.postking.app/social/visuals.",
     ].join(" "),
     {
       postId: z.string().describe("Post ID"),

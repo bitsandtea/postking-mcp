@@ -251,6 +251,7 @@ export function registerSearchPerformanceTools(server: McpServer) {
       "Pass `host` + `path` (as listed in `pages`) for a specific page; omit both for the most-visited page. `days` is 1-365 (default 28). Free.",
       "Use it after a landing-page change to see whether visitors behave differently, and before editing a page to see where to focus. Pages served by PostKing are tracked automatically. If the site is hosted elsewhere and nothing is tracked yet, `install` returns the tracking snippet and a brief for whoever builds the site.",
       "`limit` (default 15, max 50) caps the sections, ctas and pages lists.",
+      "Data comes from PostKing's own first-party page tracking (not Google Analytics). Calls the PostKing Agent API (`GET /api/agent/v1/brands/{brandId}/search-performance/page-journey`); API reference: https://try.postking.app/api/agent/v1/openapi.json, docs: https://docs.postking.app/blogs-seo/seo-pipeline.",
     ].join(" "),
     {
       host: z.string().optional().describe("Host of the page, as listed in `pages`. Omit for the most-visited page."),
@@ -290,6 +291,7 @@ export function registerSearchPerformanceTools(server: McpServer) {
       "Search performance for ONE page URL (an article, landing page or side page): per-provider `totals` (clicks, impressions, ctr, position) from Google Search Console and Bing, the top `queries` it gets impressions for (Google Search Console only; clicks, impressions, ctr, position per query), a weekly `timeseries` ({dates, clicks, impressions, position} columnar arrays), `ga4` landing-page engagement (sessions, engagementRate, avgEngagementTime in seconds, keyEvents, aiReferralSessions), and `bingAiCitations` (Copilot citation snapshots for that page).",
       "Pass the page's full `url`; http/https, www, trailing slash and tracking params are matched either way. Sections that are not stored for the page come back null, and `notes` says why (no connection, page not in the synced top pages, no AI-citation import). Bing grounding queries are not stored per page, so `bingAiCitations.groundingQueries` is always null; use `search_ai_citations` for site-wide ones. Reads already-synced data only. Free.",
       "Use it before refreshing an article to see which queries it ranks for and where it sits, whether impressions are trending up or down, and whether AI assistants cite it. Use `search_performance` for site-wide numbers. `days` is 7, 28, 90, 180 or 480 (default 90); `limit` caps `queries` (default 50, max 200).",
+      "Data comes from the brand's connected Google Search Console and Bing Webmaster Tools accounts. Calls the PostKing Agent API (`GET /api/agent/v1/brands/{brandId}/search-performance/page`); API reference: https://try.postking.app/api/agent/v1/openapi.json, docs: https://docs.postking.app/blogs-seo/seo-pipeline.",
     ].join(" "),
     {
       url: z.string().min(1).describe("Full URL of the page, e.g. https://example.com/blog/my-article"),

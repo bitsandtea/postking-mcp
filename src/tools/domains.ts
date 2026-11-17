@@ -106,6 +106,73 @@ export function registerDomainTools(server: McpServer) {
     }
   );
 
+  // ── Switch hosting mode (atomic) ──────────────────────────────────────────
+  server.tool(
+    "switch_domain_hosting_mode",
+    [
+      "Atomically switch a VERIFIED domain between 'postking' (PostKing/universal-lp serves it) and 'self_hosted' (the customer's own renderer serves it). In ONE transaction it flips the Domain's hostingMode, every landing page connected to it (distribution hosted <-> self_hosted) and every blog connected to it (hostingMode).",
+      "It NEVER disconnects the domain from anything and never touches canonical URLs, noindex, routing, URL patterns or siteBaseUrl — unlike delete_domain + re-adding, it is non-destructive and reversible by switching back.",
+      "Recommended: call it with dryRun: true first to preview what would change (changes.domain, changes.landingPages, changes.blogs), confirm with the user, then call again with dryRun: false (or omitted). dryRun writes nothing.",
+      "Returns { dryRun, domainId, domain, hostingMode, alreadyInTargetMode, changes: { domain, landingPages[], blogs[] }, pings, indexNow, indexNowVerifiedAt }. alreadyInTargetMode: true means nothing needed to change.",
+      "Errors: 404 domain_not_found; 409 domain_not_verified (run verify_domain first); 409 external_attachments (a page or blog with distribution/hostingMode 'external' is attached — external content cannot be switched; the error names them).",
+      "For a self_hosted target, the renderer also needs a revalidate secret on the domain — see set_domain_revalidate_secret.",
+    ].join(" "),
+    {
+      domainId: z.string().describe("Domain ID (from list_domains) — must be verified"),
+      hostingMode: z.enum(["postking", "self_hosted"]).describe("Target mode for the domain and everything connected to it"),
+      dryRun: z.boolean().optional().describe("true = preview only, writes nothing. Run this first and show the user the changes before switching for real."),
+    },
+    async ({ domainId, hostingMode, dryRun }) => {
+      try {
+        const data = await api.post<any>(`/api/agent/v1/domains/${domainId}/hosting-mode`, { hostingMode, dryRun });
+        return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+      } catch (err) {
+        if (err instanceof ApiError && (err.status === 404 || err.status === 409)) {
+          const hint =
+            err.code === "domain_not_verified"
+              ? " Run verify_domain for this domain first, then retry."
+              : err.code === "external_attachments"
+                ? " Detach or change the external landing pages/blogs it names (set_landing_page_distribution / set_publication_hosting_mode), then retry."
+                : "";
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text: JSON.stringify({ error: err.code ?? (err.status === 404 ? "domain_not_found" : "conflict"), message: (err.message || "Hosting-mode switch refused.") + hint }),
+              },
+            ],
+          };
+        }
+        throw err;
+      }
+    }
+  );
+
+  // ── Set / clear the revalidate secret ─────────────────────────────────────
+  server.tool(
+    "set_domain_revalidate_secret",
+    [
+      "Set or clear the shared revalidate secret on a domain. PostKing sends it as the x-revalidate-secret header on every cache-revalidate ping to a self_hosted site on that domain, so the customer's renderer can verify the ping came from PostKing.",
+      "Pass { domainId, secret } (at least 16 characters) to set it, or { domainId, clear: true } to remove it. Exactly one of secret / clear.",
+      "Write-only: the secret is never returned. The result only says { domainId, hasRevalidateSecret }. Do not repeat the secret back to the user or write it to files or logs after sending it.",
+    ].join(" "),
+    {
+      domainId: z.string().describe("Domain ID (from list_domains)"),
+      secret: z.string().min(16).optional().describe("New shared secret, at least 16 characters. Omit when clear is true."),
+      clear: z.boolean().optional().describe("true = remove the stored secret. Omit when passing secret."),
+    },
+    async ({ domainId, secret, clear }) => {
+      if ((secret === undefined) === (clear !== true)) {
+        return { content: [{ type: "text" as const, text: "Pass exactly one of: secret (>= 16 chars) to set it, or clear: true to remove it." }] };
+      }
+      const data = await api.put<any>(`/api/agent/v1/domains/${domainId}`, { revalidateSecret: clear === true ? null : secret });
+      const d = data?.domain ?? data;
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify({ domainId: d?.id ?? domainId, domain: d?.domain, hasRevalidateSecret: !!d?.hasRevalidateSecret }, null, 2) }],
+      };
+    }
+  );
+
   // ── Connect blog to publication ───────────────────────────────────────────
   server.tool(
     "connect_domain_to_publication",

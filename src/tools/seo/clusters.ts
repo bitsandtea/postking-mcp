@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { jsonObject } from "../../jsonValue.js";
 import { api, ApiError } from "../../client.js";
 import { requireBrandId } from "../../state.js";
 import { detailParam, truncate, projectList, type Projector } from "../../detail.js";
@@ -240,7 +241,7 @@ export function registerSeoClusterTools(server: McpServer) {
       pillarKeyword: z.string().trim().nullable().optional().describe("New pillar keyword (null clears it)"),
       description: z.string().trim().nullable().optional().describe("New description (null clears it)"),
       keywordsMeta: z
-        .array(z.record(z.string(), z.unknown()))
+        .array(jsonObject)
         .optional()
         .describe(
           "REPLACEMENT array of cluster members: [{keyword, id?, volume?, kd?, intent?, relevance?, priority?, excluded?}, ...]. This is how membership is added/removed — see tool description."
@@ -250,7 +251,7 @@ export function registerSeoClusterTools(server: McpServer) {
         .optional()
         .describe("Content-type distribution {blog, tool, comparison, landing} — fractions must sum to 1.0"),
       briefAssignments: z
-        .array(z.record(z.string(), z.unknown()))
+        .array(jsonObject)
         .optional()
         .describe("Per-keyword brief assignments: [{keyword, type, ...}, ...]"),
       brandId: brandOpt,

@@ -12,7 +12,7 @@ export function registerRepurposeTools(server: McpServer) {
       const eta = etaFor("post_repurpose");
       return [
         "Async. Turn a URL, text, blog post, or existing PostKing post into new content for social media or blogs.",
-        "IMPORTANT: When the source is a URL, pass it directly to this tool via sourceUrl — do NOT fetch or crawl the URL yourself first. PostKing handles all crawling internally.",
+        "When the source is a URL, pass it via sourceUrl; PostKing fetches and reads the page itself, so no separate crawl is needed.",
         "Source types: url | text | blog | social_post.",
         "Target types: social (LinkedIn, X, etc.) | blog | text.",
         "When targetType is 'blog', pass publicationId to choose which blog publication the generated article is filed under (ids from list_publications) — omit to fall back to the brand's default publication for the content's language.",

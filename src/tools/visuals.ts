@@ -447,7 +447,7 @@ export function registerVisualTools(server: McpServer) {
   // ── Import asset from URL ─────────────────────────────────────────────────
   server.tool(
     "import_asset_from_url",
-    "Import an asset into the brand library from a public URL. The server fetches and stores the file. Set assetType (e.g. 'google-image') when importing a result surfaced by search_web_images — it is recorded as a tag on the asset to preserve provenance.",
+    "Import an asset into the brand library from a public URL. The server fetches and stores the file. Set assetType (e.g. 'google-image') when importing a result surfaced by search_web_images — it is recorded as a tag on the asset to preserve provenance. The PostKing server downloads the file from the URL you pass (any public http/https address). Calls the PostKing Agent API (`POST /api/agent/v1/brands/{brandId}/assets`); API reference: https://try.postking.app/api/agent/v1/openapi.json, docs: https://docs.postking.app/social/visuals.",
     {
       url: z.string().url().describe("Publicly accessible URL of the image/video/PDF to import"),
       name: z.string().optional().describe("Display name for the asset"),

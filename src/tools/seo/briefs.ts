@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { jsonObject } from "../../jsonValue.js";
 import { api, ApiError } from "../../client.js";
 import { requireBrandId } from "../../state.js";
 import { detailParam, project, projectList, type Projector } from "../../detail.js";
@@ -398,20 +399,13 @@ export function registerSeoBriefTools(server: McpServer) {
     ].join(" "),
     {
       briefId: z.string().describe("Brief ID from seo_list_briefs"),
-      briefData: z
-        .unknown()
+      briefData: jsonObject
         .optional()
         .describe("Full structured replacement for the brief outline (object). Pulled from seo_get_brief, edited, sent back."),
       status: z
         .enum(["approved", "rejected"])
         .optional()
         .describe("Flip to 'approved' (fires generation) or 'rejected'. Omit to update briefData without changing status."),
-      generateHeroImage: z
-        .boolean()
-        .optional()
-        .describe(
-          "When approving, also generate a hero image (extra credits). Article-type briefs only — comparison/landing-type briefs return a 400 if this is set."
-        ),
       voiceProfileId: z
         .string()
         .optional()
@@ -441,12 +435,11 @@ export function registerSeoBriefTools(server: McpServer) {
         ),
       brandId: brandOpt,
     },
-    async ({ briefId, briefData, status, generateHeroImage, voiceProfileId, attachedAssetId, parentSource, truthIds, verify, brandId }) => {
+    async ({ briefId, briefData, status, voiceProfileId, attachedAssetId, parentSource, truthIds, verify, brandId }) => {
       const id = requireBrandId(brandId);
       const body: Record<string, unknown> = {};
       if (briefData !== undefined) body.briefData = briefData;
       if (status !== undefined) body.status = status;
-      if (generateHeroImage !== undefined) body.generateHeroImage = generateHeroImage;
       if (voiceProfileId !== undefined) body.voiceProfileId = voiceProfileId;
       if (attachedAssetId !== undefined) body.attachedAssetId = attachedAssetId;
       if (parentSource !== undefined) body.parentSource = parentSource;
@@ -477,16 +470,11 @@ export function registerSeoBriefTools(server: McpServer) {
         .min(1)
         .max(200)
         .describe("Brief IDs to approve (from seo_list_briefs)"),
-      generateHeroImage: z
-        .boolean()
-        .optional()
-        .describe("Also generate a hero image per blog brief (extra credits)."),
       brandId: brandOpt,
     },
-    async ({ briefIds, generateHeroImage, brandId }) => {
+    async ({ briefIds, brandId }) => {
       const id = requireBrandId(brandId);
       const body: Record<string, unknown> = { briefIds };
-      if (generateHeroImage !== undefined) body.generateHeroImage = generateHeroImage;
       const data = await api.post<unknown>(
         `/api/agent/v1/brands/${id}/seo/briefs/bulk-approve`,
         body
@@ -588,7 +576,7 @@ export function registerSeoBriefTools(server: McpServer) {
       `Typically takes ${etaFor("seo_article_generate")}.`,
       "Precondition: the brief for this roadmap item must be in status `approved`. If the brief is still `drafted` or `pending_review`, review with `seo_list_briefs` / `seo_get_brief`, refine with `seo_edit_brief`, then approve with `seo_approve_briefs` (which will auto-generate).",
       "Returns an articleId that can be reviewed, edited, or published.",
-      "generateHeroImage, attachedAssetId, verify, language, and authorId only apply to article (blog) briefs — for comparison/landing-type roadmap items the server silently ignores all five and generates the page through the comparison/landing pipeline instead.",
+      "attachedAssetId, verify, language, and authorId only apply to article (blog) briefs — for comparison/landing-type roadmap items the server silently ignores all four and generates the page through the comparison/landing pipeline instead.",
       "Cannibalization guard: this write is checked server-side before drafting. Optionally preflight with seo_check_cannibalization first. On a 409 response here (or a preflight decision of 'refresh'), call refresh_blog_article with the guard's `targetArticleId` as `blogId` INSTEAD of retrying this tool. On decision 'blocked', an in-flight brief already covers this keyword (`conflictingBriefId`) — wait for it, don't force. Only pass forceCannibalization: true when the USER has explicitly said they want a duplicate/second article anyway — never decide this yourself. A success response may carry an optional `cannibalizationGuard` field when a guard outcome was already stamped on the brief.",
     ].join(" "),
     {
@@ -597,14 +585,10 @@ export function registerSeoBriefTools(server: McpServer) {
         .string()
         .optional()
         .describe("Voice profile ID to write in a specific style"),
-      generateHeroImage: z
-        .boolean()
-        .optional()
-        .describe("Also generate a hero image for the article (extra credits). Article-type briefs only."),
       attachedAssetId: z
         .string()
         .optional()
-        .describe("Attach an existing asset to the article instead of generating a hero image. Article-type briefs only."),
+        .describe("Attach an existing brand asset as the article's hero image. Article-type briefs only."),
       verify: z
         .boolean()
         .optional()
@@ -629,11 +613,10 @@ export function registerSeoBriefTools(server: McpServer) {
         .describe("Author for this article (from list_blog_authors; must be an active author of the brand). Omit to use the publication default, then the brand default (set_default_blog_author), then the oldest active author. Article-type briefs only."),
       brandId: brandOpt,
     },
-    async ({ roadmapItemId, voiceProfileId, generateHeroImage, attachedAssetId, verify, language, forceCannibalization, authorId, brandId }) => {
+    async ({ roadmapItemId, voiceProfileId, attachedAssetId, verify, language, forceCannibalization, authorId, brandId }) => {
       const id = requireBrandId(brandId);
       const body: Record<string, unknown> = {};
       if (voiceProfileId !== undefined) body.voiceProfileId = voiceProfileId;
-      if (generateHeroImage !== undefined) body.generateHeroImage = generateHeroImage;
       if (attachedAssetId !== undefined) body.attachedAssetId = attachedAssetId;
       if (verify !== undefined) body.verify = verify;
       if (language !== undefined) body.language = language;

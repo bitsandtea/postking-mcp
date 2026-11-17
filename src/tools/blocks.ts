@@ -53,6 +53,7 @@ import { api, ApiError } from "../client.js";
 import { requireBrandId } from "../state.js";
 import { detailParam, projectList, pick, type Projector } from "../detail.js";
 import { toUrlSegment } from "../sidePageSlug.js";
+import { jsonValue } from "../jsonValue.js";
 
 const brandOpt = z.string().optional().describe("Brand ID (defaults to active brand)");
 
@@ -62,14 +63,7 @@ const brandOpt = z.string().optional().describe("Brand ID (defaults to active br
  * NOT `z.any()`, which renders as an untyped `{}` JSON-schema node that some
  * MCP clients pre-stringify (corrupting arrays/objects on the wire).
  */
-const jsonValueSchema: z.ZodType<unknown> = z.union([
-  z.string(),
-  z.number(),
-  z.boolean(),
-  z.null(),
-  z.array(z.any()),
-  z.record(z.string(), z.any()),
-]);
+const jsonValueSchema: z.ZodType<unknown> = jsonValue;
 
 /** Same defensive unwrap as `lp.ts`'s `coerceJsonValue` — some agent
  * runtimes stringify object/array tool args before sending. If `value` is a

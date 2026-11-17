@@ -164,6 +164,7 @@ export function registerTrendsTools(server: McpServer) {
       "Pass a single template object, or pass the 'templates' array param for bulk creation.",
       "If both are supplied, 'templates' (bulk) takes precedence.",
       "Returns the created template record(s).",
+      "Calls the PostKing Agent API (`POST /api/agent/v1/brands/{brandId}/content-templates`); API reference: https://try.postking.app/api/agent/v1/openapi.json, docs: https://docs.postking.app/social/generate-and-schedule.",
     ].join(" "),
     {
       title: z.string().min(1).optional().describe("Template title (required for single creation)."),
@@ -231,6 +232,7 @@ export function registerTrendsTools(server: McpServer) {
       "Update an existing content template.",
       "All fields are optional — only supplied fields are changed.",
       "Use isFavorite=true/false to toggle favorite status.",
+      "Calls the PostKing Agent API (`PATCH /api/agent/v1/brands/{brandId}/content-templates/{templateId}`); API reference: https://try.postking.app/api/agent/v1/openapi.json, docs: https://docs.postking.app/social/generate-and-schedule.",
     ].join(" "),
     {
       templateId: z.string().describe("ID of the content template to update."),

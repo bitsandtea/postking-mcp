@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { jsonObject } from "../../jsonValue.js";
 import { api } from "../../client.js";
 import { requireBrandId } from "../../state.js";
 import { etaFor } from "../../etas.js";
@@ -37,8 +38,7 @@ export function registerSeoSidePageTools(server: McpServer) {
         .string()
         .optional()
         .describe("Freeform-mode generation prompt (omit when passing `brief`)"),
-      brief: z
-        .unknown()
+      brief: jsonObject
         .optional()
         .describe("Brief-mode structured outline. When set, this is the canonical payload."),
       keywords: z
@@ -161,8 +161,7 @@ export function registerSeoSidePageTools(server: McpServer) {
         .string()
         .optional()
         .describe("Simple-mode only: your own raw data/notes/facts about the options. When set, the LLM writes from this instead of crawling — feed it here to avoid a research crawl."),
-      briefData: z
-        .unknown()
+      briefData: jsonObject
         .optional()
         .describe("Advanced: a full pre-built structured comparison brief. When supplied, generation uses it directly and skips the LLM authoring step."),
       parentLandingPageSlug: z

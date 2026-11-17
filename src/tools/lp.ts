@@ -16,6 +16,7 @@ import { detailParam, project, projectList, pick, truncate } from "../detail.js"
 import { brandDashboardUrl } from "../links.js";
 import { languageParam, SUPPORTED_LANGUAGE_CODES, LANGUAGE_CODE_LIST_TEXT } from "../languages.js";
 import { toUrlSegment } from "../sidePageSlug.js";
+import { jsonValue, jsonObject } from "../jsonValue.js";
 import { fetchBundleFiles, BundleFetchError, type BundleManifestFile } from "../bundleImport.js";
 
 const brandOpt = z.string().optional().describe("Brand ID (defaults to active brand)");
@@ -29,14 +30,7 @@ const brandOpt = z.string().optional().describe("Brand ID (defaults to active br
  * wire (e.g. `tiers: []` arrives as the literal string `"[]"`). Declaring an
  * explicit union gives callers a real `type: array|object|...` to target.
  */
-const jsonValueSchema: z.ZodType<unknown> = z.union([
-  z.string(),
-  z.number(),
-  z.boolean(),
-  z.null(),
-  z.array(z.any()),
-  z.record(z.string(), z.any()),
-]);
+const jsonValueSchema: z.ZodType<unknown> = jsonValue;
 
 /**
  * Defensive unwrap for callers that pass a JSON-looking string anyway (common,
@@ -1342,8 +1336,7 @@ export function registerLpTools(server: McpServer) {
         .string()
         .optional()
         .describe("Freeform-mode generation prompt (omit when passing `brief`)"),
-      brief: z
-        .unknown()
+      brief: jsonObject
         .optional()
         .describe("Brief-mode structured outline. When set, this is the canonical payload."),
       keywords: z
@@ -1421,6 +1414,7 @@ export function registerLpTools(server: McpServer) {
       "  • Parent is a sectioned page: the source page's text is extracted and seeds an ASYNC side-page generation. Returns 202 with { mode: 'generate', operationId, key } — poll get_job(operationId) exactly like generate_side_page, until state is 'completed' (or 'failed'/'partially_failed'/'cancelled'). Do NOT fabricate the page's content yourself while it's running; the completed job's result carries previewUrl/liveUrl once done.",
       "previewUrl is a browser-openable draft-preview link (always available once the page exists); liveUrl is a browser-openable public link, present only when a custom domain is connected.",
       "409 means a side page with that slug already exists under this parent — pick a different sidePageSlug or edit the existing page (edit_side_page / set_side_page_section) instead. 400 covers invalid URLs or URLs blocked for security reasons (e.g. SSRF-blocked internal/private-network addresses).",
+      "With `url`, the PostKing server fetches that public web page. Calls the PostKing Agent API (`POST /api/agent/v1/landing-pages/{slug}/side-pages/import-html`); API reference: https://try.postking.app/api/agent/v1/openapi.json, docs: https://docs.postking.app/landing-pages/side-pages-and-domains.",
     ].join(" "),
     {
       slug: z.string().min(1).describe("Parent landing page slug"),
