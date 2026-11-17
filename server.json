@@ -1,9 +1,9 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.bitsandtea/postking-mcp",
-  "description": "PostKing MCP server for managing brands, generating posts, scheduling content, and publishing blogs.",
-  "version": "1.1.7",
-  "websiteUrl": "https://postking.app",
+  "description": "Get found in search: research keywords, then write and publish articles, pages and posts from chat.",
+  "version": "1.1.8",
+  "websiteUrl": "https://postking.app/mcp?utm_source=mcp-registry",
   "repository": {
     "url": "https://github.com/bitsandtea/postking-mcp",
     "source": "github"
@@ -13,7 +13,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "postking-mcp",
-      "version": "1.1.7",
+      "version": "1.1.8",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"

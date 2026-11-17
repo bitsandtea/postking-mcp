@@ -13,7 +13,7 @@ import { requireBrandId } from "../state.js";
 
 const brandOpt = z.string().optional().describe("Brand ID (defaults to active brand)");
 
-const STATUSES = ["queued", "filled", "done", "failed", "cancelled"] as const;
+const STATUSES = ["queued", "filled", "posted", "removed", "stale", "done", "failed", "cancelled"] as const;
 
 const json = (value: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(value) }] });
 
@@ -27,7 +27,7 @@ export function registerReplyDraftTools(server: McpServer) {
       "Max 10 drafts per brand per day (11th is refused with a 429).",
       "threadUrl: Reddit must be a thread URL like https://www.reddit.com/r/<sub>/comments/<id>/…; Quora must be a question URL like https://www.quora.com/<question-slug> (not a profile, space, topic or /answer/ link). platform must match the URL. body is 1-10,000 characters.",
       "humanize (boolean, default false): runs PostKing's anti-slop + humanizer pass on the body before it's stored; the stored text is the cleaned version. Markdown (lists, bold, links, code) is kept; if the pass fails nothing is stored. Free.",
-      "Returns { draft, humanized } with status 'queued'. Track it with reply_drafts_list (queued → filled once the extension has filled the box, → done when the user marks it posted, or failed with an error such as 'Thread is archived').",
+      "Returns { draft, humanized } with status 'queued'. Track it with reply_drafts_list (queued → filled once the extension has filled the box, → posted once the extension finds it live on Reddit (done when marked manually), or failed with an error such as 'Thread is archived').",
     ].join(" "),
     {
       platform: z.enum(["reddit", "quora"]).describe("Where the reply goes. Must match threadUrl."),
@@ -62,8 +62,8 @@ export function registerReplyDraftTools(server: McpServer) {
     "reply_drafts_list",
     [
       "List the brand's reply drafts, oldest first. Free, read-only.",
-      "status filter: one of queued | filled | done | failed | cancelled, or an array of them. Omit for all. limit 1-100 (default 50).",
-      "queued = waiting for the extension; filled = text is in the box, waiting for the user to post; done = user posted; failed = see `error`; cancelled.",
+      "status filter: one of queued | filled | posted | removed | stale | done | failed | cancelled, or an array of them. Omit for all. limit 1-100 (default 50).",
+      "queued = waiting for the extension; filled = text is in the box, waiting for the user to post; posted = the extension found it live on Reddit; removed = mods removed it or it is hidden from the public; stale = filled over 72h ago and never found live (re-queue it); done = user marked it posted (Quora / manual); failed = see `error`; cancelled.",
     ].join(" "),
     {
       status: z
@@ -98,6 +98,26 @@ export function registerReplyDraftTools(server: McpServer) {
     async ({ draftId }) => {
       const data = await api.delete<{ draft?: unknown }>(`/api/agent/v1/reply-drafts/${encodeURIComponent(draftId)}`);
       return json({ cancelled: true, draft: data?.draft ?? null });
+    }
+  );
+
+  // ── reddit_performance (153) ─────────────────────────────────────────
+  server.tool(
+    "reddit_performance",
+    [
+      "How the brand's PostKing-made Reddit posts and replies are doing. Free, read-only.",
+      "Data comes from the PostKing extension, which reads the user's own Reddit profile every few hours and keeps only items made from PostKing drafts (Reddit post drafts + reply drafts).",
+      "days: 7 | 30 | 90 (default 7). Returns { sync, kpis (views, posted, upvotes, removed — each with previous period — and toPost), toPost (drafts and reply drafts still waiting, oldest first), ambiguous (posts needing the user to confirm which draft they came from), posted (each live item: subreddit, permalink, postedAt, views, upvotes, comments, status live|removed|hidden|deleted), communities (per subreddit: views, typical upvotes, removed %), byType (posts vs replies), insights }.",
+      "Views exist for posts only (Reddit doesn't count views on comments). Use removals per community before suggesting where to post next. sync.lastSyncAt null means the extension hasn't synced yet.",
+    ].join(" "),
+    {
+      days: z.union([z.literal(7), z.literal(30), z.literal(90)]).optional().describe("Window in days: 7, 30 or 90 (default 7)."),
+      brandId: brandOpt,
+    },
+    async ({ days, brandId }) => {
+      const id = requireBrandId(brandId);
+      const data = await api.get<unknown>(`/api/agent/v1/brands/${id}/reddit/performance?days=${days ?? 7}`);
+      return json(data);
     }
   );
 }

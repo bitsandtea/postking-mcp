@@ -12,6 +12,13 @@ The server exposes **294 tools across 34 modules** — full parity with the `pos
 
 > **Transport note:** All 294 tools are registered on both transports, including on the remote HTTP transport (`mcp.postking.app`). The 4 authentication tools (`login_start`, `login_complete`, `logout`, `whoami`) stay registered there too — they just explain the OAuth bearer-token model instead of running a device-code flow, since that transport is already authenticated before any tool call happens.
 
+## Get connected
+
+- **Hosted connection URL:** `https://mcp.postking.app/mcp` — add it as a custom connector / remote MCP server; your client handles sign-in.
+- **No account yet?** [Create one](https://try.postking.app/auth/register?utm_source=github-postking-mcp&utm_medium=readme) — or just connect: the approval screen lets you sign up on the spot and brings you straight back.
+- **Setup guide for Claude, ChatGPT and Cursor:** [postking.app/mcp](https://postking.app/mcp?utm_source=github-postking-mcp&utm_medium=readme)
+- **What PostKing does:** [postking.app](https://postking.app/?utm_source=github-postking-mcp&utm_medium=readme)
+
 ---
 
 ## Quick start
@@ -456,6 +463,7 @@ _Canonical flow: `reply_draft_create` (Reddit thread or Quora question + text) �
 |------|-------------|
 | `reply_draft_create` | Queue a reply draft (`platform` reddit/quora, `threadUrl`, `body`, optional `humanize`). Queues a draft. The PostKing extension fills it in the user's browser. The user posts it |
 | `reply_drafts_list` | List reply drafts, oldest first; optional `status` (single or array) and `limit` |
+| `reddit_performance` | How PostKing-made Reddit posts and replies are doing (views, upvotes, removals, still to post, per-community results); `days` 7/30/90. Data synced by the extension |
 | `reply_draft_cancel` | Cancel a reply draft (status becomes cancelled) |
 
 ### Dashboard

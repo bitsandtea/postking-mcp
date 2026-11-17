@@ -1970,4 +1970,49 @@ export function registerLpTools(server: McpServer) {
       return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
     }
   );
+  // ── Translate a landing page's side pages into a variant ──────────────────
+  server.tool(
+    "create_side_page_translation",
+    [
+      "Translate a landing page's SIDE pages (pricing, comparison pages, ...) into a language. `slug` is the SOURCE landing page.",
+      "The landing page must already have a variant in the target language (run create_landing_page_translation first). Translated side pages keep the SAME slug and live under the variant (e.g. /cs/pricing).",
+      "Pass exactly one of `sidePageSlugs` or `all`. Translations are created as DRAFTS unless `publish: true` (which publishes only pages whose source is published). Existing translations are skipped (listed in `skipped`) unless `overwrite: true`, which writes a new draft version and deletes nothing. Costs 25 credits per translated page (skipped and failed pages are not charged).",
+      "Runs as a background operation: returns { operationId, variantSlug, language, queued, skipped } — poll operationId with get_job. Language tags (hreflang) between the two versions appear automatically once both are published. Use get_side_page_translations to see status.",
+    ].join(" "),
+    {
+      slug: z.string().describe("SOURCE landing page slug"),
+      language: z
+        .enum(SUPPORTED_LANGUAGE_CODES)
+        .describe(`Target language, as a BCP-47 code. One of: ${LANGUAGE_CODE_LIST_TEXT}.`),
+      sidePageSlugs: z.array(z.string()).optional().describe("Side-page slugs to translate. Mutually exclusive with `all`."),
+      all: z.boolean().optional().describe("Translate every side page. Mutually exclusive with `sidePageSlugs`."),
+      overwrite: z.boolean().optional().describe("Re-translate pages that already have a translation (writes a new draft version)."),
+      publish: z.boolean().optional().describe("Publish translated pages whose source is published. Default false (drafts)."),
+    },
+    async ({ slug, ...body }) => {
+      const data = await api.post<unknown>(`/api/agent/v1/landing-pages/${slug}/side-pages/translations`, body);
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    }
+  );
+
+  // ── Side-page translation status ──────────────────────────────────────────
+  server.tool(
+    "get_side_page_translations",
+    [
+      "Show side-page translation status for a landing page in one language.",
+      "Returns { variantSlug, items: [{ slug, name, type, sourcePublished, translated, translatedPublished }] }. `variantSlug` is null if the landing page has no variant in that language yet (use create_landing_page_translation first).",
+    ].join(" "),
+    {
+      slug: z.string().describe("SOURCE landing page slug"),
+      language: z
+        .enum(SUPPORTED_LANGUAGE_CODES)
+        .describe(`Target language, as a BCP-47 code. One of: ${LANGUAGE_CODE_LIST_TEXT}.`),
+    },
+    async ({ slug, language }) => {
+      const data = await api.get<unknown>(
+        `/api/agent/v1/landing-pages/${slug}/side-pages/translations?language=${encodeURIComponent(language)}`
+      );
+      return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
+    }
+  );
 }

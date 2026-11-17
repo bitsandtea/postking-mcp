@@ -32,7 +32,7 @@
     "blog",
     "claude"
   ],
-  "homepage": "https://postking.app",
+  "homepage": "https://postking.app/?utm_source=npm-postking-mcp",
   "repository": {
     "type": "git",
     "url": "https://github.com/bitsandtea/postking-mcp.git"

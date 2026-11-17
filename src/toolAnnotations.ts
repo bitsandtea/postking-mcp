@@ -32,6 +32,7 @@ const EXPLICIT_HINTS: Record<string, Hints> = {
   trends_list: READ_ONLY,
   web_search: READ_ONLY,
   reddit_global_pool: READ_ONLY,
+  reddit_performance: READ_ONLY,
   seo_estimate_research_cost: READ_ONLY,
   storyline_estimate: READ_ONLY,
   competitor_comparison_sources: READ_ONLY,

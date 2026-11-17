@@ -30,7 +30,7 @@ describe("reply draft tools", () => {
   beforeEach(() => vi.clearAllMocks());
 
   it("registers exactly three tools (no filled/done setter)", () => {
-    expect([...tools.keys()].sort()).toEqual(["reply_draft_cancel", "reply_draft_create", "reply_drafts_list"]);
+    expect([...tools.keys()].sort()).toEqual(["reddit_performance", "reply_draft_cancel", "reply_draft_create", "reply_drafts_list"]);
   });
 
   it("create: description carries the contract sentence", () => {
@@ -95,6 +95,7 @@ describe("reply draft tools", () => {
   it("annotations: cancel is destructive, list is read-only, create is a plain write", () => {
     expect(annotationsFor("reply_draft_cancel")).toMatchObject({ destructiveHint: true, readOnlyHint: false });
     expect(annotationsFor("reply_drafts_list")).toMatchObject({ readOnlyHint: true });
+    expect(annotationsFor("reddit_performance")).toMatchObject({ readOnlyHint: true });
     expect(annotationsFor("reply_draft_create")).toMatchObject({ destructiveHint: false, readOnlyHint: false });
   });
 });
