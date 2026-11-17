@@ -16,7 +16,7 @@ import { detailParam, project, projectList, pick, truncate } from "../detail.js"
 import { brandDashboardUrl } from "../links.js";
 import { languageParam, SUPPORTED_LANGUAGE_CODES, LANGUAGE_CODE_LIST_TEXT } from "../languages.js";
 import { toUrlSegment } from "../sidePageSlug.js";
-import { jsonValue, jsonObject } from "../jsonValue.js";
+import { jsonValue, jsonObject, buildJsonValue } from "../jsonValue.js";
 import { fetchBundleFiles, BundleFetchError, type BundleManifestFile } from "../bundleImport.js";
 
 const brandOpt = z.string().optional().describe("Brand ID (defaults to active brand)");
@@ -1693,7 +1693,7 @@ export function registerLpTools(server: McpServer) {
         .string()
         .optional()
         .describe("Dot-path to a single nested field (e.g. 'title.prefix'). Requires `value`."),
-      value: jsonValueSchema
+      value: buildJsonValue()
         .optional()
         .describe("New value for the single `field` above."),
       instructions: z

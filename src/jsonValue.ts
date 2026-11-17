@@ -13,13 +13,21 @@ import { z } from "zod";
 // Fresh instances per level: zod-to-json-schema turns reused schema instances into `$ref`s.
 const scalar = () => [z.string(), z.number(), z.boolean(), z.null()] as const;
 
-const level5: z.ZodType<unknown> = z.union([...scalar(), z.array(z.any()), z.record(z.string(), z.any())]);
-const level4: z.ZodType<unknown> = z.union([...scalar(), z.array(level5), z.record(z.string(), level5)]);
-const level3: z.ZodType<unknown> = z.union([...scalar(), z.array(level4), z.record(z.string(), level4)]);
-const level2: z.ZodType<unknown> = z.union([...scalar(), z.array(level3), z.record(z.string(), level3)]);
+/**
+ * Build a fresh jsonValue schema tree. Use a fresh instance whenever one tool
+ * needs the schema in two places (e.g. `fields` record values AND `value`) —
+ * a reused instance renders as a `$ref` with no `type`, which directory review flags.
+ */
+export function buildJsonValue(): z.ZodType<unknown> {
+  const level5: z.ZodType<unknown> = z.union([...scalar(), z.array(z.any()), z.record(z.string(), z.any())]);
+  const level4: z.ZodType<unknown> = z.union([...scalar(), z.array(level5), z.record(z.string(), level5)]);
+  const level3: z.ZodType<unknown> = z.union([...scalar(), z.array(level4), z.record(z.string(), level4)]);
+  const level2: z.ZodType<unknown> = z.union([...scalar(), z.array(level3), z.record(z.string(), level3)]);
+  return z.union([...scalar(), z.array(level2), z.record(z.string(), level2)]);
+}
 
 /** Arbitrary JSON value (string, number, boolean, null, array, or object). */
-export const jsonValue: z.ZodType<unknown> = z.union([...scalar(), z.array(level2), z.record(z.string(), level2)]);
+export const jsonValue: z.ZodType<unknown> = buildJsonValue();
 
 /** Arbitrary JSON object (string keys, any JSON value). */
 export const jsonObject = z.record(z.string(), jsonValue);
