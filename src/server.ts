@@ -31,6 +31,7 @@ import { registerSeoTools } from "./tools/seo/index.js";
 import { registerKeyTools } from "./tools/keys.js";
 import { registerJobTools } from "./tools/jobs.js";
 import { registerPendingActionTools } from "./tools/pending-actions.js";
+import { registerBrandAccessTools } from "./tools/brand-access.js";
 import {
   EMAIL_CONFIRMED_DELETE_TOOLS,
   EMAIL_CONFIRMED_DESCRIPTION_SUFFIX,
@@ -55,6 +56,7 @@ import { registerAudienceTools } from "./tools/audience.js";
 import { registerTrendsTools } from "./tools/trends.js";
 import { registerBillingTools } from "./tools/billing.js";
 import { registerSearchPerformanceTools } from "./tools/search-performance.js";
+import { registerSocialPerformanceTools } from "./tools/social-performance.js";
 import { registerAiVisibilityProbeTools } from "./tools/ai-visibility-probe.js";
 import { registerReplyDraftTools } from "./tools/reply-drafts.js";
 import { registerBrandToolsTools } from "./tools/brand-tools.js";
@@ -217,6 +219,7 @@ This server also exposes guided prompts for common end-to-end flows — \`gettin
   registerKeyTools(server);
   registerJobTools(server);
   registerPendingActionTools(server);
+  registerBrandAccessTools(server);
   registerWeeklyScheduleTools(server);
   registerVisualTools(server);
   registerVisualsPostTools(server);
@@ -235,6 +238,7 @@ This server also exposes guided prompts for common end-to-end flows — \`gettin
   registerTrendsTools(server);
   registerBillingTools(server);
   registerSearchPerformanceTools(server);
+  registerSocialPerformanceTools(server);
   registerAiVisibilityProbeTools(server);
   registerReplyDraftTools(server);
   registerBrandToolsTools(server);

@@ -122,9 +122,21 @@ function summarizeVisuals(catalog: Record<string, unknown>): {
   };
 }
 
+const METRICS_MEDIUM_KEYS = ["impressions", "reactions", "likes", "comments", "engagementRate", "deletedOnPlatform", "duplicateOf"] as const;
+
+/** Compact metrics subset for medium; null (draft/scheduled) metrics blocks are omitted. */
+function mediumMetrics(p: Record<string, unknown>): Record<string, unknown> {
+  const m = p.metrics;
+  if (!m || typeof m !== "object") return {};
+  const src = m as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const k of METRICS_MEDIUM_KEYS) if (src[k] !== undefined) out[k] = src[k];
+  return { metrics: out };
+}
+
 const postProjector: Projector<Record<string, unknown>> = {
   short: (p) => ({ id: p.id, status: p.status, scheduledAt: p.scheduledAt ?? p.postAt }),
-  medium: slimPost,
+  medium: (p) => ({ ...slimPost(p), ...mediumMetrics(p) }),
 };
 
 export function registerPostTools(server: McpServer) {
@@ -362,7 +374,7 @@ export function registerPostTools(server: McpServer) {
   server.tool(
     "list_posts",
     [
-      "List recent posts and drafts. Filter by status or platform. Use status='created' to find unscheduled drafts. Returns id+status+scheduledAt by default; use detail='medium' or 'full' for more fields. For a single post use get_post.",
+      "List recent posts and drafts. Filter by status or platform. Use status='created' to find unscheduled drafts. Returns id+status+scheduledAt by default; use detail='medium' or 'full' for more fields. For a single post use get_post. Published posts carry a `metrics` block (detail='full' = impressions, reactions, comments, shares, clicks, engagementRate, measuredAt, deletedOnPlatform, duplicateOf; detail='medium' = impressions, reactions, likes, comments, engagementRate, deletedOnPlatform, duplicateOf); null means the platform doesn't provide it, 0 is measured zero. For account-level or ranked metrics use social_performance / social_post_performance.",
       "Pagination is offset-based: pass limit and offset. The response includes a `pagination` object ({ total, limit, offset, hasMore }) — keep adding the previous limit to offset while hasMore is true to page through all results.",
       "from/to filter by when the post is scheduled/published (postAt) — use these for \"posts happening in this window\", e.g. get_calendar-style queries. createdFrom/createdTo filter by when the post row was created (createdAt) — use these for \"posts authored in this window\", independent of when they run. Combine both pairs to scope on both axes at once.",
       "from/to must be UTC ISO 8601 with a literal 'Z' suffix, e.g. 2026-03-11T09:00:00Z — a numeric offset like +02:00 is rejected. createdFrom/createdTo accept either a 'Z' suffix or a numeric offset, e.g. 2026-03-11T09:00:00+02:00.",
@@ -410,7 +422,7 @@ export function registerPostTools(server: McpServer) {
   // ── View post ─────────────────────────────────────────────────────────────
   server.tool(
     "get_post",
-    "View the full content and status of a single post. Use detail='short'|'medium'|'full' to control verbosity (default full). Multi-variation posts expose a `variations` array (all variations live on one postId). Output shows the final voice-rewritten content by default; pass includeOriginal=true to also see the pre-rewrite draft. Includes contentReviewUrl: a direct link to read and approve the generated body, and editInVisualEditor: a direct URL to edit the post in the visual editor.",
+    "View the full content and status of a single post. Use detail='short'|'medium'|'full' to control verbosity (default full). Multi-variation posts expose a `variations` array (all variations live on one postId). Output shows the final voice-rewritten content by default; pass includeOriginal=true to also see the pre-rewrite draft. Published posts include a `metrics` block (impressions, reactions, likes, comments, shares, clicks, engagementRate, measuredAt, deletedOnPlatform, duplicateOf; null = not provided by the platform, 0 = measured zero; metrics is null for drafts/scheduled posts) at detail='full'; detail='medium' has a compact subset. Includes contentReviewUrl: a direct link to read and approve the generated body, and editInVisualEditor: a direct URL to edit the post in the visual editor.",
     {
       postId: z.string().describe("Post ID"),
       detail: detailParam("full"),

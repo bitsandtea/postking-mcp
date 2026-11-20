@@ -8,9 +8,9 @@ The official [Model Context Protocol](https://modelcontextprotocol.io) server fo
 
 Connect Claude (Desktop, Cursor, or any MCP client) to your PostKing account and manage your entire content operation through conversation — generate posts, schedule them, repurpose URLs into social content, write and publish blog articles, generate landing pages and side pages, run SEO / GEO research and drafting, manage your asset library and weekly posting schedule, handle domains and API keys, and more.
 
-The server exposes **294 tools across 34 modules** — full parity with the `postking-cli`.
+The server exposes **343 tools across 42 modules** — full parity with the `postking-cli`.
 
-> **Transport note:** All 294 tools are registered on both transports, including on the remote HTTP transport (`mcp.postking.app`). The 4 authentication tools (`login_start`, `login_complete`, `logout`, `whoami`) stay registered there too — they just explain the OAuth bearer-token model instead of running a device-code flow, since that transport is already authenticated before any tool call happens.
+> **Transport note:** All 343 tools are registered on both transports, including on the remote HTTP transport (`mcp.postking.app`). The 4 authentication tools (`login_start`, `login_complete`, `logout`, `whoami`) stay registered there too — they just explain the OAuth bearer-token model instead of running a device-code flow, since that transport is already authenticated before any tool call happens.
 
 ## Get connected
 
@@ -101,6 +101,8 @@ _Available on stdio/local transport only. Remote HTTP transport authenticates vi
 | Tool | Description |
 |------|-------------|
 | `list_brands` | List all brands on your account |
+| `list_brand_access` | List every brand you own or admin and whether this connection can reach it (`accessible`); `unrestricted: true` = all brands reachable |
+| `request_brand_access` | Ask for more brands on this connection — returns a `confirmUrl` the user must open and confirm; nothing changes until they do |
 | `set_active_brand` | Set the default brand for this session |
 | `get_brand_info` | View brand profile — tone, audience, themes |
 | `create_brand` | Create a brand manually (step 1 of manual onboarding) |
@@ -152,7 +154,10 @@ _Available on stdio/local transport only. Remote HTTP transport authenticates vi
 ### Social accounts
 | Tool | Description |
 |------|-------------|
-| `check_social_accounts` | List connected and disconnected platforms |
+| `check_social_accounts` | List the brand's social accounts with status (connected / token_expired / sync_failing / ...), handle and accountId — check before posting |
+| `social_performance` | Social performance readout across accounts — followers, posts, impressions, engagement rate vs previous period, Pulse, per-account status, top posts, cadence. Free |
+| `social_account_history` | Follower / impressions / engagements / posts history for one account, day/week/month buckets |
+| `social_post_performance` | Per-post metrics, sortable and paged (impressions, reactions, comments, engagementRate). `get_post`/`list_posts` also carry a `metrics` block |
 | `generate_connect_link` | Get a secure OAuth link to connect a platform |
 | `disconnect_social_account` | Disconnect a social account |
 

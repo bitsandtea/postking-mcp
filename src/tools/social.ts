@@ -4,29 +4,45 @@ import { api } from "../client.js";
 import { requireBrandId } from "../state.js";
 import { detailParam, projectList, type Projector } from "../detail.js";
 
-function slimAccount(a: any) {
-  return { id: a.id, platform: a.platform, name: a.name ?? a.username, connected: a.connected ?? a.status };
+type Row = Record<string, unknown>;
+
+function pickKeys(o: Row, keys: string[]): Row {
+  const out: Row = {};
+  for (const k of keys) if (o[k] !== undefined) out[k] = o[k];
+  return out;
+}
+
+const SHORT_KEYS = ["accountId", "platform", "type", "handle", "status"];
+const MEDIUM_KEYS = [...SHORT_KEYS, "name", "followers", "lastSyncAt", "statusSince"];
+
+/** The route returns { success, accounts: [...] }; tolerate a bare array too. */
+function unwrapAccounts(data: unknown): Row[] {
+  const list = Array.isArray(data)
+    ? data
+    : data && typeof data === "object" && Array.isArray((data as Row).accounts)
+      ? ((data as Row).accounts as unknown[])
+      : [];
+  return list.filter((a): a is Row => !!a && typeof a === "object");
 }
 
 export function registerSocialTools(server: McpServer) {
   server.tool(
     "check_social_accounts",
-    "List all connected and disconnected social accounts for the active brand. Lists default short; pass detail=medium/full for more fields. Run before posting to confirm platform availability.",
+    [
+      "List the brand's social accounts with their health: every active account, INCLUDING ones that need a reconnect (status token_expired | sync_failing | disconnected | session_invalid). Check `status` before posting — only `connected` accounts can publish; for others call generate_connect_link to reconnect.",
+      "Returns accountId (use it with social_account_history / social_post_performance), platform, type (personal | company | page), handle, status. detail=medium adds name, followers, lastSyncAt, statusSince; detail=full adds lastError, metricsAvailable (which metrics the platform reports: followers, postImpressions, pageImpressions, pageEngagements), connectedAt and isDefaultForPlatform. For metrics use social_performance.",
+    ].join(" "),
     {
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
       detail: detailParam("short"),
     },
     async ({ brandId, detail }) => {
       const id = requireBrandId(brandId);
-      const data = await api.get<unknown[]>(`/api/agent/v1/brands/${id}/social-accounts`);
-      const raw = Array.isArray(data) ? data : [];
-      const proj: Projector<unknown> = {
-        short: (a) => ({
-          id: (a as any).id,
-          platform: (a as any).platform,
-          connected: (a as any).connected ?? (a as any).status,
-        }),
-        medium: (a) => slimAccount(a as any),
+      const data = await api.get<unknown>(`/api/agent/v1/brands/${id}/social-accounts`);
+      const raw = unwrapAccounts(data);
+      const proj: Projector<Row> = {
+        short: (a) => pickKeys(a, SHORT_KEYS),
+        medium: (a) => pickKeys(a, MEDIUM_KEYS),
       };
       const text = JSON.stringify({ count: raw.length, detail, accounts: projectList(detail, raw, proj) });
       return { content: [{ type: "text" as const, text }] };
