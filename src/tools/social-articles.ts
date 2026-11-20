@@ -92,6 +92,7 @@ const listProj: Projector<Record<string, unknown>> = {
     targetKeyword: a.targetKeyword ?? null,
     publishedUrl: a.publishedUrl ?? null,
     createdAt: a.createdAt,
+    metrics: a.metrics ?? null,
   }),
 };
 
@@ -175,7 +176,8 @@ export function registerSocialArticleTools(server: McpServer) {
     "list_social_articles",
     [
       "List the brand's LinkedIn/X long-form articles, optionally filtered by platform and status.",
-      "short {id,platform,title,status}; medium adds wordCount, targetKeyword, publishedUrl, createdAt; full = raw (includes bodies). Use get_social_article for the paste kit.",
+      "short {id,platform,title,status}; medium adds wordCount, targetKeyword, publishedUrl, createdAt, metrics; full = raw (includes bodies). Use get_social_article for the paste kit.",
+      "Each article has a `metrics` field, always null today: PostKing does not collect views or reactions from LinkedIn Pulse / X articles (the response's `metricsNote` says so) — null means not collected, not zero. Do not report article performance from this tool.",
     ].join(" "),
     {
       platform: platformEnum.optional().describe("Filter by platform."),
@@ -191,7 +193,7 @@ export function registerSocialArticleTools(server: McpServer) {
       const q = qs.toString();
       const data = await api.get<any>(`/api/agent/v1/brands/${id}/social-articles${q ? `?${q}` : ""}`);
       const rows = (Array.isArray(data?.articles) ? data.articles : []) as Record<string, unknown>[];
-      return { content: [{ type: "text" as const, text: JSON.stringify({ articles: projectList(detail, rows, listProj), count: rows.length }) }] };
+      return { content: [{ type: "text" as const, text: JSON.stringify({ articles: projectList(detail, rows, listProj), count: rows.length, ...(typeof data?.metricsNote === "string" ? { metricsNote: data.metricsNote } : {}) }) }] };
     }
   );
 

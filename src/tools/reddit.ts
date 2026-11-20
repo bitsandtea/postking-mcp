@@ -299,8 +299,9 @@ export function registerRedditTools(server: McpServer) {
     "reddit_list_posts",
     [
       "List saved Reddit posts (outputs of reddit_rewrite). Cursor-paginated.",
-      "Returns { posts: [{ id, platform, content, outputData, sessionId, voiceId, createdAt }], nextCursor }.",
+      "Returns { posts: [{ id, platform, content, outputData, sessionId, voiceId, createdAt, metrics }], nextCursor }.",
       "outputData contains: redditTitle, body, notes, wordCount, angle, length, subreddit, variationIndex.",
+      "Each post also has `metrics` once it has been published and synced from Reddit: { views (Reddit's approximate count, null if Reddit showed none), viewsText, upvotes (net score), upvoteRatio, comments, opReplies (our replies in the thread), subreddit, permalink, postedAt, status live|removed|hidden|deleted, lastSyncedAt }. metrics null = not published/synced yet (not zero). For rollups and trends use reddit_performance.",
       "Flow step 4 of 4: pool → suggest → rewrite → LIST_POSTS.",
     ].join(" "),
     {

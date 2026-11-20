@@ -8,6 +8,7 @@ import {
   SOCIAL_PERFORMANCE_SECTIONS,
   shapeAccountHistory,
   shapeSocialPerformance,
+  shapeSocialPostDetail,
   shapeSocialPosts,
 } from "./social-performance-shape.js";
 
@@ -32,10 +33,10 @@ export function registerSocialPerformanceTools(server: McpServer) {
     "social_performance",
     [
       "Social media performance readout for the brand across all connected accounts: followers, posts published, impressions, engagements and engagementRate (each with the previous equal-length period for comparison), a Pulse score (posting activity this week vs last), per-account breakdown with connection status, top posts, a time series, and posting cadence vs target. Free, read-only. Use it for success stories, a weekly health check, and content decisions (what to post more of).",
-      `Pick slices with \`sections\` (default all): ${SOCIAL_PERFORMANCE_SECTIONS.join(", ")}. \`platform\` filters to one platform (x, facebook, linkedin = personal profile, linkedin_company, threads, instagram). \`days\` is 7, 28, 90, 180 or 480 (default 28).`,
+      `Pick slices with \`sections\`: ${SOCIAL_PERFORMANCE_SECTIONS.join(", ")} (default: summary, accounts, topPosts, timeseries, cadence). Opt-in sections for "what works" questions: bottomPosts (worst measured posts, mirror of topPosts), bestTimes (UTC day-of-week x hour cells per platform, each with its post count and lowSample flag — thin cells are anecdotes, trust high-count cells), byTheme and byFormat (grouped posts, impressions, engagements, engagementRate + engagementRateBasis, medianEngagementRate; format = text|image|carousel|video|poll|reply; key null = not stored). Reach is not collected, so it is never returned. \`platform\` filters to one platform (x, facebook, linkedin = personal profile, linkedin_company, threads, instagram). \`days\` is 7, 28, 90, 180 or 480 (default 28).`,
       SEMANTICS,
-      "Check each account's `status` (connected | token_expired | sync_failing | disconnected | session_invalid): non-connected accounts have stale numbers and need a reconnect (generate_connect_link). `previousCoverage` says whether the comparison period is fully, partly or not covered by stored follower history.",
-      "detail: short (default) = headline summary, compact accounts, top 3 posts, compact cadence, no time series (cheap enough to call for many brands); medium = adds per-account detail, 5 top posts, last 12 time-series buckets and notes; full = the raw response. For one account's follower/post history use `social_account_history`; for a ranked, paged post list use `social_post_performance`. For search traffic use `search_performance`; for Reddit use `reddit_performance`.",
+      "Each account also has `metricsStatus` (ok | sync_failing | not_collected) and `metricsError`: sync_failing means post metrics are null because the metrics sync errors (e.g. Facebook missing the pages_read_engagement permission), independent of the connection `status`; tell the user and do not read the nulls as zero. Check each account's `status` (connected | token_expired | sync_failing | disconnected | session_invalid): non-connected accounts have stale numbers and need a reconnect (generate_connect_link). `previousCoverage` says whether the comparison period is fully, partly or not covered by stored follower history.",
+      "detail: short (default) = headline summary, compact accounts, top 3 posts, compact cadence, no time series, and for opt-in sections the top 3 bestTimes cells per platform and top 5 byTheme/byFormat groups (cheap enough to call for many brands); medium = adds per-account detail, 5 top posts, last 12 time-series buckets, top 10 cells/groups and notes; full = the raw response. For one account's follower/post history use `social_account_history`; for a ranked, paged post list use `social_post_performance`. For search traffic use `search_performance`; for Reddit use `reddit_performance`.",
     ].join(" "),
     {
       days: DAYS.optional().default(28).describe("Lookback window in days: 7, 28, 90, 180, or 480. Default 28."),
@@ -43,7 +44,7 @@ export function registerSocialPerformanceTools(server: McpServer) {
       sections: z
         .array(z.enum(SOCIAL_PERFORMANCE_SECTIONS))
         .optional()
-        .describe("Which slices to return. Default all (summary, accounts, topPosts, timeseries, cadence)."),
+        .describe("Which slices to return. Default summary, accounts, topPosts, timeseries, cadence; add bottomPosts, bestTimes, byTheme, byFormat when needed."),
       detail: detailParam("short"),
       brandId: brandOpt,
     },
@@ -90,12 +91,14 @@ export function registerSocialPerformanceTools(server: McpServer) {
   server.tool(
     "social_post_performance",
     [
-      "Per-post social metrics (impressions, reactions, comments, shares, clicks, engagementRate) for posts published in the window — PostKing-published posts plus crawled LinkedIn company posts. Sort and page to find the best/worst performers, then decide what to post more of. Free, read-only. For a single known post use `get_post` (detail=full has a `metrics` block).",
+      "Per-post social metrics (impressions, reactions, comments, shares, clicks, engagementRate) for posts published in the window — PostKing-published posts plus crawled LinkedIn company posts. Sort and page to find the best/worst performers, then decide what to post more of. Free, read-only. Each row also carries what the post was made with — theme, format (text|image|carousel|video|poll|reply), visualType and hook (first line) at detail=medium+ — so you can compare winners side by side without a call per post; null = not stored (hand-written posts, crawled posts).",
+      "Pass `postId` for ONE post instead of a list: returns its metrics, what it was made with (theme + whether it is a library or custom theme, intent, hook, format, visualType + visualSource stock|generated|library|web|template|brand_asset|mixed, voice name), the platform engagement marks (T12/T24/T36/T48/T96 hours after publish, when captured) and the metric sync history. With postId, days/platform/accountId/sort/limit/offset are ignored. Example — \"which 5 posts did best last week on LinkedIn and what do they share?\": social_post_performance { days: 7, platform: \"linkedin\", sort: \"engagementRate\", limit: 5, detail: \"medium\" } (use sort impressions when LinkedIn engagement rates rest on tiny impressions), then compare theme/format/visualType/hook across the rows; call again with postId for any row you want to look into.",
       "`sort` = impressions | engagementRate | reactions | publishedAt (default publishedAt; always descending, null values last). `limit` 1-200 (default 10), `offset` for paging — the response's `pagination.hasMore` says when to stop. Filter with `platform` and/or `accountId`. `days` is 7, 28, 90, 180 or 480 (default 28).",
       SEMANTICS,
       "`shares`/`clicks` are null when the platform doesn't report them; `quotes` = X quote tweets. A post with `measuredAt: null` has never been synced (all metrics null). `deletedOnPlatform` = a LinkedIn company post deleted after we crawled it. detail: short = id, platform, date, 80-char preview and the headline metrics; medium adds accountId, postLink, shares, quotes, clicks, measuredAt, deletedOnPlatform, duplicateOf, note; full = raw.",
     ].join(" "),
     {
+      postId: z.string().optional().describe("Return ONE post's performance + what it was made with (a PostKing post id, or a crawled LinkedIn company post id from this tool). Other filters are ignored."),
       days: DAYS.optional().default(28).describe("Lookback window in days: 7, 28, 90, 180, or 480. Default 28."),
       platform: PLATFORM.optional().describe("Restrict to one platform."),
       accountId: z.string().optional().describe("Only posts published from this connected account."),
@@ -105,8 +108,12 @@ export function registerSocialPerformanceTools(server: McpServer) {
       detail: detailParam("short"),
       brandId: brandOpt,
     },
-    async ({ days, platform, accountId, sort, limit, offset, detail, brandId }) => {
+    async ({ postId, days, platform, accountId, sort, limit, offset, detail, brandId }) => {
       const id = requireBrandId(brandId);
+      if (postId) {
+        const one = await api.get<unknown>(`/api/agent/v1/brands/${id}/social-performance/posts/${encodeURIComponent(postId)}`);
+        return json(shapeSocialPostDetail(one, detail));
+      }
       const qs = new URLSearchParams({ days: String(days), sort, limit: String(limit), offset: String(offset) });
       if (platform) qs.set("platform", platform);
       if (accountId) qs.set("accountId", accountId);

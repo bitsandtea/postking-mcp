@@ -155,9 +155,9 @@ _Available on stdio/local transport only. Remote HTTP transport authenticates vi
 | Tool | Description |
 |------|-------------|
 | `check_social_accounts` | List the brand's social accounts with status (connected / token_expired / sync_failing / ...), handle and accountId — check before posting |
-| `social_performance` | Social performance readout across accounts — followers, posts, impressions, engagement rate vs previous period, Pulse, per-account status, top posts, cadence. Free |
+| `social_performance` | Social performance readout across accounts — followers, posts, impressions, engagement rate vs previous period, Pulse, per-account status, top posts, cadence. Opt-in `sections` for what works: `bottomPosts`, `bestTimes` (UTC day × hour cells with post counts), `byTheme`, `byFormat`. Free |
 | `social_account_history` | Follower / impressions / engagements / posts history for one account, day/week/month buckets |
-| `social_post_performance` | Per-post metrics, sortable and paged (impressions, reactions, comments, engagementRate). `get_post`/`list_posts` also carry a `metrics` block |
+| `social_post_performance` | Per-post metrics, sortable and paged (impressions, reactions, comments, engagementRate) with theme/format/visualType/hook per row; pass `postId` for one post's metrics + what it was made with (theme, hook, voice, visual) + engagement marks over time. `get_post`/`list_posts` also carry a `metrics` block; `list_posts` takes `sort` = engagementRate \| impressions \| reactions. `reddit_list_posts` carries Reddit views/upvotes/comments; `list_social_articles` has `metrics: null` (not collected) |
 | `generate_connect_link` | Get a secure OAuth link to connect a platform |
 | `disconnect_social_account` | Disconnect a social account |
 

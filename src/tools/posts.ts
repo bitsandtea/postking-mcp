@@ -139,6 +139,17 @@ const postProjector: Projector<Record<string, unknown>> = {
   medium: (p) => ({ ...slimPost(p), ...mediumMetrics(p) }),
 };
 
+/** With `sort`, short rows (id/status/date only) also carry the headline metrics the ranking used. */
+function withSortMetrics(rows: unknown, posts: Record<string, unknown>[], sort: string | undefined, detail: string): unknown {
+  if (!sort || detail !== "short" || !Array.isArray(rows)) return rows;
+  return rows.map((r, i) => {
+    const m = posts[i]?.metrics;
+    if (!m || typeof m !== "object" || !r || typeof r !== "object") return r;
+    const src = m as Record<string, unknown>;
+    return { ...(r as Record<string, unknown>), metrics: { impressions: src.impressions, reactions: src.reactions, comments: src.comments, engagementRate: src.engagementRate } };
+  });
+}
+
 export function registerPostTools(server: McpServer) {
   // ── Generate post (AI) ────────────────────────────────────────────────────
   server.tool(
@@ -374,7 +385,7 @@ export function registerPostTools(server: McpServer) {
   server.tool(
     "list_posts",
     [
-      "List recent posts and drafts. Filter by status or platform. Use status='created' to find unscheduled drafts. Returns id+status+scheduledAt by default; use detail='medium' or 'full' for more fields. For a single post use get_post. Published posts carry a `metrics` block (detail='full' = impressions, reactions, comments, shares, clicks, engagementRate, measuredAt, deletedOnPlatform, duplicateOf; detail='medium' = impressions, reactions, likes, comments, engagementRate, deletedOnPlatform, duplicateOf); null means the platform doesn't provide it, 0 is measured zero. For account-level or ranked metrics use social_performance / social_post_performance.",
+      "List recent posts and drafts. Filter by status or platform. Use status='created' to find unscheduled drafts. Returns id+status+scheduledAt by default; use detail='medium' or 'full' for more fields. For a single post use get_post. Published posts carry a `metrics` block (detail='full' = impressions, reactions, comments, shares, clicks, engagementRate, measuredAt, deletedOnPlatform, duplicateOf; detail='medium' = impressions, reactions, likes, comments, engagementRate, deletedOnPlatform, duplicateOf); null means the platform doesn't provide it, 0 is measured zero. For account-level or ranked metrics use social_performance / social_post_performance. Pass `sort` (engagementRate | impressions | reactions) to rank published posts by performance instead of newest-first — e.g. status omitted, sort='engagementRate', from/to for the window, detail='medium'.",
       "Pagination is offset-based: pass limit and offset. The response includes a `pagination` object ({ total, limit, offset, hasMore }) — keep adding the previous limit to offset while hasMore is true to page through all results.",
       "from/to filter by when the post is scheduled/published (postAt) — use these for \"posts happening in this window\", e.g. get_calendar-style queries. createdFrom/createdTo filter by when the post row was created (createdAt) — use these for \"posts authored in this window\", independent of when they run. Combine both pairs to scope on both axes at once.",
       "from/to must be UTC ISO 8601 with a literal 'Z' suffix, e.g. 2026-03-11T09:00:00Z — a numeric offset like +02:00 is rejected. createdFrom/createdTo accept either a 'Z' suffix or a numeric offset, e.g. 2026-03-11T09:00:00+02:00.",
@@ -388,10 +399,11 @@ export function registerPostTools(server: McpServer) {
       to: z.string().datetime().optional().describe("Only posts scheduled/published at or before this UTC datetime (postAt), e.g. 2026-03-18T00:00:00Z."),
       createdFrom: z.string().datetime({ offset: true }).optional().describe("Only posts created at or after this datetime (createdAt — when the row was made, not when it runs). ISO 8601 with a 'Z' suffix or numeric offset, e.g. 2026-03-11T00:00:00Z or 2026-03-11T00:00:00+02:00."),
       createdTo: z.string().datetime({ offset: true }).optional().describe("Only posts created at or before this datetime (createdAt — when the row was made, not when it runs). ISO 8601 with a 'Z' suffix or numeric offset."),
+      sort: z.enum(["engagementRate", "impressions", "reactions"]).optional().describe("Rank PUBLISHED posts by their latest metrics, descending, posts with no value for that metric last (default order: newest first). Only published posts are returned (do not combine with a status other than 'posted'); blogs are not included. Ranks the newest 1000 matching posts. Use from/to to scope to a window."),
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
       detail: detailParam("short"),
     },
-    async ({ status, platform, limit, offset, from, to, createdFrom, createdTo, brandId, detail }) => {
+    async ({ status, platform, limit, offset, from, to, createdFrom, createdTo, sort, brandId, detail }) => {
       const id = requireBrandId(brandId);
       const params = new URLSearchParams();
       if (status) params.set("status", status);
@@ -402,6 +414,7 @@ export function registerPostTools(server: McpServer) {
       if (to) params.set("to", to);
       if (createdFrom) params.set("createdFrom", createdFrom);
       if (createdTo) params.set("createdTo", createdTo);
+      if (sort) params.set("sort", sort);
       const qs = params.toString() ? `?${params}` : "";
       const data = await api.get<unknown>(`/api/agent/v1/brands/${id}/posts${qs}`);
       const posts = unwrapPosts(data);
@@ -411,7 +424,8 @@ export function registerPostTools(server: McpServer) {
         count: posts.length,
         detail,
         ...(pagination ? { pagination } : {}),
-        posts: projectList(detail, posts, postProjector),
+        posts: withSortMetrics(projectList(detail, posts, postProjector), posts, sort, detail),
+        ...(sort && Array.isArray(raw.notes) ? { notes: raw.notes } : {}),
       });
       return {
         content: [{ type: "text" as const, text }],

@@ -13,7 +13,7 @@ function pickKeys(o: Row, keys: string[]): Row {
 }
 
 const SHORT_KEYS = ["accountId", "platform", "type", "handle", "status"];
-const MEDIUM_KEYS = [...SHORT_KEYS, "name", "followers", "lastSyncAt", "statusSince"];
+const MEDIUM_KEYS = [...SHORT_KEYS, "name", "followers", "lastSyncAt", "statusSince", "metricsStatus", "metricsError", "metricsStaleSince"];
 
 /** The route returns { success, accounts: [...] }; tolerate a bare array too. */
 function unwrapAccounts(data: unknown): Row[] {
@@ -30,7 +30,7 @@ export function registerSocialTools(server: McpServer) {
     "check_social_accounts",
     [
       "List the brand's social accounts with their health: every active account, INCLUDING ones that need a reconnect (status token_expired | sync_failing | disconnected | session_invalid). Check `status` before posting — only `connected` accounts can publish; for others call generate_connect_link to reconnect.",
-      "Returns accountId (use it with social_account_history / social_post_performance), platform, type (personal | company | page), handle, status. detail=medium adds name, followers, lastSyncAt, statusSince; detail=full adds lastError, metricsAvailable (which metrics the platform reports: followers, postImpressions, pageImpressions, pageEngagements), connectedAt and isDefaultForPlatform. For metrics use social_performance.",
+      "Returns accountId (use it with social_account_history / social_post_performance), platform, type (personal | company | page), handle, status. detail=medium adds name, followers, lastSyncAt, statusSince, metricsStatus (ok | sync_failing | not_collected: whether post metrics are syncing, separate from `status`) metricsError and metricsStaleSince (when metrics stopped updating, if older than ~30 days); detail=full adds lastError, metricsAvailable (which metrics the platform reports: followers, postImpressions, pageImpressions, pageEngagements), connectedAt and isDefaultForPlatform. For metrics use social_performance.",
     ].join(" "),
     {
       brandId: z.string().optional().describe("Brand ID (uses active brand if omitted)"),
