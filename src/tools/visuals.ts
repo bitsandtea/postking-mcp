@@ -5,6 +5,7 @@ import { basename } from "node:path";
 import { z } from "zod";
 import { api } from "../client.js";
 import { requireBrandId } from "../state.js";
+import { classifyDirectUpload, oversizeBase64Message, uploadDirect } from "../assetUpload.js";
 import { detailParam, project, projectList, truncate, type Projector } from "../detail.js";
 
 const brandOpt = z.string().optional().describe("Brand ID (defaults to active brand)");
@@ -17,7 +18,9 @@ const brandOpt = z.string().optional().describe("Brand ID (defaults to active br
 // base64 string, and make one existing-shape call to PostKing — identical to
 // what `upload_asset` already does.
 const UPLOAD_TTL_MS = 10 * 60 * 1000; // 10 minutes
-const MAX_BUFFERED_BASE64_CHARS = 20 * 1024 * 1024; // ~20MB of base64 chars
+// 70M chars of base64 ≈ 52MB of file: enough for the 50MB document cap. Videos
+// (up to 500MB) are far beyond this and must use upload_asset with filePath.
+const MAX_BUFFERED_BASE64_CHARS = 70 * 1024 * 1024;
 
 interface PendingUpload {
   fileName?: string;
@@ -181,6 +184,7 @@ export function registerVisualTools(server: McpServer) {
       "fileBase64 is still supported for remote/inline use where no local path is available.",
       "For large files over the remote/HTTP transport, a single fileBase64 string can get truncated crossing the LLM→tool_call boundary — use the chunked flow instead: upload_asset_begin → upload_asset_chunk (× N) → upload_asset_finish.",
       "Provide exactly one of filePath or fileBase64.",
+      "Videos (mp4, webm, mov, avi, m4v; up to 500MB) and documents (pdf, doc, docx, txt; up to 50MB) are uploaded directly to storage via a presigned URL, so use filePath for them — they are too big for fileBase64/chunked transfer over the LLM boundary. Images and other files are sent as base64 and must be 10MB or smaller (larger ones are rejected locally).",
       "Returns the new asset ID and URL.",
     ].join(" "),
     {
@@ -207,7 +211,8 @@ export function registerVisualTools(server: McpServer) {
 
       const id = requireBrandId(brandId);
 
-      let resolvedFileBase64: string;
+      let resolvedFileBase64 = "";
+      let fileBytes: Buffer | undefined;
       let resolvedFileName: string | undefined = fileName;
       let fileSize: number;
       let sha256: string;
@@ -225,7 +230,8 @@ export function registerVisualTools(server: McpServer) {
         resolvedFileName = resolvedFileName ?? basename(filePath);
         fileSize = buffer.byteLength;
         sha256 = createHash("sha256").update(buffer).digest("hex");
-        resolvedFileBase64 = buffer.toString("base64");
+        fileBytes = buffer;
+        if (!classifyDirectUpload(resolvedFileName, mimeType)) resolvedFileBase64 = buffer.toString("base64");
       } else {
         const buffer = Buffer.from(fileBase64 as string, "base64");
         const mismatch = imageMagicMismatch(buffer, mimeType);
@@ -243,6 +249,26 @@ export function registerVisualTools(server: McpServer) {
         sha256 = createHash("sha256").update(buffer).digest("hex");
         resolvedFileBase64 = fileBase64 as string;
       }
+
+      const direct = classifyDirectUpload(resolvedFileName, mimeType);
+      if (direct) {
+        const bytes = filePath ? fileBytes! : Buffer.from(fileBase64 as string, "base64");
+        const res = await uploadDirect({
+          post: (p, b) => api.post(p, b),
+          brandId: id,
+          bytes,
+          fileName: resolvedFileName ?? "upload",
+          name,
+          description,
+          tags,
+          ...direct,
+        });
+        const r = res as any;
+        const a = r?.asset ?? r;
+        return { content: [{ type: "text" as const, text: JSON.stringify(slimAsset(a), null, 2) }] };
+      }
+      const tooBig = oversizeBase64Message(fileSize);
+      if (tooBig) return { content: [{ type: "text" as const, text: tooBig }] };
 
       const data = await api.post<any>(`/api/agent/v1/brands/${id}/assets`, {
         fileBase64: resolvedFileBase64,
@@ -266,6 +292,7 @@ export function registerVisualTools(server: McpServer) {
       "Start a chunked asset upload. Use this instead of upload_asset's fileBase64 param for large files over the remote/HTTP transport, where a single large base64 string can get truncated crossing the LLM→tool_call boundary.",
       "Flow: upload_asset_begin (once) → upload_asset_chunk (once per chunk, in order) → upload_asset_finish (once).",
       "Returns an uploadId that expires after 10 minutes of inactivity.",
+      "Limits: images/other files 10MB; documents (pdf, doc, docx, txt) up to ~50MB are forwarded directly to storage at finish. Videos (up to 500MB) are too large to chunk — use upload_asset with filePath instead.",
     ].join(" "),
     {
       fileName: z.string().describe("Original file name including extension, e.g. 'logo.png'."),
@@ -408,6 +435,28 @@ export function registerVisualTools(server: McpServer) {
             },
           ],
         };
+      }
+
+      const direct = classifyDirectUpload(entry.fileName, entry.mimeType);
+      if (direct) {
+        const res = (await uploadDirect({
+          post: (p, b) => api.post(p, b),
+          brandId: entry.brandId as string,
+          bytes: decoded,
+          fileName: entry.fileName ?? "upload",
+          name: entry.name,
+          description: entry.description,
+          tags: entry.tags,
+          ...direct,
+        })) as any;
+        uploads.delete(uploadId);
+        const a = res?.asset ?? res;
+        return { content: [{ type: "text" as const, text: JSON.stringify(slimAsset(a), null, 2) }] };
+      }
+      const tooBig = oversizeBase64Message(fileSize);
+      if (tooBig) {
+        uploads.delete(uploadId);
+        return { content: [{ type: "text" as const, text: tooBig }] };
       }
 
       const data = await api.post<any>(`/api/agent/v1/brands/${entry.brandId}/assets`, {
