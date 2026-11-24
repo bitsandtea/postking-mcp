@@ -528,12 +528,15 @@ What should the landing page be about?`,
 **Step 1 — Discover your brand's subreddits** (\`reddit_generate_pool\` → \`reddit_get_pool\`)
 This is **brand-level subreddit discovery** — it analyzes the brand (no specific content needed) and produces a scored pool of subreddits where the brand would be relevant and welcome.
 - \`reddit_generate_pool\` is async — returns \`{ operationId }\`. Poll \`get_job\` until \`state=completed\`. Only needed once per brand (or to refresh).
-- \`reddit_get_pool\` returns the scored pool, sorted most-relevant first. **This already answers "which / what / top N subreddits should my brand post in?"** — pass \`top\` for a top-N list. NO content required.
+- \`reddit_get_pool\` returns the pool in the API's order (subs that allow promotion first, then by brand fit). Each row has \`brand_fit\` (0-10), \`activity\` ("last post N days ago"), \`tiny\` (under 500 members) and a \`promo_label\` for restricted subs (e.g. "Megathread only"). **This already answers "which / what / top N subreddits should my brand post in?"** — pass \`top\` for a top-N list. NO content required.
+- Subs under 500 members or with no post in 30 days are flagged and skipped by \`reddit_suggest\`; tell the user plainly when a sub is one of those.
 
 **Step 2 — Place a SPECIFIC piece of content** (\`reddit_suggest\`)
 This is the **content-level** step — use it only when you have a particular article/text and want the best subreddits FOR THAT CONTENT, each with multiple posting angles.
 - Given a blog article (\`postId\`) or raw text (\`title + content\`), returns up to 8 subreddits from the pool.
-- Synchronous, 0 credits. Returns \`{ suggestions: [{ subreddit, subscribers, posting_style, promotion_mode, buyer_intent, match_score, reason, rule_to_watch, angles: [{ angle_type, title, hook }] }] }\` — each suggestion carries 2-3 diverse angles.
+- Synchronous, 0 credits. Returns \`{ suggestions: [{ subreddit, match_score, promo_label, restrictions, activity, past_removals, reason, rule_to_watch, angles: [{ angle_type, title, hook }] }], excluded, removal_history }\` — each suggestion carries 2-3 diverse angles. Subs that allow promotion come first; restricted ones (no promotion, megathread only) follow, labelled.
+- Pass \`founderContext\` only with real first-person facts the user gave. Without it, angles use customer or observation framing, never an invented personal story.
+- If \`removal_history\` is \`never_synced\`, removals are not tracked until the browser extension has synced the user's Reddit account.
 - Not required just to see the brand's subreddits — for that, use \`reddit_get_pool\`. Use the \`subreddit\` field plus an angle's \`title\`/\`hook\` from a suggestion result in Step 3.
 
 **Step 3 — Rewrite for the subreddit** (\`reddit_rewrite\`)
@@ -541,9 +544,10 @@ Rewrites your content as a Reddit-native post for the chosen subreddit, respecti
 - Params: \`subreddit\`, \`voiceId\` (from \`list_voices\`; pass \`"none"\` for no voice), \`sourcePostId\` or \`sourceContent\`.
 - Async — returns \`{ jobId }\`. Poll \`get_job\` until \`state=completed\`.
 - Up to 3 variations per call. Uses credits.
+- Every draft is checked against the subreddit's rules: \`passed\` drafts are saved approved; \`needs_review\` and \`blocked\` drafts are NOT approved and must not be posted as they are (blocked ones name the rule and the quoted words). Approving one anyway needs \`approve_post\` with \`override: true\`, which you send only when the user explicitly says to approve that draft anyway. The result shows \`counts\` and each draft's check.
 
 **Step 4 — Review saved posts** (\`reddit_list_posts\`)
-Lists all saved Reddit post outputs. Each post's \`outputData\` has \`redditTitle\`, \`body\`, \`notes\`, \`subreddit\`, \`angle\`.
+Lists all saved Reddit post outputs. Each post's \`outputData\` has \`redditTitle\`, \`body\`, \`notes\`, \`subreddit\`, \`angle\`, and each post has \`status\` and a \`check\` (passed / needs_review / blocked). Only \`passed\` drafts are ready to post.
 
 **Helper:** \`reddit_global_pool\` — shows how many subreddits are in PostKing's global dataset (informational only).
 

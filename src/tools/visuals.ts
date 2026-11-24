@@ -631,17 +631,18 @@ export function registerVisualTools(server: McpServer) {
   // ── Delete asset ──────────────────────────────────────────────────────────
   server.tool(
     "delete_asset",
-    "Soft-delete an asset from the brand library. Pass confirm: true to proceed.",
+    "Delete an asset from the brand library. Soft-delete by default (removed from the library, file kept). Pass hard: true to also remove the file from storage for good (cannot be undone). Pass confirm: true to proceed.",
     {
       assetId: z.string().describe("Asset ID to delete"),
       confirm: z.literal(true).describe("Must be true to confirm deletion"),
+      hard: z.boolean().optional().describe("true = permanent: also remove the file from storage. Default false (soft-delete)."),
       brandId: brandOpt,
     },
-    async ({ assetId, brandId }) => {
+    async ({ assetId, hard, brandId }) => {
       const id = requireBrandId(brandId);
-      await api.delete(`/api/agent/v1/brands/${id}/assets/${assetId}`);
+      await api.delete(`/api/agent/v1/brands/${id}/assets/${assetId}${hard ? "?hard=true" : ""}`);
       return {
-        content: [{ type: "text" as const, text: `Asset ${assetId} deleted from library.` }],
+        content: [{ type: "text" as const, text: hard ? `Asset ${assetId} deleted and its file removed from storage.` : `Asset ${assetId} removed from library (soft-deleted; file kept).` }],
       };
     }
   );

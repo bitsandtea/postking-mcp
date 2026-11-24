@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { api } from "../client.js";
+import { api, ApiError } from "../client.js";
+import { summarizeCheck } from "./reddit-shape.js";
 import { requireBrandId } from "../state.js";
 import { config } from "../config.js";
 import { detailParam, project, projectList, type Projector } from "../detail.js";
@@ -480,17 +481,42 @@ export function registerPostTools(server: McpServer) {
       "Approve and schedule a draft post. Requires a future datetime.",
       "The scheduledAt must be an ISO 8601 UTC datetime, e.g. 2026-03-11T09:00:00Z.",
       "After approving, the post status becomes 'scheduled'.",
+      "Reddit drafts: a draft whose check is needs_review or blocked is NOT approved and returns CHECK_OVERRIDE_REQUIRED with the reasons. Do NOT retry with override=true unless the user explicitly says to approve that draft anyway.",
     ].join(" "),
     {
       postId: z.string().describe("Post ID to approve"),
       scheduledAt: z.string().datetime().describe("Future ISO 8601 UTC datetime to post at"),
       timezone: z.string().optional().describe("User timezone, e.g. 'America/New_York'"),
+      override: z.boolean().optional().describe("Only for a Reddit draft that failed its check (needs_review or blocked). Pass true only when the user explicitly asked to approve that draft anyway."),
     },
-    async ({ postId, scheduledAt, timezone }) => {
-      const data = await api.post<Record<string, unknown>>(`/api/agent/v1/posts/${postId}/approve`, {
-        postAt: scheduledAt,
-        userTimezone: timezone,
-      });
+    async ({ postId, scheduledAt, timezone, override }) => {
+      let data: Record<string, unknown>;
+      try {
+        data = await api.post<Record<string, unknown>>(`/api/agent/v1/posts/${postId}/approve`, {
+          postAt: scheduledAt,
+          userTimezone: timezone,
+          ...(override ? { override: true } : {}),
+        });
+      } catch (err) {
+        if (err instanceof ApiError && /CHECK_OVERRIDE_REQUIRED/.test(err.message)) {
+          const check = summarizeCheck({ check: err.details?.check });
+          return {
+            isError: true,
+            content: [{
+              type: "text" as const,
+              text: JSON.stringify({
+                code: "CHECK_OVERRIDE_REQUIRED",
+                approved: false,
+                postId,
+                check,
+                instruction:
+                  "This Reddit draft did not pass its check and was NOT approved. Show the user the reasons. Do NOT retry with override=true unless the user explicitly says to approve the draft anyway; otherwise edit or rewrite it.",
+              }),
+            }],
+          };
+        }
+        throw err;
+      }
       const d = data && typeof data === "object" ? data as Record<string, unknown> : {};
       const inner = (d.post && typeof d.post === "object" ? d.post : d) as Record<string, unknown>;
       const confirmation: Record<string, unknown> = {

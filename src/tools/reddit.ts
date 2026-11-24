@@ -4,58 +4,26 @@ import { api } from "../client.js";
 import { config } from "../config.js";
 import { etaFor } from "../etas.js";
 import { requireBrandId } from "../state.js";
-import { detailParam, projectList, truncate, type Projector } from "../detail.js";
+import { detailParam } from "../detail.js";
+import {
+  shapeAddResult,
+  shapeDiscoveryRow,
+  shapeDraftList,
+  shapePoolRow,
+  parseJsonRec,
+  shapeRewriteResult,
+  shapeSuggestion,
+  suggestNotes,
+} from "./reddit-shape.js";
 
 const brandOpt = z.string().optional().describe("Brand ID (defaults to active brand)");
 
-const suggestionProj: Projector<Record<string, unknown>> = {
-  short: (r) => {
-    const angles = Array.isArray(r.angles) ? (r.angles as unknown[]) : [];
-    const first = angles.length > 0 && angles[0] != null && typeof angles[0] === "object"
-      ? (angles[0] as Record<string, unknown>)
-      : null;
-    return {
-      subreddit: r.subreddit,
-      match_score: r.match_score,
-      promotion_mode: r.promotion_mode,
-      buyer_intent: r.buyer_intent,
-      angle: first ? { angle_type: first.angle_type, title: first.title } : null,
-    };
-  },
-  medium: (r) => {
-    const angles = Array.isArray(r.angles)
-      ? (r.angles as unknown[])
-          .filter((a): a is Record<string, unknown> => a != null && typeof a === "object")
-          .map((a) => ({ angle_type: a.angle_type, title: a.title }))
-      : [];
-    return {
-      subreddit: r.subreddit,
-      match_score: r.match_score,
-      promotion_mode: r.promotion_mode,
-      buyer_intent: r.buyer_intent,
-      reason: r.reason,
-      rule_to_watch: r.rule_to_watch,
-      angles,
-    };
-  },
-};
-
-const discoveryProj: Projector<Record<string, unknown>> = {
-  short: (r) => ({
-    display_name: r.display_name,
-    subscribers: r.subscribers,
-    already_in_pool: r.already_in_pool,
-  }),
-  medium: (r) => ({
-    display_name: r.display_name,
-    title: r.title,
-    public_description: truncate(r.public_description, 200),
-    subscribers: r.subscribers,
-    found_via: r.found_via,
-    already_cached: r.already_cached,
-    already_in_pool: r.already_in_pool,
-  }),
-};
+function savedPostIds(outputData: unknown): string[] {
+  const od = parseJsonRec(outputData);
+  const saved = od.saved;
+  const ids = saved != null && typeof saved === "object" ? (saved as Record<string, unknown>).postIds : null;
+  return Array.isArray(ids) ? ids.filter((i): i is string => typeof i === "string") : [];
+}
 
 export function registerRedditTools(server: McpServer) {
   // ── Get saved subreddit pool ──────────────────────────────────────────────
@@ -63,7 +31,8 @@ export function registerRedditTools(server: McpServer) {
     "reddit_get_pool",
     [
       "Returns the brand's pool of relevant subreddits — THIS IS the brand-level subreddit match (each scored).",
-      "Use it to answer 'which/what/top N subreddits should my brand post in?' — NO content needed; results are sorted most-relevant first; pass `top` for a top-N list.",
+      "Use it to answer 'which/what/top N subreddits should my brand post in?' — NO content needed; pass `top` for a top-N list. Rows keep the order the API returns (subs that allow promotion first, then by brand fit); the tool does not re-sort.",
+      "Each row: brand_fit (0-10, how well the community's readers match the brand), subscribers, activity (status + 'last post N days ago'), tiny (under 500 members), promo_policy and promo_label (e.g. 'Megathread only', 'No promotion'; null = promotion allowed), plus warnings. Subs under 500 members or with no post in 30 days are flagged — and skipped by reddit_suggest.",
       "(reddit_suggest is a different, content-specific step.)",
       "Reddit is a repurpose-to-Reddit workflow, NOT a scheduled publishing medium.",
     ].join(" "),
@@ -74,7 +43,7 @@ export function registerRedditTools(server: McpServer) {
         .min(1)
         .max(100)
         .optional()
-        .describe("Return only the top N most-relevant subreddits (results are always sorted most-relevant first)"),
+        .describe("Return only the first N rows, in the order the API returns them (best brand fit first within each promotion tier)"),
       brandId: brandOpt,
     },
     async ({ top, brandId }) => {
@@ -98,23 +67,9 @@ export function registerRedditTools(server: McpServer) {
       const rawSubs = Array.isArray(pool.subreddits)
         ? (pool.subreddits as unknown[]).filter((s): s is Record<string, unknown> => s != null && typeof s === "object")
         : [];
-      const scoreOf = (s: Record<string, unknown>): number => {
-        const combined = typeof s.combined_score === "number" ? s.combined_score : null;
-        const relevance = typeof s.relevance_score === "number" ? s.relevance_score : null;
-        return combined ?? relevance ?? 0;
-      };
-      const sorted = [...rawSubs].sort((a, b) => scoreOf(b) - scoreOf(a));
-      const total = sorted.length;
-      const sliced = top !== undefined ? sorted.slice(0, top) : sorted;
-      const subreddits = sliced.map((s) => ({
-        display_name: s.display_name != null ? String(s.display_name) : null,
-        title: s.title != null ? String(s.title) : null,
-        subscribers: typeof s.subscribers === "number" ? s.subscribers : null,
-        relevance_score: typeof s.relevance_score === "number" ? s.relevance_score : null,
-        combined_score: typeof s.combined_score === "number" ? s.combined_score : null,
-        posting_style: s.posting_style != null ? String(s.posting_style) : null,
-        no_promotion_reason: s.no_promotion_reason != null ? String(s.no_promotion_reason) : null,
-      }));
+      const total = rawSubs.length;
+      const sliced = top !== undefined ? rawSubs.slice(0, top) : rawSubs;
+      const subreddits = sliced.map((r) => shapePoolRow(r));
       return {
         content: [{
           type: "text" as const,
@@ -166,7 +121,9 @@ export function registerRedditTools(server: McpServer) {
     "reddit_suggest",
     [
       "Given a brand's content (a blog post by id, or pasted title+text), return up to 8 best-fit subreddits from the brand's pool, each with 2-3 distinct posting angles (angle type + tailored title + framing hook), plus promotion mode, buyer intent, match score, and the key rule to watch. Use an angle's title/hook to then draft a native post via reddit_rewrite.",
-      "short {subreddit,match_score,promotion_mode,buyer_intent,angle} (angle = first angle only); medium adds reason,rule_to_watch,angles (all angles); full = raw.",
+      "Subs that allow promotion come first, then restricted ones (no promotion, megathread only), each labelled via promo_label with the quoted rule in `restrictions`; each group is ordered by score. Each row also shows activity ('last post N days ago') and past_removals (this brand's posts removed there). Subs under 500 members or with no post in 30 days are left out — the response reports how many.",
+      "Pass `founderContext` (real first-person facts: founder story, numbers) ONLY if the user actually gave them; without it, angles use customer or observation framing, never a made-up first-person story.",
+      "short {subreddit,match_score,promo_label,activity,angle} (angle = first angle only); medium adds reason,rule_to_watch,restrictions,past_removals,angles (all angles); full = raw.",
       "Synchronous, 0 credits.",
       "Requires the brand pool to exist — call reddit_generate_pool first if it doesn't.",
       "Flow step 2 of 4: pool → SUGGEST → rewrite → list_posts.",
@@ -175,15 +132,17 @@ export function registerRedditTools(server: McpServer) {
       postId: z.string().optional().describe("BlogArticle ID to suggest for (use this OR title+content)"),
       title: z.string().optional().describe("Content title (required when not passing postId)"),
       content: z.string().optional().describe("Content body (optional; used with title when not passing postId)"),
+      founderContext: z.string().max(2000).optional().describe("Real first-person facts (founder story, numbers). Only pass what the user supplied; never invent."),
       detail: detailParam("medium"),
       brandId: brandOpt,
     },
-    async ({ postId, title, content, detail, brandId }) => {
+    async ({ postId, title, content, founderContext, detail, brandId }) => {
       const id = requireBrandId(brandId);
       const body: Record<string, unknown> = {};
       if (postId !== undefined) body.postId = postId;
       if (title !== undefined) body.title = title;
       if (content !== undefined) body.content = content;
+      if (founderContext !== undefined) body.founderContext = founderContext;
       const data = await api.post<unknown>(`/api/agent/v1/brands/${id}/reddit/suggest`, body);
       const raw = data && typeof data === "object" ? (data as Record<string, unknown>) : {};
       const items = Array.isArray(raw.suggestions)
@@ -195,7 +154,10 @@ export function registerRedditTools(server: McpServer) {
           text: JSON.stringify({
             count: items.length,
             detail,
-            suggestions: projectList(detail, items, suggestionProj),
+            excluded: raw.excluded ?? null,
+            removal_history: raw.removal_history ?? null,
+            notes: suggestNotes(raw),
+            suggestions: items.map((r) => shapeSuggestion(r, detail)),
           }),
         }],
       };
@@ -209,6 +171,9 @@ export function registerRedditTools(server: McpServer) {
       "Async. Rewrite a blog article (or raw content) into a Reddit-native post for one subreddit (`subreddit`) or several at once (`subreddits`) — multiple subreddits fan out to N drafts, one per subreddit.",
       "Typically takes ~30–90 sec per variation.",
       "Every subreddit in the batch is auto-added to the brand's pool at rewrite time — before any draft is reviewed — so use reddit_remove_from_pool to prune subs the user decides against. Billing stays 10 credits per draft: N subreddits = N×10 credits.",
+      "Every draft is checked against the subreddit's stated rules and promotion policy, then saved with a check: passed (saved approved), needs_review or blocked (saved NOT approved, status 'created'). needs_review and blocked drafts must NOT be posted as they are — blocked ones list the rule and the quoted words that break it. The result shows counts { passed, needsReview, blocked } and each draft's check.",
+      "Approving a needs_review or blocked draft (approve_post) returns CHECK_OVERRIDE_REQUIRED; never retry with override=true unless the user explicitly says to approve it anyway.",
+      "Pass `founderContext` only with real first-person facts the user gave; otherwise the post is written as an observation, how-to or question.",
       "Returns quickly — if generation finishes within a short grace window, the finished Reddit post is returned inline; otherwise it returns a postId and a 'still in progress' status. Poll get_post with that postId until operationStatus is COMPLETED. Do NOT call reddit_rewrite again for the same request while it's pending.",
       "The subreddit does NOT need to be in the brand's pool — if it isn't, the rewrite still proceeds using general Reddit best-practices, and the result includes a `subredditNotice` string flagging that this subreddit hasn't been onboarded yet.",
       "Flow step 3 of 4: pool → suggest → REWRITE → list_posts.",
@@ -285,10 +250,20 @@ export function registerRedditTools(server: McpServer) {
         };
       }
       const inner = (post.post ?? post) as Record<string, unknown>;
+      const savedIds = savedPostIds(inner.outputData);
+      const drafts: Record<string, unknown>[] = [];
+      for (const draftId of savedIds.slice(0, 12)) {
+        try {
+          const d = await api.get<Record<string, unknown>>(`/api/agent/v1/posts/${draftId}`);
+          drafts.push({ id: draftId, ...((d.post ?? d) as Record<string, unknown>) });
+        } catch {
+          // A draft that cannot be read is left out; the job counts still report it.
+        }
+      }
       return {
         content: [{
           type: "text" as const,
-          text: JSON.stringify({ postId, ...inner, ...(subredditNotice ? { subredditNotice } : {}) }),
+          text: JSON.stringify({ postId, ...shapeRewriteResult(inner, drafts, subredditNotice) }),
         }],
       };
     }
@@ -300,7 +275,8 @@ export function registerRedditTools(server: McpServer) {
     [
       "List saved Reddit posts (outputs of reddit_rewrite). Cursor-paginated.",
       "Returns { posts: [{ id, platform, content, outputData, sessionId, voiceId, createdAt, metrics }], nextCursor }.",
-      "outputData contains: redditTitle, body, notes, wordCount, angle, length, subreddit, variationIndex.",
+      "outputData contains: redditTitle, body, notes, wordCount, angle, length, subreddit, variationIndex, check.",
+      "Each post has `status` and a `check` summary: state passed (approved, ready) | needs_review | blocked | unchecked, with rule_breaks (rule + quoted words) or issues explaining why, and `ready_to_post`. needs_review and blocked drafts are NOT approved — do not post them as they are.",
       "Each post also has `metrics` once it has been published and synced from Reddit: { views (Reddit's approximate count, null if Reddit showed none), viewsText, upvotes (net score), upvoteRatio, comments, opReplies (our replies in the thread), subreddit, permalink, postedAt, status live|removed|hidden|deleted, lastSyncedAt }. metrics null = not published/synced yet (not zero). For rollups and trends use reddit_performance.",
       "Flow step 4 of 4: pool → suggest → rewrite → LIST_POSTS.",
     ].join(" "),
@@ -316,7 +292,7 @@ export function registerRedditTools(server: McpServer) {
       if (limit !== undefined) qs.set("limit", String(limit));
       const suffix = qs.toString() ? `?${qs.toString()}` : "";
       const data = await api.get<unknown>(`/api/agent/v1/brands/${id}/reddit/posts${suffix}`);
-      return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
+      return { content: [{ type: "text" as const, text: JSON.stringify(shapeDraftList(data)) }] };
     }
   );
 
@@ -326,9 +302,9 @@ export function registerRedditTools(server: McpServer) {
     [
       "Search Reddit for subreddits in any direction the user chooses — this is how you find communities BEYOND the brand-signal pool (reddit_generate_pool only uses brand signals; this takes explicit queries).",
       "Pass 1-8 search queries. Returns a ranked list sorted by subscribers desc, each row flagged already_in_pool (already in THIS brand's pool) and already_cached (already known to the platform), with found_via listing which queries surfaced it. NSFW and non-public subreddits are always excluded.",
-      "A good `context` string is what disambiguates ambiguous queries — e.g. 'hermes' the AI-agent framework vs the fashion brand vs parcel delivery. Describe what the brand actually wants and what to exclude. `minSubs` (minimum subscriber count) defaults to 0 — no floor — so tiny high-intent niche communities are kept; raise it only if the user wants bigger communities.",
+      "A good `context` string is what disambiguates ambiguous queries — e.g. 'hermes' the AI-agent framework vs the fashion brand vs parcel delivery. Describe what the brand actually wants and what to exclude. `minSubs` (minimum member count) defaults to 500; communities under 500 members are not worth a post. Each row shows activity ('last post N days ago') and `tiny`; say plainly when a sub is under 500 members or inactive (no post in 30 days).",
       "Costs 15 credits per call, flat, regardless of cache state (the relevance filter always runs fresh against your context).",
-      "short {display_name,subscribers,already_in_pool}; medium adds title, truncated public_description, found_via, already_cached; full = raw.",
+      "short {display_name,subscribers,already_in_pool,activity,tiny}; medium adds title, truncated public_description, found_via, already_cached; full = raw.",
       "Flow: DISCOVER → user picks → either reddit_add_to_pool with the chosen names, or go straight to reddit_rewrite for the chosen subreddit(s) — rewriting for a subreddit auto-adds it to the pool. Prune any time with reddit_remove_from_pool.",
     ].join(" "),
     {
@@ -346,7 +322,7 @@ export function registerRedditTools(server: McpServer) {
         .int()
         .min(0)
         .optional()
-        .describe("Minimum subscriber count. Default 0 (no floor) — keeps small niche communities."),
+        .describe("Minimum member count. Default 500."),
       detail: detailParam("medium"),
       brandId: brandOpt,
     },
@@ -374,7 +350,7 @@ export function registerRedditTools(server: McpServer) {
             count: rows.length,
             creditsCharged: raw.creditsCharged,
             detail,
-            subreddits: projectList(detail, rows, discoveryProj),
+            subreddits: rows.map((r) => shapeDiscoveryRow(r, detail)),
           }),
         }],
       };
@@ -389,6 +365,7 @@ export function registerRedditTools(server: McpServer) {
       "Each name is resolved live from Reddit (about + rules) and merged into the brand's pool; already-present names are updated in place.",
       "PARTIAL SUCCESS IS NORMAL: names that can't resolve come back in failed: [{ name, reason, retryable }] while the rest still commit. A non-empty failed list is NOT an error — report which names were added and which failed, and quote the reason.",
       "`retryable: true` means the LOOKUP failed (Reddit throttled us, proxy hiccup) — the subreddit is probably fine, so retry the call rather than telling the user it doesn't exist. `retryable: false` means the subreddit itself can't be added (nonexistent/banned/private).",
+      "Each added row shows brand_fit (0-10), activity ('last post N days ago') and tiny. A sub under 500 members or with no post in 30 days is still added — check `warnings` and tell the user plainly.",
       "Typical source: names the user picked from reddit_discover_subreddits results. Not required before reddit_rewrite — rewriting for an off-pool subreddit auto-adds it to the pool.",
     ].join(" "),
     {
@@ -402,7 +379,7 @@ export function registerRedditTools(server: McpServer) {
     async ({ names, brandId }) => {
       const id = requireBrandId(brandId);
       const data = await api.post<unknown>(`/api/agent/v1/brands/${id}/reddit/pool/add`, { names });
-      return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
+      return { content: [{ type: "text" as const, text: JSON.stringify(shapeAddResult(data)) }] };
     }
   );
 
