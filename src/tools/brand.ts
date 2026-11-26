@@ -356,7 +356,7 @@ export function registerBrandTools(server: McpServer) {
     [
       "Read the SET of languages a brand publishes in — one brand can now publish in more than one language, each with its own keyword research, blog, and landing pages.",
       "Returns { defaultLanguage, languages, maxAllowed }. `defaultLanguage` sits at the domain root with no URL prefix; every other enabled language sits under /{languageCode} (e.g. /cs). `languages` always lists the default first.",
-      "`maxAllowed` is how many languages this brand's plan allows — Trial/Growth 1, Pro 2, Enterprise 5.",
+      "`maxAllowed` is how many languages this brand's plan allows — Trial/Legacy Growth 1, Starter (PRO) 2, Growth (ENTERPRISE) 5.",
       "This is distinct from get_brand_content_language, which reports only the single default language (feature 104, still the source of truth for `defaultLanguage`). Use this tool when you need the FULL enabled set.",
     ].join(" "),
     {
@@ -375,7 +375,7 @@ export function registerBrandTools(server: McpServer) {
     [
       "Enable an additional language for this brand's publishing set. Idempotent — enabling an already-enabled language is a no-op.",
       "This does NOT create a blog, run keyword research, or generate any pages — it is a settings write only. A new language starts as an empty publishing surface awaiting its own content (see seo_generate_keywords with `language`, and the landing-page translation tools, for the next steps).",
-      "Fails if the brand is already at its plan's language cap (Trial/Growth 1, Pro 2, Enterprise 5) — tell the user they need to upgrade.",
+      "Fails if the brand is already at its plan's language cap (Trial/Legacy Growth 1, Starter (PRO) 2, Growth (ENTERPRISE) 5) — tell the user they need to upgrade.",
     ].join(" "),
     {
       brandId: z.string().optional().describe("Brand ID (defaults to active brand)"),

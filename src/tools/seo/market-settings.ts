@@ -92,7 +92,7 @@ export function registerSeoMarketSettingsTools(server: McpServer) {
         "to its market language with: en->en, es->es, pt-BR->pt, de->de, fr->fr.",
       "Two SEPARATE tier caps apply: the number of (location, language) PAIRS is capped at 1-3 depending " +
         "on plan, while the number of DISTINCT LANGUAGES across those pairs is capped separately " +
-        "(Trial/Growth 1, Pro 2, Enterprise 5). A brand can target 3 English-language markets on one " +
+        "(Trial/Legacy Growth 1, Starter (PRO) 2, Growth (ENTERPRISE) 5). A brand can target 3 English-language markets on one " +
         "plan tier, or 2 markets spanning 2 different languages on a higher tier — check the error message " +
         "if a call is rejected for exceeding a cap.",
       "Requires a paid plan — a free/trial key gets a payment-required error back; surface that to the " +

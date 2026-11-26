@@ -67,7 +67,7 @@ export function registerBillingTools(server: McpServer) {
   server.tool(
     "billing_list_tiers",
     [
-      "List available PostKing subscription tiers (GROWTH, PRO, ENTERPRISE).",
+      "List the subscription tiers this account can buy. Tier ids are GROWTH, PRO, ENTERPRISE; PostKing sells PRO as \"Starter\" and ENTERPRISE as \"Growth\", and GROWTH is legacy (existing subscribers only). White-label partner accounts may sell the ids under their own names, so trust this list over assumptions.",
       "Returns each tier's name, price in USD, monthly credits, and billing interval options.",
       "Use billing_subscribe to create a subscription Checkout session for a chosen tier.",
     ].join(" "),
@@ -90,7 +90,7 @@ export function registerBillingTools(server: McpServer) {
     {
       tier: z
         .enum(["GROWTH", "PRO", "ENTERPRISE"])
-        .describe("Subscription tier. One of: GROWTH, PRO, ENTERPRISE."),
+        .describe("Subscription tier id: GROWTH, PRO or ENTERPRISE. PRO is sold as Starter and ENTERPRISE as Growth; GROWTH is legacy. Call billing_list_tiers to see which tiers this account can actually buy."),
       interval: z
         .enum(["month", "year"])
         .default("month")

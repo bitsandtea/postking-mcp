@@ -64,7 +64,7 @@ export function registerAiVisibilityProbeTools(server: McpServer) {
           return json({
             started: false,
             refusal: "tier_upgrade_required",
-            message: `${err.message} Upgrade the plan to PRO or Enterprise to run it.`,
+            message: `${err.message} Upgrade to a Starter (PRO) or Growth (ENTERPRISE) plan to run it.`,
           });
         }
         throw err;
@@ -111,7 +111,7 @@ export function registerAiVisibilityProbeTools(server: McpServer) {
   server.tool(
     "ai_visibility_topic_add",
     [
-      "Add a custom topic (a free-text offering such as \"Pet insurance for senior dogs\") to the brand's Deep AI Dive topic menu. Requires PRO+. Free and instant — it does not start a run or draft questions.",
+      "Add a custom topic (a free-text offering such as \"Pet insurance for senior dogs\") to the brand's Deep AI Dive topic menu. Requires Starter (PRO)+. Free and instant — it does not start a run or draft questions.",
       "Limits: label 2-80 characters, description up to 200 (defaults to the label), max 10 custom topics per brand.",
       "This only adds the topic to the menu (selected=false), so the next run will NOT ask about it yet. To put it into the next run, call ai_visibility_topic_include afterwards (add every topic first, then include them all in one call).",
     ].join(" "),
@@ -142,7 +142,7 @@ export function registerAiVisibilityProbeTools(server: McpServer) {
       "Put topics from the menu into the NEXT Deep AI Dive run: drafts questions for ONLY the given topics and appends them to the saved config. Existing topics, their questions (including edits) and the markets are left untouched. Does NOT start a run.",
       "COSTS PLATFORM LLM SPEND (a few Claude calls per topic) and takes a minute or more, so it returns immediately with questionsPending:true and drafts in the background. While it works, a probe run is refused as 'running'. Poll ai_visibility_topics_list until the ids show selected=true (or ai_visibility_run_status shows an error if drafting failed), then call ai_visibility_run.",
       "Typical flow for 'add 2 topics and rerun': ai_visibility_topic_add x2, then ONE ai_visibility_topic_include with both ids (they are drafted together; a second call while the first is drafting is refused), wait, then ai_visibility_run.",
-      "Requires PRO+ and an existing saved config. Refusals return { included: false, refusal } with refusal one of tier_upgrade_required, running, no_config (set up the Deep AI Dive once in the dashboard first) or unknown_topic.",
+      "Requires Starter (PRO)+ and an existing saved config. Refusals return { included: false, refusal } with refusal one of tier_upgrade_required, running, no_config (set up the Deep AI Dive once in the dashboard first) or unknown_topic.",
     ].join(" "),
     {
       topicIds: z.array(z.string().min(1)).min(1).max(10).describe("Topic ids from ai_visibility_topics_list or ai_visibility_topic_add's addedTopicId. Max 10 per call."),
@@ -171,7 +171,7 @@ export function registerAiVisibilityProbeTools(server: McpServer) {
         }
         if (err instanceof ApiError && err.status === 404) return json({ included: false, refusal: "unknown_topic", message: err.message });
         if (err instanceof ApiError && err.status === 403) {
-          return json({ included: false, refusal: "tier_upgrade_required", message: `${err.message} Upgrade the plan to PRO or Enterprise.` });
+          return json({ included: false, refusal: "tier_upgrade_required", message: `${err.message} Upgrade to a Starter (PRO) or Growth (ENTERPRISE) plan.` });
         }
         throw err;
       }

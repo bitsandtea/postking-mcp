@@ -623,7 +623,7 @@ export function registerPostTools(server: McpServer) {
   server.tool(
     "reply_to_x_post",
     [
-      "Reply to an X (Twitter) post from the brand's connected X account. PRO plan and above.",
+      "Reply to an X (Twitter) post from the brand's connected X account. Starter (PRO) plan and above.",
       "Pass the tweet URL or id. By default publishes immediately; use postType 'scheduled' (+scheduledAt) or 'queue' (draft).",
     ].join(" "),
     {

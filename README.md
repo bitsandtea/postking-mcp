@@ -134,7 +134,7 @@ _Available on stdio/local transport only. Remote HTTP transport authenticates vi
 | `schedule_post` | Set a scheduled time on an existing post |
 | `reschedule_post` | Move a scheduled post to a new time |
 | `update_post` | Replace a draft or scheduled post's text |
-| `reply_to_x_post` | Reply to an X (Twitter) post from the brand's account (PRO plan and above) |
+| `reply_to_x_post` | Reply to an X (Twitter) post from the brand's account (Starter/PRO plan and above) |
 | `cancel_post` | Cancel a scheduled post without deleting it |
 | `delete_post` | Cancel and delete a post |
 | `get_calendar` | View upcoming scheduled content |
@@ -441,8 +441,8 @@ _Canonical flow (one-off): `billing_list_packs` → `billing_topup` → (Stripe 
 | `billing_list_packs` | List available agent credit packs with SKU, price, and credit amount |
 | `billing_topup` | Create a Stripe Checkout session to top up the agent wallet with a one-off credit pack |
 | `billing_wallet` | Fetch the agent's prepaid credit balance and recent ledger entries |
-| `billing_list_tiers` | List available PostKing subscription tiers with pricing and monthly credits |
-| `billing_subscribe` | Create a Stripe Checkout session for a GROWTH, PRO, or ENTERPRISE subscription |
+| `billing_list_tiers` | List the subscription tiers this account can buy, with pricing and monthly credits (ids GROWTH / PRO / ENTERPRISE; PRO is sold as Starter, ENTERPRISE as Growth, GROWTH is legacy) |
+| `billing_subscribe` | Create a Stripe Checkout session for a subscription tier (GROWTH, PRO or ENTERPRISE id; check `billing_list_tiers` for what this account can buy) |
 
 ### Search performance & AI visibility
 _Canonical flow: `search_sources` (is a connector even live?) → `search_performance` (SEO clicks/impressions/CTR/position) → `search_ai_visibility` / `search_ai_citations` (AI-answer-engine visibility) → `search_worklist` ("do this next", synthesized from all of the above)._
@@ -451,13 +451,13 @@ _Canonical flow: `search_sources` (is a connector even live?) → `search_perfor
 |------|-------------|
 | `search_sources` | List the brand's connected search-performance sources (Google Search Console, Bing Webmaster, Google Analytics) with status and last sync time |
 | `search_performance` | Search Console (Google/Bing) + GA4 performance readout — clicks, impressions, CTR, position; section-selectable (summary/queries/pages/timeseries) |
-| `search_ai_visibility` | Deep AI Dive (GEO) visibility readout — mention/citation coverage vs. competitors across AI answer engines (Google AI Overview, ChatGPT, Perplexity, Claude), by topic. Requires PRO+ tier |
+| `search_ai_visibility` | Deep AI Dive (GEO) visibility readout — mention/citation coverage vs. competitors across AI answer engines (Google AI Overview, ChatGPT, Perplexity, Claude), by topic. Requires Starter (PRO)+ tier |
 | `search_ai_citations` | Bing "AI Performance" citation readout — daily citation counts plus the latest grounding-query and cited-page snapshots from an imported CSV export |
 | `search_worklist` | Ranked "do this next" SEO + GEO worklist synthesized from the tools above |
-| `ai_visibility_run` | Start a Deep AI Dive run on the saved config. Costs real credits, PRO+, one manual run per month; refusals (tier_upgrade_required / running / no_config / monthly_limit) return as `{ started: false, refusal }` |
+| `ai_visibility_run` | Start a Deep AI Dive run on the saved config. Costs real credits, Starter (PRO)+, one manual run per month; refusals (tier_upgrade_required / running / no_config / monthly_limit) return as `{ started: false, refusal }` |
 | `ai_visibility_run_status` | Poll the Deep AI Dive run (pending / processing / completed / failed + progress) |
 | `ai_visibility_topics_list` | List probe topics with `selected` (asked in the next run) |
-| `ai_visibility_topic_add` | Add a custom topic to the menu (PRO+, free; use `ai_visibility_topic_include` to put it into the next run) |
+| `ai_visibility_topic_add` | Add a custom topic to the menu (Starter (PRO)+, free; use `ai_visibility_topic_include` to put it into the next run) |
 | `ai_visibility_topic_include` | Put menu topics into the next run: drafts questions for only those topics in the background (platform LLM spend), then they show `selected` |
 | `ai_visibility_topic_remove` | Remove a topic from future runs; past results and citations are kept |
 
