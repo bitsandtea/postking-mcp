@@ -7,6 +7,7 @@ import { registerSeoBriefTools } from "./briefs.js";
 import { registerSeoResultsTools } from "./results.js";
 import { registerSeoSidePageTools } from "./side-pages.js";
 import { registerSeoMarketSettingsTools } from "./market-settings.js";
+import { registerSeoSourcePolicyTools } from "./source-policy.js";
 import { registerSeoPublicationTargetTools } from "./publication-targets.js";
 
 /**
@@ -49,6 +50,9 @@ import { registerSeoPublicationTargetTools } from "./publication-targets.js";
  * language-scoped step 2: seo_get_market_settings / seo_set_market_settings
  * (market-settings.ts).
  *
+ * Source link policy — which sites articles may link to: seo_get_source_policy (settings, or
+ * a single-URL check via `url`) / seo_set_source_policy (source-policy.ts).
+ *
  * Publication targeting — which blog publication step 8's writes land in per
  * language, on brands with 2+ publications: seo_get_publication_targets /
  * seo_set_publication_target (publication-targets.ts).
@@ -67,5 +71,6 @@ export function registerSeoTools(server: McpServer) {
   registerSeoResultsTools(server);
   registerSeoSidePageTools(server);
   registerSeoMarketSettingsTools(server);
+  registerSeoSourcePolicyTools(server);
   registerSeoPublicationTargetTools(server);
 }
